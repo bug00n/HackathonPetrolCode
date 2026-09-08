@@ -1,6 +1,1 @@
 # Enter point
-
-# ---
-
-import math
-
