@@ -214,5 +214,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Hackathon data (extracted telemetry, too large for git)
+data/*.csv
+
 # Streamlit
 .streamlit/secrets.toml
