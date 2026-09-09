@@ -1,0 +1,7 @@
+# Инструменты разработки (не входят в runtime requirements.txt)
+mypy>=1.13
+pandas-stubs>=2.2.0
+pydantic>=2.6.0       # pydantic.mypy-плагин использует реальный пакет
+types-openpyxl>=0.1.8
+types-pytz>=2024.1.0
+pre-commit>=3.6.0

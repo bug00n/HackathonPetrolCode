@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 
@@ -72,7 +73,10 @@ def read_telemetry_csv(
     if chunksize is None:
         assert isinstance(reader, pd.DataFrame)
         return _rename(reader, namespace)
-    return (_rename(chunk, namespace) for chunk in reader)
+    # pandas-stubs не сужает читателя до итератора по "chunksize";
+    # при явном чанке результат — итератор DataFrame
+    iterator = cast(Iterator[pd.DataFrame], reader)
+    return (_rename(chunk, namespace) for chunk in iterator)
 
 
 def iter_telemetry_chunks(
@@ -83,7 +87,8 @@ def iter_telemetry_chunks(
     service = [c for c in header.columns if _is_service_column(c)]
     usecols = [c for c in header.columns if c not in service]
     reader = pd.read_csv(path, usecols=usecols, chunksize=chunksize, parse_dates=["date"])
-    return (_rename(chunk, namespace) for chunk in reader)
+    iterator = cast(Iterator[pd.DataFrame], reader)
+    return (_rename(chunk, namespace) for chunk in iterator)
 
 
 def telemetry_sample(path: str | Path, namespace: str, rows: int = 100) -> pd.DataFrame:

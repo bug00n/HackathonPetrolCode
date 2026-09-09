@@ -41,8 +41,9 @@ class DataProvider:
         if key not in self._cache:
             frames = list(self.iter_telemetry(namespace, chunksize=100_000))
             self._cache[key] = pd.concat(frames, ignore_index=True)
-        assert isinstance(self._cache[key], pd.DataFrame)
-        return self._cache[key]
+        cached = self._cache[key]
+        assert isinstance(cached, pd.DataFrame)
+        return cached
 
     def iter_telemetry(self, namespace: str, chunksize: int = 50_000) -> Iterator[pd.DataFrame]:
         """Итератор по чанкам телеметрии (без кэша, для потоковой обработки)."""
@@ -59,16 +60,18 @@ class DataProvider:
         key = "pak"
         if key not in self._cache:
             self._cache[key] = read_pak(self.paths.pak)
-        assert isinstance(self._cache[key], list)
-        return self._cache[key]
+        cached = self._cache[key]
+        assert isinstance(cached, list)
+        return cached
 
     def get_lims(self) -> list[Sample]:
         """Лабораторные анализы (кэшируются)."""
         key = "lims"
         if key not in self._cache:
             self._cache[key] = read_lims(self.paths.lims)
-        assert isinstance(self._cache[key], list)
-        return self._cache[key]
+        cached = self._cache[key]
+        assert isinstance(cached, list)
+        return cached
 
     # --- Справочник ---------------------------------------------------
 
@@ -77,8 +80,9 @@ class DataProvider:
         key = "tags"
         if key not in self._cache:
             self._cache[key] = load_tag_dictionary(self.paths.tags)
-        assert isinstance(self._cache[key], dict)
-        return self._cache[key]
+        cached = self._cache[key]
+        assert isinstance(cached, dict)
+        return cached
 
     # --- Служебное ----------------------------------------------------
 
