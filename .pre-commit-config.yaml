@@ -11,9 +11,11 @@ repos:
     hooks:
       - id: mypy
         files: ^source/
+        exclude: /ut/
         additional_dependencies:
           - pydantic>=2.6.0
           - pandas-stubs>=2.2.0
         args:
           - --config-file=pyproject.toml
+          - --exclude=/ut/
         stages: [pre-commit]
