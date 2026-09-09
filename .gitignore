@@ -214,10 +214,12 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Telemetry CSVs are tracked via Git LFS (see .gitattributes)
+# Extracted and prepared data stay local; materials/data.rar is the canonical LFS source.
 data/*.csv
-!data/avt_tags.csv
-!data/242000_tags.csv
+data/processed/
+artifacts/
+reports/
+runs/
 
 # Streamlit
 .streamlit/secrets.toml

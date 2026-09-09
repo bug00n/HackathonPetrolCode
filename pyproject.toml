@@ -7,8 +7,6 @@ select = ["E", "W", "F", "I", "B"]
 
 [tool.pytest.ini_options]
 testpaths = [
-    "source/ut",
-    "source/data/ut",
     "global_tests",
 ]
 pythonpath = ["."]
@@ -19,7 +17,7 @@ markers = [
 ]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.11"
 mypy_path = "."
 plugins = ["pydantic.mypy"]
 files = ["source"]

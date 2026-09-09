@@ -1,3 +1,1 @@
 materials/data.rar filter=lfs diff=lfs merge=lfs -text
-
-data/*.csv filter=lfs diff=lfs merge=lfs -text

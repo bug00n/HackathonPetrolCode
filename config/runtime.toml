@@ -1,0 +1,16 @@
+source_timezone = "Europe/Moscow"
+lims_delay_hours = 6.0
+horizon_minutes = 60
+seed = 42
+max_candidates = 125
+data_dir = "data/processed"
+materials_dir = "materials"
+tag_dictionary_path = "config/tags.csv"
+models_dir = "artifacts/models"
+reports_dir = "reports"
+runs_dir = "runs"
+
+[freshness_minutes]
+telemetry = 20
+pak = 30
+lims = 2880

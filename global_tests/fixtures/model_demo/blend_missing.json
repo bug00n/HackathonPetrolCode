@@ -1,0 +1,40 @@
+{
+  "state": {
+    "schema_version": "1.0",
+    "state_id": "fixture-state-missing",
+    "as_of": "2026-01-15T09:00:00Z",
+    "dataset_id": "modeldemo001",
+    "mode": "model_demo",
+    "signals": {
+      "blend:A:sulfur": {
+        "selected": null,
+        "alternatives": [],
+        "age_seconds": null,
+        "fresh": false,
+        "issues": [
+          {
+            "code": "MISSING_REQUIRED_SIGNAL",
+            "severity": "blocking",
+            "signal_id": "blend:A:sulfur",
+            "detail": "Synthetic component A has no sulfur estimate.",
+            "source_ref": "config/scenarios/blend_missing.json"
+          }
+        ]
+      }
+    },
+    "issues": [
+      {
+        "code": "MISSING_REQUIRED_SIGNAL",
+        "severity": "blocking",
+        "signal_id": "blend:A:sulfur",
+        "detail": "Synthetic component A has no sulfur estimate.",
+        "source_ref": "config/scenarios/blend_missing.json"
+      }
+    ]
+  },
+  "expected": {
+    "status": "abstain",
+    "reason_codes": ["MISSING_REQUIRED_SIGNAL"],
+    "selected_blend_mass_fractions": null
+  }
+}

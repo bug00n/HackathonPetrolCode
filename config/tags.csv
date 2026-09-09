@@ -1,0 +1,171 @@
+signal_id,raw_name,stage,meaning,raw_unit,canonical_unit,conversion,mapping_status,controllable,evidence_ref
+ht:density_15c,24-2000:D15,ht,Плотность при 15 °C,кг/м3,kg/m3,none,confirmed,false,materials/Выгрузка ПАК 01.01.2023 - н.в_.xlsx#rows=1:2
+ht:sulfur,24-2000:Mg.Sulfur,ht,Содержание серы в гидроочищенном дизельном топливе,ppm,unknown,none,ambiguous,false,materials/Выгрузка ПАК 01.01.2023 - н.в_.xlsx#rows=1:2
+avt:D10,avt:D10,avt,Плотность. Тр-д подачи обессолен. и обезвожен. Нефти,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F12,avt:F12,avt,Расход 2 ЦО в К2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F14,avt:F14,avt,Расход 1 ЦО в К2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F16,avt:F16,avt,Расход бензина от Н4 в Е6,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F19,avt:F19,avt,Расход остр.орошения К2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F25,avt:F25,avt,Расход бензина после Т26,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F26,avt:F26,avt,Расход пара в К6,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F27,avt:F27,avt,Расход пара в К7,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F28,avt:F28,avt,Расход пара в К9,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F29,avt:F29,avt,Расход пара в К2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F3,avt:F3,avt,Расход бензина на орошение К1,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F30,avt:F30,avt,Расход фр.290-350°С с установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F31,avt:F31,avt,Расход нефтепродукта в П3,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F32,avt:F32,avt,Расход фр.240-290°С с установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F34,avt:F34,avt,Расход фр.150-250°С с установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F35,avt:F35,avt,Расход ВЦО в К-10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F36,avt:F36,avt,Расход СЦО в К-10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F41,avt:F41,avt,Расход доп. ВЦО в К-10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F45,avt:F45,avt,Расход холодного гудрона в К10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F46,avt:F46,avt,Расход НЦО К10 фракции 350-560,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F5,avt:F5,avt,Расход пара в К1,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F53,avt:F53,avt,Расход НЦО  К10 (Регулятор),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F54,avt:F54,avt,"Расход от Н-34/1,2  К10",,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F56,avt:F56,avt,Расход в трубопроводе фракции до 350 с установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F57,avt:F57,avt,Расход в трубопроводе фракции до 350 с установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F59,avt:F59,avt,Расход фр.420-500°С с установки. Объемный расход,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F60,avt:F60,avt,Расход в трубопроводе фракции 350-560 с установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F62,avt:F62,avt,Расход НЦО К-10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F63,avt:F63,avt,Расход гудрона на битумную установку,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F64,avt:F64,avt,Расход 3-го ЦО в К2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F65,avt:F65,avt,Производительность К-2 по отбензиненной нефти,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F68,avt:F68,avt,Расход гудрона с установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F69,avt:F69,avt,Расход гудрона с установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F7,avt:F7,avt,Расход обессоленной нефти (3-й ход) (Нефть обессоленная в Т-4/2),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F8,avt:F8,avt,Расход обессоленной нефти (1-й ход) (Нефть обессоленная в Т-6/1),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:F9,avt:F9,avt,Расход обессоленной нефти (2-й ход) (Нефть обессоленная в Т-10/2),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:L43,avt:L43,avt,Уровень в К10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P2,avt:P2,avt,Давление бензиновых паров верха К1,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P21,avt:P21,avt,Давление бензиновых паров верха К2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P22,avt:P22,avt,Давление верха К2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P23,avt:P23,avt,Давление верха К-2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P4,avt:P4,avt,Давление низа К1 в Е6,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P44,avt:P44,avt,Вакуум низа К10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P50,avt:P50,avt,Вакуум верха К10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P51,avt:P51,avt,Вакуум верха К-10 (пересчёт на мм рт.ст. с кгс/см2 от AVT6:PIR0825.P),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P52,avt:P52,avt,Перепад давления над 4-й пак.насад. К10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:P67,avt:P67,avt,Давление верха К2.,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T1,avt:T1,avt,Температура верха К1. Выход на FIRC0955,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T11,avt:T11,avt,3-е ЦО после Т-46,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T13,avt:T13,avt,1-е ЦО К-2 после Т-30,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T15,avt:T15,avt,3 -е ЦО К-2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T17,avt:T17,avt,2-е ЦО из К-2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T18,avt:T18,avt,1-е ЦО из К-2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T20,avt:T20,avt,Температура верха К2. Выход на FIRC0953,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T24,avt:T24,avt,Переток из К-2 в К-6,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T33,avt:T33,avt,Температура низа К-2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T37,avt:T37,avt,Температура ВЦО в К-10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T38,avt:T38,avt,Температура доп. ВЦО К10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T39,avt:T39,avt,Температура в К10 (над секцией рег.насадки 1а),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T40,avt:T40,avt,Температура ВЦО из К10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T42,avt:T42,avt,Температура фр.420-500°С из К10 в Е12,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T47,avt:T47,avt,Температура фр.350-560 °C после Т-40,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T48,avt:T48,avt,Описание: Температура низа К10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T49,avt:T49,avt,Описание: Температура верха К10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T55,avt:T55,avt,Температура на выходе из печи П3 (общ. Выход на FIRC2470),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T58,avt:T58,avt,Температура фракции до 350 С от Т-37,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T6,avt:T6,avt,Температура низ К1,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T61,avt:T61,avt,Температура НЦО в К-10,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T66,avt:T66,avt,Переток в К-9,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:T71,avt:T71,avt,Фр.290-350°С из К-2,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:W70,avt:W70,avt,Массовый расход фр.290-350°С с установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F1,ht:F1,ht,Расход бензина c установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F14,ht:F14,ht,"Блок стабилизации. Температура верха колонны К-201 /бензин,УВГ,Н2S",,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F15,ht:F15,ht,Полисеп. Расход квенча в реактор Р-202,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F17,ht:F17,ht,Расход гидроочищенного ДТ в цех №8 c установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F19,ht:F19,ht,Полисеп. Реактор Р-202. Давление на входе,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F2,ht:F2,ht,Газовая схема. Расход на линии от ЦК-201,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F22,ht:F22,ht,Блок стабилизации. Расход газа поддува на входе в К-201Температура в сепараторе С-205,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F25,ht:F25,ht,"APC. Показания виртуального анализатора ""Температура вспышки ГОДТ""",,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F26,ht:F26,ht,Расход сырья на установку (объемный),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:F9,ht:F9,ht,Блок стабилизации. Расход газа поддува на входе в К-201. Массовый расход (АС КУБ),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:P13,ht:P13,ht,Трубопровод на выходе из реактора Р-202: Качество продукции по S,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:P24,ht:P24,ht,Расход свежего ВСГ с КЦА на установку,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:P3,ht:P3,ht,Полисеп. Сепаратор С-201. Давление на входе,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:P8,ht:P8,ht,Полисеп. Реактор Р-202. Температура гсс на входе,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:Q20,ht:Q20,ht,Блок стабилизации. Расход бензина в колонну К-201,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:Q21,ht:Q21,ht,Блок стабилизации. Расход газа поддува на входе в К-201,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:T11,ht:T11,ht,Расход сырья на установку (массовый),,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:T12,ht:T12,ht,Расход бензина c установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:T16,ht:T16,ht,Блок стабилизации. Колонна К-201. Температура стабильного гидрогенизата низ,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:T18,ht:T18,ht,Блок стабилизации. Колонна К-201. Давление на выходе,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:T23,ht:T23,ht,Расход гидроочищенного ДТ в цех №8 c установки,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:T5,ht:T5,ht,Полисеп. Реактор Р-201. Температура ГСС на выходе,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:T6,ht:T6,ht,"Поточный анализатор серы в дизельном топливе между коллекторами нагнетания и приёма Н-202/1,2",,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:W10,ht:W10,ht,Реактор Р-202. Перепад давления.,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:W4,ht:W4,ht,Блок стабилизации. Массовый расход бензина в колонну К-206,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+ht:W7,ht:W7,ht,Блок стабилизации. Поточный анализатор содержания серы в гидроочищенном ДТ,,unknown,none,ambiguous,false,materials/Теги_хакатон.xlsx#КИП
+avt:1:50%.T,ЛИМС:АВТ.1:50%.T,avt,50%.T,кг/м3,kg/m3,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=5:6
+avt:1:90%.T,ЛИМС:АВТ.1:90%.T,avt,90%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=3:4
+avt:1:95%.T,ЛИМС:АВТ.1:95%.T,avt,95%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=19:20
+avt:1:CFPP,ЛИМС:АВТ.1:CFPP,avt,CFPP,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=1:2
+avt:1:CloudPoint,ЛИМС:АВТ.1:CloudPoint,avt,CloudPoint,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=15:16
+avt:1:CloudPoint_1,ЛИМС:АВТ.1:CloudPoint_1,avt,CloudPoint_1,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=17:18
+avt:1:D15,ЛИМС:АВТ.1:D15,avt,D15,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=11:12
+avt:1:EBP.T,ЛИМС:АВТ.1:EBP.T,avt,EBP.T,% об.,vol%,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=7:8
+avt:1:I350,ЛИМС:АВТ.1:I350,avt,I350,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=13:14
+avt:1:IBP.T,ЛИМС:АВТ.1:IBP.T,avt,IBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=21:22
+avt:1:PourPoint,ЛИМС:АВТ.1:PourPoint,avt,PourPoint,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=9:10
+avt:2.1:50%.T,ЛИМС:АВТ.2.1:50%.T,avt,50%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=43:44
+avt:2.1:90%.T,ЛИМС:АВТ.2.1:90%.T,avt,90%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=47:48
+avt:2.1:95%.T,ЛИМС:АВТ.2.1:95%.T,avt,95%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=49:50
+avt:2.1:CloudPoint,ЛИМС:АВТ.2.1:CloudPoint,avt,CloudPoint,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=37:38
+avt:2.1:D15,ЛИМС:АВТ.2.1:D15,avt,D15,кг/м3,kg/m3,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=41:42
+avt:2.1:EBP.T,ЛИМС:АВТ.2.1:EBP.T,avt,EBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=39:40
+avt:2.1:IBP.T,ЛИМС:АВТ.2.1:IBP.T,avt,IBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=45:46
+avt:2:50%.T,ЛИМС:АВТ.2:50%.T,avt,50%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=23:24
+avt:2:90%.T,ЛИМС:АВТ.2:90%.T,avt,90%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=33:34
+avt:2:95%.T,ЛИМС:АВТ.2:95%.T,avt,95%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=35:36
+avt:2:CloudPoint,ЛИМС:АВТ.2:CloudPoint,avt,CloudPoint,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=29:30
+avt:2:D15,ЛИМС:АВТ.2:D15,avt,D15,кг/м3,kg/m3,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=27:28
+avt:2:EBP.T,ЛИМС:АВТ.2:EBP.T,avt,EBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=25:26
+avt:2:IBP.T,ЛИМС:АВТ.2:IBP.T,avt,IBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=31:32
+avt:3:50%.T,ЛИМС:АВТ.3:50%.T,avt,50%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=53:54
+avt:3:90%.T,ЛИМС:АВТ.3:90%.T,avt,90%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=51:52
+avt:3:95%.T,ЛИМС:АВТ.3:95%.T,avt,95%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=57:58
+avt:3:CloudPoint,ЛИМС:АВТ.3:CloudPoint,avt,CloudPoint,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=63:64
+avt:3:D15,ЛИМС:АВТ.3:D15,avt,D15,кг/м3,kg/m3,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=65:66
+avt:3:EBP.T,ЛИМС:АВТ.3:EBP.T,avt,EBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=61:62
+avt:3:FilterabilityLimit.T,ЛИМС:АВТ.3:FilterabilityLimit.T,avt,FilterabilityLimit.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=55:56
+avt:3:IBP.T,ЛИМС:АВТ.3:IBP.T,avt,IBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=59:60
+ht:1:50%.T,ЛИМС:Гидроочистка.1:50%.T,ht,50%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=71:72
+ht:1:90%.T,ЛИМС:Гидроочистка.1:90%.T,ht,90%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=67:68
+ht:1:95%.T,ЛИМС:Гидроочистка.1:95%.T,ht,95%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=73:74
+ht:1:CloudPoint,ЛИМС:Гидроочистка.1:CloudPoint,ht,CloudPoint,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=75:76
+ht:1:D15,ЛИМС:Гидроочистка.1:D15,ht,D15,кг/м3,kg/m3,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=79:80
+ht:1:EBP.T,ЛИМС:Гидроочистка.1:EBP.T,ht,EBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=77:78
+ht:1:IBP.T,ЛИМС:Гидроочистка.1:IBP.T,ht,IBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=69:70
+ht:1:Mass.Sulfur,ЛИМС:Гидроочистка.1:Mass.Sulfur,ht,Mass.Sulfur,% масс.,mass%,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=81:82
+ht:2:50%.T,ЛИМС:Гидроочистка.2:50%.T,ht,50%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=101:102
+ht:2:90%.T,ЛИМС:Гидроочистка.2:90%.T,ht,90%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=105:106
+ht:2:95%.T,ЛИМС:Гидроочистка.2:95%.T,ht,95%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=93:94
+ht:2:CFPP,ЛИМС:Гидроочистка.2:CFPP,ht,CFPP,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=97:98
+ht:2:CetaneNumber,ЛИМС:Гидроочистка.2:CetaneNumber,ht,CetaneNumber,ед.цет.ч.,cetane_number,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=103:104
+ht:2:CloudPoint,ЛИМС:Гидроочистка.2:CloudPoint,ht,CloudPoint,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=83:84
+ht:2:D15,ЛИМС:Гидроочистка.2:D15,ht,D15,кг/м3,kg/m3,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=85:86
+ht:2:FlashPoint,ЛИМС:Гидроочистка.2:FlashPoint,ht,FlashPoint,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=87:88
+ht:2:I250,ЛИМС:Гидроочистка.2:I250,ht,I250,% об.,vol%,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=91:92
+ht:2:I350,ЛИМС:Гидроочистка.2:I350,ht,I350,% об.,vol%,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=107:108
+ht:2:IBP.T,ЛИМС:Гидроочистка.2:IBP.T,ht,IBP.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=89:90
+ht:2:Mg.Sulfur,ЛИМС:Гидроочистка.2:Mg.Sulfur,ht,Mg.Sulfur,мг/кг,mg/kg,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=95:96
+ht:2:PourPoint,ЛИМС:Гидроочистка.2:PourPoint,ht,PourPoint,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=99:100
+ht:vak:CFPP,ВАК:24-2000:GODT:CFPP,ht,24-2000:GODT:CFPP,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 5
+ht:vak:CloudPoint,ВАК:24-2000:GODT:CloudPoint,ht,24-2000:GODT:CloudPoint,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 5
+ht:vak:D15,ВАК:24-2000:GODT:D15,ht,24-2000:GODT:D15,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 5
+ht:vak:I250,ВАК:24-2000:GODT:I250,ht,24-2000:GODT:I250,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 5
+ht:vak:IBP,ВАК:24-2000:GODT:IBP,ht,24-2000:GODT:IBP,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 5
+ht:vak:T50,ВАК:24-2000:GODT:T50,ht,24-2000:GODT:T50,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 5
+ht:vak:T90,ВАК:24-2000:GODT:T90,ht,24-2000:GODT:T90,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 5
+ht:vak:T95,ВАК:24-2000:GODT:T95,ht,24-2000:GODT:T95,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 5
+avt:vak:CFPP,ВАК:AVT6:240-350:CFPP,avt,AVT6:240-350:CFPP,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 1
+avt:vak:D15,ВАК:AVT6:240-350:D15,avt,AVT6:240-350:D15,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 1
+avt:vak:EBP,ВАК:AVT6:240-350:EBP,avt,AVT6:240-350:EBP,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 1
+avt:vak:T50,ВАК:AVT6:240-350:T50,avt,AVT6:240-350:T50,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 1
+avt:vak:ViscosityK,ВАК:AVT6:350-500:ViscosityK,avt,AVT6:350-500:ViscosityK,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 3
+avt:vak:CFPP,ВАК:AVT6:350:CFPP,avt,AVT6:350:CFPP,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 3
+avt:vak:D15,ВАК:AVT6:350:D15,avt,AVT6:350:D15,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 3
+avt:vak:I350,ВАК:AVT6:350:I350,avt,AVT6:350:I350,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 3
+avt:vak:T50,ВАК:AVT6:350:T50,avt,AVT6:350:T50,,unknown,none,excluded,false,materials/Теги_хакатон.xlsx#ВАК:Unnamed: 3

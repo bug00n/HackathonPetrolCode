@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "run_id": "fixture-run-hold",
+  "state_id": "fixture-state-normal",
+  "as_of": "2026-01-15T09:00:00Z",
+  "scenario_id": "blend_normal",
+  "mode": "model_demo",
+  "status": "hold",
+  "baseline": null,
+  "selected": {
+    "candidate": {
+      "id": "hold",
+      "kind": "hold",
+      "setpoints": {},
+      "blend_mass_fractions": {},
+      "horizon_minutes": 60,
+      "is_model_scenario": true
+    },
+    "assessments": [],
+    "checks": [
+      {
+        "constraint_id": "blend_sulfur",
+        "candidate_id": "hold",
+        "status": "pass",
+        "actual": 9.4,
+        "lower": null,
+        "upper": 10.0,
+        "unit": "mg/kg",
+        "basis": "tz",
+        "evidence_ref": "materials/ТЗ_нефтекод.docx",
+        "reason_code": "QUALITY_OK"
+      }
+    ],
+    "feasible": true,
+    "rank_key": [0.0, -100.0, 0.98, 0.0, "hold"]
+  },
+  "alternatives": [],
+  "reason_codes": ["NO_MATERIAL_IMPROVEMENT"],
+  "explanation": "Текущая модельная рецептура проходит ограничение по сере.",
+  "assumptions": ["Все значения сценария синтетические."],
+  "model_id": null
+}

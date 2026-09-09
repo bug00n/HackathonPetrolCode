@@ -1,44 +1,45 @@
-"""Слой данных (backend, этап 0): чтение, нормализация, состояние.
+"""Public stage-0 data API."""
 
-Публичное API слоя:
-- :class:`DataProvider` — доступ к телеметрии/ЛИМС/ПАК/справочнику;
-- читатели из :mod:`source.data.ingest`;
-- нормализация и справочник тегов из :mod:`source.data.prepare`.
-"""
-
-from source.config import DEFAULT_PATHS, DataPaths
 from source.data.ingest import (
     NS_LIMS,
-    TELEMETRY_FILES,
-    iter_telemetry_chunks,
+    QualityRead,
+    TelemetryRead,
     normalize_section,
     read_lims,
     read_pak,
     read_telemetry_csv,
-    telemetry_sample,
 )
 from source.data.prepare import (
-    NS_AV,
-    NS_GODT,
-    load_tag_dictionary,
+    PreparedData,
+    canonical_column,
+    issue_frame,
+    known_feature_order,
+    prepare_dataset,
+    quality_frame,
     resolve_unit,
+    tag_stage,
+    to_utc,
+    write_prepared_dataset,
 )
-from source.data.state import DataProvider
+from source.data.state import build_state
 
 __all__ = [
-    "DEFAULT_PATHS",
-    "DataPaths",
-    "DataProvider",
-    "NS_AV",
-    "NS_GODT",
     "NS_LIMS",
-    "TELEMETRY_FILES",
-    "iter_telemetry_chunks",
-    "load_tag_dictionary",
+    "PreparedData",
+    "QualityRead",
+    "TelemetryRead",
+    "canonical_column",
+    "build_state",
+    "issue_frame",
+    "known_feature_order",
     "normalize_section",
+    "prepare_dataset",
+    "quality_frame",
     "read_lims",
     "read_pak",
     "read_telemetry_csv",
     "resolve_unit",
-    "telemetry_sample",
+    "tag_stage",
+    "to_utc",
+    "write_prepared_dataset",
 ]
