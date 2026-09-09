@@ -11,11 +11,15 @@ from collections import Counter
 
 import pytest
 
-from source.models import ReliabilityFlag, SourceKind, Unit
-from source.readers_lims import read_lims
-from source.readers_pak import read_pak
-from source.readers_telemetry import iter_telemetry_chunks, telemetry_sample
-from source.storage import DEFAULT_LIMS, DEFAULT_PAK, DataProvider
+from source.contracts import ReliabilityFlag, SourceKind, Unit
+from source.data import (
+    DEFAULT_PATHS,
+    DataProvider,
+    iter_telemetry_chunks,
+    read_lims,
+    read_pak,
+    telemetry_sample,
+)
 
 pytestmark = pytest.mark.real_data
 
@@ -25,10 +29,10 @@ def test_smoke():
     assert True
 
 
-@pytest.mark.skipif(not DEFAULT_PAK.exists(), reason="нет файла выгрузки ПАК")
+@pytest.mark.skipif(not DEFAULT_PATHS.pak.exists(), reason="нет файла выгрузки ПАК")
 class TestPakReal:
     def test_counts_match_plan(self):
-        samples = read_pak(DEFAULT_PAK)
+        samples = read_pak(DEFAULT_PATHS.pak)
         cnt = Counter(s.tag for s in samples)
         # Наблюдения плана: ~189 тыс. точек серы, плотность с марта 2025
         assert cnt["24-2000:Mg.Sulfur"] > 180_000
@@ -37,17 +41,17 @@ class TestPakReal:
         assert min(s.timestamp for s in density).year == 2025
 
     def test_units_and_reliability(self):
-        samples = read_pak(DEFAULT_PAK)
+        samples = read_pak(DEFAULT_PATHS.pak)
         assert all(s.source is SourceKind.PAK for s in samples)
         assert all(s.reliability is ReliabilityFlag.RELIABLE for s in samples)
         sulfur = next(s for s in samples if "Sulfur" in s.tag)
         assert sulfur.unit is Unit.PPM
 
 
-@pytest.mark.skipif(not DEFAULT_LIMS.exists(), reason="нет файла ЛИМС")
+@pytest.mark.skipif(not DEFAULT_PATHS.lims.exists(), reason="нет файла ЛИМС")
 class TestLimsReal:
     def test_counts_match_plan(self):
-        samples = read_lims(DEFAULT_LIMS)
+        samples = read_lims(DEFAULT_PATHS.lims)
         cnt = Counter(s.tag for s in samples)
         # План: 1462 измерения серы ГО, 42 цетанового числа, max серы 2120
         assert cnt["ЛИМС:Гидроочистка.2:Mg.Sulfur"] == 1462
@@ -56,7 +60,7 @@ class TestLimsReal:
         assert sulfur_max == 2120.0
 
     def test_sections_and_namespaces(self):
-        samples = read_lims(DEFAULT_LIMS)
+        samples = read_lims(DEFAULT_PATHS.lims)
         namespaces = {s.namespace for s in samples}
         assert namespaces == {
             "АВТ.1",
@@ -85,7 +89,9 @@ class TestTelemetryReal:
         assert total == 189_217
 
 
-@pytest.mark.skipif(not DEFAULT_PAK.exists() or not DEFAULT_LIMS.exists(), reason="нет материалов")
+@pytest.mark.skipif(
+    not DEFAULT_PATHS.pak.exists() or not DEFAULT_PATHS.lims.exists(), reason="нет материалов"
+)
 class TestWorkflow:
     def test_data_provider_summary(self):
         provider = DataProvider()
@@ -99,12 +105,12 @@ class TestWorkflow:
 
     def test_reproducibility(self):
         """Повторное чтение даёт идентичный результат (ТЗ: воспроизводимость)."""
-        first = read_lims(DEFAULT_LIMS)
-        second = read_lims(DEFAULT_LIMS)
+        first = read_lims(DEFAULT_PATHS.lims)
+        second = read_lims(DEFAULT_PATHS.lims)
         assert first == second
 
     def test_all_samples_usable(self):
         """Все прочитанные измерения проходят проверку пригодности."""
-        for sample in read_pak(DEFAULT_PAK)[:1000] + read_lims(DEFAULT_LIMS)[:1000]:
+        for sample in read_pak(DEFAULT_PATHS.pak)[:1000] + read_lims(DEFAULT_PATHS.lims)[:1000]:
             assert sample.is_usable
             assert sample.unreliability_reason is None

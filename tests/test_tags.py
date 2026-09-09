@@ -7,14 +7,9 @@
 import pandas as pd
 import pytest
 
-from source.models import SourceKind, Unit
-from source.tags import (
-    NS_AV,
-    NS_GODT,
-    load_lab_parameters,
-    load_tag_dictionary,
-    load_vak_formulas,
-)
+from source.contracts import SourceKind, Unit
+from source.data.prepare import NS_AV, NS_GODT, load_tag_dictionary
+from source.ml.formulas import load_lab_parameters, load_vak_formulas
 
 NS = "24-2000"
 
@@ -137,14 +132,14 @@ class TestLoadLabParameters:
 
 class TestRealUnits:
     def test_resolve_unit_known(self):
-        from source.tags import resolve_unit
+        from source.data.prepare import resolve_unit
 
         assert resolve_unit("°С") is Unit.CELSIUS
         assert resolve_unit("кг/м3") is Unit.DENSITY
         assert resolve_unit("мг/кг") is Unit.MG_KG
 
     def test_resolve_unit_unknown(self):
-        from source.tags import resolve_unit
+        from source.data.prepare import resolve_unit
 
         assert resolve_unit("фурлонги") is Unit.UNKNOWN
         assert resolve_unit(None) is Unit.UNKNOWN

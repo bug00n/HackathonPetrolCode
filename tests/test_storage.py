@@ -5,8 +5,9 @@ from datetime import datetime
 import pandas as pd
 import pytest
 
-from source.models import SourceKind, Unit
-from source.storage import DataProvider
+from source.config import DataPaths
+from source.contracts import SourceKind, Unit
+from source.data.state import DataProvider
 
 
 @pytest.fixture(scope="module")
@@ -62,10 +63,12 @@ def provider(tmp_path_factory):
         ).to_excel(writer, sheet_name="ПАК", index=False)
 
     return DataProvider(
-        telemetry_paths={"АВТ": avt},
-        pak_path=pak,
-        lims_path=lims,
-        tags_path=tags,
+        DataPaths(
+            telemetry={"АВТ": avt},
+            pak=pak,
+            lims=lims,
+            tags=tags,
+        )
     )
 
 

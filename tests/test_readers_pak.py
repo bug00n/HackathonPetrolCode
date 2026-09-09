@@ -5,8 +5,8 @@ from datetime import datetime
 import pandas as pd
 import pytest
 
-from source.models import ReliabilityFlag, SourceKind, Unit
-from source.readers_pak import read_pak
+from source.contracts import ReliabilityFlag, SourceKind, Unit
+from source.data.ingest import read_pak
 
 
 @pytest.fixture(scope="module")

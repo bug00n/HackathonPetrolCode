@@ -1,13 +1,11 @@
-"""Чтение справочника тегов (materials/Теги_хакатон.xlsx).
+"""Нормализация и справочник тегов (DESIGN.md §3: data/prepare.py).
 
-Справочник содержит четыре листа:
-- КИП: описания технологических тегов АВТ и 24-2000;
-- ПАК: поточные анализаторы (сера, расчётная плотность);
-- ВАК: виртуальные анализаторы с формулами;
-- ЛА: перечень лабораторных показателей по точкам отбора.
+Читает справочник «Теги_хакатон.xlsx» (листы КИП и ПАК) и приводит
+единицы измерения к enum. Смысл тега берётся только из справочника
+(требование ТЗ), поэтому неподтверждённые теги не угадываются.
 
-Смысл тега берётся только из справочника (требование ТЗ), поэтому
-неподтверждённые теги помечаются как UNVERIFIED_TAG, а не угадываются.
+Формулы ВАК и перечень ЛА относятся к слою ML (DESIGN §142) и живут
+в ``source/ml/formulas.py``.
 """
 
 from __future__ import annotations
@@ -16,15 +14,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from source.models import SourceKind, TagMeta, Unit
+from source.contracts import SourceKind, TagMeta, Unit
 
-# Названия листов справочника
+# Названия листов справочника, относящихся к backend-нормализации
 SHEET_KIP = "КИП"
 SHEET_PAK = "ПАК"
-SHEET_VAK = "ВАК"
-SHEET_LA = "ЛА"
 
-# Пространства имён
+# Пространства имён тегов (требование плана этапа 0)
 NS_AV = "АВТ"
 NS_GODT = "24-2000"
 
@@ -38,6 +34,11 @@ def _unit_from_raw(raw: object) -> Unit:
         return Unit(text)
     except ValueError:
         return Unit.UNKNOWN
+
+
+def resolve_unit(raw_unit: object) -> Unit:
+    """Публичная функция приведения единицы для читателей данных."""
+    return _unit_from_raw(raw_unit)
 
 
 def _kip_column_mapping(df: pd.DataFrame) -> list[tuple[str, str, str]]:
@@ -108,57 +109,11 @@ def load_tag_dictionary(path: str | Path) -> dict[str, TagMeta]:
     return tags
 
 
-def load_vak_formulas(path: str | Path) -> dict[str, str]:
-    """Читает лист ВАК: тег виртуального анализатора → формула.
-
-    Формулы возвращаются как строки без вычисления: их проверка —
-    отдельная задача (план: «Формулы ВАК требуют проверки»).
-    """
-    if SHEET_VAK not in pd.ExcelFile(path).sheet_names:
-        return {}
-    vak = pd.read_excel(path, sheet_name=SHEET_VAK)
-    formulas: dict[str, str] = {}
-    columns = list(vak.columns)
-    for tag_col, formula_col in zip(columns[0::2], columns[1::2], strict=False):
-        for _, row in vak.iterrows():
-            tag_id = row[tag_col]
-            formula = row[formula_col]
-            if pd.isna(tag_id) or pd.isna(formula):
-                continue
-            formulas[f"{str(tag_id).strip()}"] = str(formula).strip()
-    return formulas
-
-
-def load_lab_parameters(path: str | Path) -> dict[str, list[str]]:
-    """Читает лист ЛА: точка отбора → список лабораторных показателей.
-
-    Заголовки колонок вида «Установка 'АВТ'. Точка отбора '2'. Продукт '...'»
-    служат ключами секций ЛИМС.
-    """
-    if SHEET_LA not in pd.ExcelFile(path).sheet_names:
-        return {}
-    la = pd.read_excel(path, sheet_name=SHEET_LA)
-    result: dict[str, list[str]] = {}
-    for column in la.columns:
-        params = [str(v).strip() for v in la[column].dropna() if str(v).strip()]
-        result[str(column).strip()] = params
-    return result
-
-
-def resolve_unit(raw_unit: object) -> Unit:
-    """Публичная вспомогательная функция для читателей данных."""
-    return _unit_from_raw(raw_unit)
-
-
 __all__ = [
     "NS_AV",
     "NS_GODT",
     "SHEET_KIP",
-    "SHEET_LA",
     "SHEET_PAK",
-    "SHEET_VAK",
-    "load_lab_parameters",
     "load_tag_dictionary",
-    "load_vak_formulas",
     "resolve_unit",
 ]

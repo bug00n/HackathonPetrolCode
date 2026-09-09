@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from source.models import ReliabilityFlag, Sample, SourceKind, TagMeta, Unit
+from source.contracts import ReliabilityFlag, Sample, SourceKind, TagMeta, Unit
 
 
 class TestSample:

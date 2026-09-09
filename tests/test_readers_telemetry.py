@@ -5,7 +5,7 @@ from datetime import datetime
 import pandas as pd
 import pytest
 
-from source.readers_telemetry import (
+from source.data.ingest import (
     iter_telemetry_chunks,
     read_telemetry_csv,
     telemetry_sample,
