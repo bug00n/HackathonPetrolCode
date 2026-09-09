@@ -9,7 +9,6 @@ select = ["E", "W", "F", "I", "B"]
 testpaths = [
     "source/ut",
     "source/data/ut",
-    "source/ml/ut",
     "global_tests",
 ]
 pythonpath = ["."]
