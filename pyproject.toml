@@ -6,8 +6,15 @@ target-version = "py311"
 select = ["E", "W", "F", "I", "B"]
 
 [tool.pytest.ini_options]
-testpaths = ["global_tests", "tests"]
+testpaths = [
+    "source/ut",
+    "source/data/ut",
+    "source/ml/ut",
+    "global_tests",
+]
 pythonpath = ["."]
+addopts = "--import-mode=importlib"
+python_files = ["test_*.py", "*_test.py"]
 markers = [
     "real_data: интеграционные тесты на реальных данных (медленные)",
 ]
