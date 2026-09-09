@@ -214,8 +214,10 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Hackathon data (extracted telemetry, too large for git)
+# Telemetry CSVs are tracked via Git LFS (see .gitattributes)
 data/*.csv
+!data/avt_tags.csv
+!data/242000_tags.csv
 
 # Streamlit
 .streamlit/secrets.toml

@@ -114,7 +114,10 @@ class DataProvider:
         Полезна как smoke-проверка готовности данных перед этапом 1.
         """
         result: dict[str, object] = {}
-        for namespace in self.telemetry_paths:
+        for namespace, fpath in self.telemetry_paths.items():
+            if not Path(fpath).exists():
+                result[namespace] = {"missing": True}
+                continue
             df = self.get_telemetry(namespace)
             result[namespace] = {
                 "rows": len(df),
