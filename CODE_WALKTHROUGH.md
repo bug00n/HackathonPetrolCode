@@ -133,7 +133,7 @@ README не должен быть огромным учебником. Его з
 - `pythonpath = ["."]` - корень проекта добавляется в import path;
 - `--import-mode=importlib` - более безопасный импорт тестов;
 - `-p no:cacheprovider` - pytest не пишет `.pytest_cache`;
-- `--basetemp=.test_tmp/pytest` - временные файлы тестов уходят в `.test_tmp`.
+- `--basetemp=.test_tmp` - временные файлы тестов уходят в `.test_tmp`.
 
 Блок `[tool.mypy]`:
 

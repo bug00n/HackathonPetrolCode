@@ -92,6 +92,6 @@ python -m source.main build-state --dataset data/processed/<dataset_id> --scenar
 
 Полный контракт и границы утверждений описаны в [DESIGN.md](DESIGN.md).
 
-Pytest настроен на локальную временную папку `.test_tmp/pytest` и не пишет
+Pytest настроен на локальную временную папку `.test_tmp` и не пишет
 `.pytest_cache`, поэтому обычная команда `python -m pytest` не должна зависеть от старых
 `.pytest_tmp`/`.pytest_cache` с некорректными правами Windows.
