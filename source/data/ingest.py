@@ -43,6 +43,7 @@ class QualityRead:
 
 
 def _issue(code: str, detail: str, source_ref: str, signal_id: str | None = None) -> Issue:
+    """Create a non-blocking ingestion issue with a common shape."""
     return Issue(
         code=code,
         severity=Severity.WARNING,
@@ -53,10 +54,12 @@ def _issue(code: str, detail: str, source_ref: str, signal_id: str | None = None
 
 
 def _observation_id(source_ref: str) -> str:
+    """Create a deterministic identifier from the source location."""
     return str(uuid5(NAMESPACE_URL, source_ref))
 
 
 def _is_service_column(name: str) -> bool:
+    """Identify empty and pandas-generated index columns in raw CSV data."""
     return not name.strip() or name.strip().startswith("Unnamed:")
 
 
@@ -159,6 +162,7 @@ def normalize_section(section: str) -> str:
 def _mapping(
     raw_name: str, raw_unit: object, stage: Stage, tags: dict[str, TagMeta], source_ref: str
 ) -> tuple[str, str, Validity, list[Issue]]:
+    """Resolve a raw tag and unit while recording every mapping violation."""
     meta = tags.get(raw_name)
     unit = resolve_unit(raw_unit)
     issues: list[Issue] = []

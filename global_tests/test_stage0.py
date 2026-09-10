@@ -32,6 +32,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_all_versioned_configs_load() -> None:
+    """Verify runtime settings and every checked-in scenario load successfully."""
     runtime = load_runtime_config("config/runtime.toml")
     assert runtime.source_timezone == "Europe/Moscow"
     assert runtime.lims_delay_hours == 6
@@ -46,6 +47,7 @@ def test_all_versioned_configs_load() -> None:
 
 
 def test_tag_dictionary_records_unknowns_without_enabling_controls() -> None:
+    """Verify ambiguous tags are retained but cannot enable controls."""
     tags = load_tag_dictionary("config/tags.csv")
     assert len(tags) == 170
     assert all(not tag.controllable for tag in tags.values())
@@ -55,6 +57,7 @@ def test_tag_dictionary_records_unknowns_without_enabling_controls() -> None:
 
 
 def test_serialized_contract_examples_validate() -> None:
+    """Verify the representative serialized state and recommendation contracts."""
     ProcessState.model_validate_json(
         (FIXTURES / "contracts/process_state.json").read_text(encoding="utf-8")
     )
@@ -65,16 +68,19 @@ def test_serialized_contract_examples_validate() -> None:
 
 @pytest.mark.parametrize("name", ["blend_normal", "blend_risk", "blend_missing"])
 def test_model_demo_state_fixtures_validate(name: str) -> None:
+    """Verify each model-demo fixture contains a valid process state and status."""
     fixture = json.loads((FIXTURES / f"model_demo/{name}.json").read_text(encoding="utf-8"))
     ProcessState.model_validate(fixture["state"])
     assert fixture["expected"]["status"] in {"hold", "recommend", "abstain"}
 
 
 def test_model_demo_numbers_match_design() -> None:
+    """Verify fixture sulfur values match the numerical examples in DESIGN.md."""
     normal = load_scenario("config/scenarios/blend_normal.json")
     risk = load_scenario("config/scenarios/blend_risk.json")
 
     def sulfur(scenario, field: str) -> float:
+        """Calculate weighted sulfur for the scenario's current blend."""
         return sum(
             scenario.current_blend_mass_fractions[item.id] * getattr(item.sulfur, field)
             for item in scenario.blend_components
@@ -90,6 +96,7 @@ def test_model_demo_numbers_match_design() -> None:
 
 
 def test_contracts_reject_extra_fields_naive_time_and_nan() -> None:
+    """Verify contracts reject unknown fields, naive timestamps and NaN values."""
     payload = json.loads((FIXTURES / "contracts/process_state.json").read_text(encoding="utf-8"))
     payload["unexpected"] = True
     with pytest.raises(ValidationError):
@@ -116,6 +123,7 @@ def test_contracts_reject_extra_fields_naive_time_and_nan() -> None:
 
 
 def test_candidate_contract_enforces_kind_and_recipe() -> None:
+    """Verify candidate payloads cannot contradict their declared action kind."""
     with pytest.raises(ValidationError):
         CandidateAction(
             id="bad-hold",
@@ -133,6 +141,7 @@ def test_candidate_contract_enforces_kind_and_recipe() -> None:
 
 
 def test_telemetry_is_utc_namespaced_and_reports_conflicts(tmp_path: Path) -> None:
+    """Verify telemetry normalization, namespacing and duplicate conflict reporting."""
     path = tmp_path / "telemetry.csv"
     pd.DataFrame(
         {
@@ -171,6 +180,7 @@ def test_telemetry_is_utc_namespaced_and_reports_conflicts(tmp_path: Path) -> No
 
 
 def test_pak_and_lims_keep_time_semantics_and_invalid_values(tmp_path: Path) -> None:
+    """Verify PAK and LIMS preserve timestamps, invalid values and delay semantics."""
     pak_path = tmp_path / "pak.xlsx"
     pd.DataFrame(
         [
@@ -230,6 +240,7 @@ def test_pak_and_lims_keep_time_semantics_and_invalid_values(tmp_path: Path) -> 
 
 
 def test_build_state_cannot_see_delayed_lims() -> None:
+    """Verify state selection respects measured and publication availability times."""
     quality = pd.read_csv(FIXTURES / "data/quality.csv")
     manifest = DatasetManifest.model_validate_json(
         (FIXTURES / "data/manifest.json").read_text(encoding="utf-8")

@@ -165,6 +165,7 @@ class Observation(ContractModel):
 
     @model_validator(mode="after")
     def validate_times_and_value(self) -> "Observation":
+        """Ensure publication time, value presence and validity agree."""
         if self.available_at < self.measured_at:
             raise ValueError("available_at cannot precede measured_at")
         if self.validity is Validity.VALID and self.value is None:
@@ -183,6 +184,7 @@ class SignalSnapshot(ContractModel):
 
     @model_validator(mode="after")
     def validate_freshness(self) -> "SignalSnapshot":
+        """Require the selected observation and age whenever data is fresh."""
         if self.fresh and (self.selected is None or self.age_seconds is None):
             raise ValueError("fresh snapshot needs a selected observation and age")
         return self
@@ -208,6 +210,7 @@ class CandidateAction(ContractModel):
 
     @model_validator(mode="after")
     def validate_payload(self) -> "CandidateAction":
+        """Check that the candidate payload matches its declared action kind."""
         if self.kind is CandidateKind.HOLD and (self.setpoints or self.blend_mass_fractions):
             raise ValueError("hold candidate cannot contain changes")
         if self.kind is CandidateKind.SETPOINTS and (
@@ -235,6 +238,7 @@ class MetricEstimate(ContractModel):
 
     @model_validator(mode="after")
     def validate_interval(self) -> "MetricEstimate":
+        """Validate interval ordering and the metadata describing its confidence."""
         if self.lower is not None and self.upper is not None and self.lower > self.upper:
             raise ValueError("lower cannot exceed upper")
         if self.interval_kind is IntervalKind.EMPIRICAL and self.interval_level is None:
@@ -279,6 +283,7 @@ class CandidateEvaluation(ContractModel):
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "CandidateEvaluation":
+        """Keep candidate identifiers and feasibility status consistent."""
         candidate_id = self.candidate.id
         if any(item.candidate_id != candidate_id for item in self.assessments):
             raise ValueError("assessment candidate_id mismatch")
@@ -309,6 +314,7 @@ class Recommendation(ContractModel):
 
     @model_validator(mode="after")
     def validate_result(self) -> "Recommendation":
+        """Ensure the selected result matches the recommendation status."""
         if self.status is RecommendationStatus.ABSTAIN:
             if self.selected is not None or not self.reason_codes:
                 raise ValueError("abstain needs selected=None and at least one reason")
@@ -344,6 +350,7 @@ class ControlSpec(ContractModel):
 
     @model_validator(mode="after")
     def validate_enabled(self) -> "ControlSpec":
+        """Require complete limits and evidence for an enabled control."""
         fields = (self.lower, self.upper, self.max_step, self.step)
         if self.enabled and (any(item is None for item in fields) or not self.evidence_ref):
             raise ValueError("enabled control needs limits, step and evidence")
@@ -366,6 +373,7 @@ class ConstraintSpec(ContractModel):
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "ConstraintSpec":
+        """Require evidence and at least one valid lower or upper bound."""
         if self.lower is None and self.upper is None:
             raise ValueError("constraint needs at least one bound")
         if self.lower is not None and self.upper is not None and self.lower > self.upper:
@@ -439,6 +447,7 @@ class TagMeta(ContractModel):
 
     @model_validator(mode="after")
     def validate_mapping(self) -> "TagMeta":
+        """Prevent unsupported mappings from being treated as controllable."""
         if self.mapping_status is MappingStatus.CONFIRMED and not self.evidence_ref:
             raise ValueError("confirmed mapping needs evidence_ref")
         if self.controllable and self.mapping_status is not MappingStatus.CONFIRMED:

@@ -31,6 +31,7 @@ _SOURCE_PRIORITY = {
 
 
 def _observation(row: pd.Series) -> Observation:
+    """Convert one prepared quality-table row into a validated observation."""
     return Observation(
         id=str(row["observation_id"]),
         signal_id=str(row["signal_id"]),

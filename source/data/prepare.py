@@ -125,6 +125,7 @@ def known_feature_order(tags: dict[str, TagMeta]) -> tuple[str, ...]:
 
 
 def _sha256(path: Path) -> str:
+    """Calculate a streaming SHA-256 digest for a source file."""
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -133,6 +134,7 @@ def _sha256(path: Path) -> str:
 
 
 def _source_artifact(path: Path, root: Path) -> SourceArtifact:
+    """Describe one input file for the reproducibility manifest."""
     return SourceArtifact(
         path=path.relative_to(root).as_posix(), sha256=_sha256(path), size_bytes=path.stat().st_size
     )
@@ -153,6 +155,7 @@ def _extract_telemetry(archive: Path, destination: Path) -> Path:
 def _deduplicate_quality(
     observations: tuple[Observation, ...], issues: list[Issue]
 ) -> tuple[Observation, ...]:
+    """Collapse equal quality observations and mark conflicting duplicates."""
     grouped: dict[tuple[object, ...], list[Observation]] = {}
     for item in observations:
         grouped.setdefault((item.source, item.signal_id, item.measured_at), []).append(item)

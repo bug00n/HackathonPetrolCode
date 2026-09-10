@@ -38,6 +38,7 @@ def validate_stage0(root: Path = PROJECT_ROOT) -> dict[str, int]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Parse the CLI command and run the requested stage-0 validation."""
     parser = argparse.ArgumentParser(description="Нефтекод recommendation prototype")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate-stage0", help="validate contracts, configs and fixtures")
