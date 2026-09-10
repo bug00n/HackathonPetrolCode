@@ -10,7 +10,7 @@ testpaths = [
     "global_tests",
 ]
 pythonpath = ["."]
-addopts = "--import-mode=importlib -p no:cacheprovider --basetemp=.test_tmp"
+addopts = "--import-mode=importlib -p no:cacheprovider --basetemp=.test_tmp/pytest"
 python_files = ["test_*.py", "*_test.py"]
 markers = [
     "real_data: интеграционные тесты на реальных данных (медленные)",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -135,9 +136,11 @@ def _sha256(path: Path) -> str:
 
 def _source_artifact(path: Path, root: Path) -> SourceArtifact:
     """Describe one input file for the reproducibility manifest."""
-    return SourceArtifact(
-        path=path.relative_to(root).as_posix(), sha256=_sha256(path), size_bytes=path.stat().st_size
-    )
+    try:
+        artifact_path = path.relative_to(root).as_posix()
+    except ValueError:
+        artifact_path = path.as_posix()
+    return SourceArtifact(path=artifact_path, sha256=_sha256(path), size_bytes=path.stat().st_size)
 
 
 def _extract_telemetry(archive: Path, destination: Path) -> Path:
@@ -279,16 +282,23 @@ def prepare_dataset(materials_dir: Path, config: RuntimeConfig) -> PreparedData:
 
 
 def write_prepared_dataset(data: PreparedData, output_root: Path) -> Path:
-    """Atomically publish the four stage-0 files under ``dataset_id``."""
+    """Atomically publish the stage-2 prepared files under ``dataset_id``."""
     target = output_root / data.manifest.dataset_id
     target.mkdir(parents=True, exist_ok=True)
     manifest_path = target / "manifest.json"
+    feature_order_path = target / "feature_order.json"
     if manifest_path.exists():
         existing = DatasetManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
         if existing.model_dump(exclude={"created_at"}) != data.manifest.model_dump(
             exclude={"created_at"}
         ):
             raise FileExistsError(f"dataset_id collision at {target}")
+        if not feature_order_path.exists():
+            feature_order_path.write_text(
+                json.dumps(list(data.feature_order), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+                newline="\n",
+            )
         return target
     files = {
         "telemetry.csv.gz": data.telemetry,
@@ -304,7 +314,35 @@ def write_prepared_dataset(data: PreparedData, output_root: Path) -> Path:
         data.manifest.model_dump_json(indent=2), encoding="utf-8", newline="\n"
     )
     temporary_manifest.replace(manifest_path)
+    temporary_feature_order = target / ".feature_order.json.tmp"
+    temporary_feature_order.write_text(
+        json.dumps(list(data.feature_order), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+        newline="\n",
+    )
+    temporary_feature_order.replace(feature_order_path)
     return target
+
+
+def load_prepared_dataset(dataset_path: Path) -> PreparedData:
+    """Load a prepared dataset written by :func:`write_prepared_dataset`."""
+    dataset_path = dataset_path.resolve()
+    manifest_path = dataset_path / "manifest.json"
+    telemetry_path = dataset_path / "telemetry.csv.gz"
+    quality_path = dataset_path / "quality.csv.gz"
+    issues_path = dataset_path / "issues.csv.gz"
+    feature_order_path = dataset_path / "feature_order.json"
+    required = (manifest_path, telemetry_path, quality_path, issues_path, feature_order_path)
+    missing = [path.name for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"{dataset_path}: missing prepared dataset files: {missing}")
+    return PreparedData(
+        telemetry=pd.read_csv(telemetry_path),
+        quality=pd.read_csv(quality_path),
+        issues=pd.read_csv(issues_path),
+        manifest=DatasetManifest.model_validate_json(manifest_path.read_text(encoding="utf-8")),
+        feature_order=tuple(json.loads(feature_order_path.read_text(encoding="utf-8"))),
+    )
 
 
 __all__ = [
@@ -312,6 +350,7 @@ __all__ = [
     "canonical_column",
     "issue_frame",
     "known_feature_order",
+    "load_prepared_dataset",
     "quality_frame",
     "prepare_dataset",
     "resolve_unit",

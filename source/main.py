@@ -1,15 +1,17 @@
-"""Small CLI surface implemented at stage 0."""
+"""Small CLI surface implemented for the current backend stages."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
 from source.config import load_runtime_config, load_scenario, load_tag_dictionary
 from source.contracts import DecisionContext, ProcessState, Recommendation
+from source.data import build_state, load_prepared_dataset, prepare_dataset, write_prepared_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -59,8 +61,65 @@ def run_model_demo(scenario_id: str, root: Path = PROJECT_ROOT) -> Recommendatio
     )
 
 
+def _resolve_path(path: str | Path, root: Path = PROJECT_ROOT) -> Path:
+    """Resolve CLI paths relative to the project root unless they are absolute."""
+    value = Path(path)
+    return value if value.is_absolute() else root / value
+
+
+def _parse_as_of(value: str) -> datetime:
+    """Parse an ISO datetime and accept a trailing Z as UTC."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid ISO datetime: {value}") from exc
+
+
+def prepare_command(
+    materials: str | Path,
+    config_path: str | Path,
+    output: str | Path | None = None,
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Prepare original source files into a reproducible local dataset."""
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = prepare_dataset(_resolve_path(materials, root), config)
+    output_root = _resolve_path(output if output is not None else config.data_dir, root)
+    dataset_path = write_prepared_dataset(data, output_root)
+    manifest = data.manifest
+    return {
+        "dataset_id": manifest.dataset_id,
+        "dataset_path": dataset_path.as_posix(),
+        "row_counts": manifest.row_counts,
+        "time_ranges": {
+            key: None
+            if value is None
+            else [item.isoformat().replace("+00:00", "Z") for item in value]
+            for key, value in manifest.time_ranges.items()
+        },
+        "issues_count": manifest.row_counts.get("issues", 0),
+    }
+
+
+def build_state_command(
+    dataset: str | Path,
+    scenario: str | Path,
+    as_of: datetime,
+    config_path: str | Path = "config/runtime.toml",
+    root: Path = PROJECT_ROOT,
+) -> ProcessState:
+    """Build a ProcessState from a prepared dataset and a checked-in scenario."""
+    config = load_runtime_config(_resolve_path(config_path, root))
+    scenario_path = Path(scenario)
+    if not scenario_path.suffix:
+        scenario_path = Path("config/scenarios") / f"{scenario}.json"
+    scenario_config = load_scenario(_resolve_path(scenario_path, root))
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    return build_state(data, as_of, scenario_config, config)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Parse the CLI command and run the requested stage-0 validation."""
+    """Parse the CLI command and run the requested backend command."""
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="Нефтекод recommendation prototype")
@@ -72,15 +131,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("blend_normal", "blend_risk", "blend_missing"),
         help="scenario id from config/scenarios",
     )
+    prepare = subparsers.add_parser(
+        "prepare", help="prepare original materials into data/processed"
+    )
+    prepare.add_argument("--materials", default="materials", help="directory with original files")
+    prepare.add_argument("--config", default="config/runtime.toml", help="runtime config path")
+    prepare.add_argument("--output", default=None, help="prepared dataset root")
+    state = subparsers.add_parser("build-state", help="build a ProcessState from prepared data")
+    state.add_argument("--dataset", required=True, help="prepared dataset directory")
+    state.add_argument("--scenario", default="history", help="scenario id or JSON path")
+    state.add_argument(
+        "--as-of", required=True, type=_parse_as_of, help="timezone-aware ISO datetime"
+    )
+    state.add_argument("--config", default="config/runtime.toml", help="runtime config path")
     args = parser.parse_args(argv)
-    if args.command == "validate-stage0":
-        summary = validate_stage0()
-        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-        return 0
-    if args.command == "run-model-demo":
-        recommendation = run_model_demo(args.scenario)
-        print(recommendation.model_dump_json(indent=2))
-        return 0
+    try:
+        if args.command == "validate-stage0":
+            validation_result = validate_stage0()
+            print(json.dumps(validation_result, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "run-model-demo":
+            recommendation = run_model_demo(args.scenario)
+            print(recommendation.model_dump_json(indent=2))
+            return 0
+        if args.command == "prepare":
+            preparation_result = prepare_command(args.materials, args.config, args.output)
+            print(json.dumps(preparation_result, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "build-state":
+            state_result = build_state_command(args.dataset, args.scenario, args.as_of, args.config)
+            print(state_result.model_dump_json(indent=2))
+            return 0
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 1
 
 

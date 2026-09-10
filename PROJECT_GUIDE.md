@@ -215,7 +215,8 @@ production-загрузчик данных в ноутбуке.
 
 ## 6. Что уже реализовано сейчас
 
-Проект прошел stage 0 и имеет backend-каркас stage 1.
+Проект прошел stage 0, имеет backend-каркас stage 1 и backend-срез stage 2 для
+подготовки оригинальных данных.
 
 ### Stage 0: база данных и контрактов
 
@@ -267,6 +268,25 @@ python -m source.main validate-stage0
 
 Важно: stage 1 пока не является промышленной ML-рекомендацией. Это исполняемый
 backend-контур, куда потом можно подключать настоящие ML-модели.
+
+### Stage 2: подготовка реальных данных
+
+Реализовано:
+
+- CLI-команда `prepare`;
+- запись `data/processed/<dataset_id>/`;
+- сохранение `manifest.json`;
+- сохранение `telemetry.csv.gz`, `quality.csv.gz`, `issues.csv.gz`;
+- сохранение `feature_order.json`;
+- загрузка prepared dataset обратно через `load_prepared_dataset`;
+- CLI-команда `build-state`;
+- сбор `ProcessState` для сценария `history` из подготовленных данных;
+- тесты `global_tests/test_stage2_data.py`;
+- документация `STAGE2.md` и `CODE_WALKTHROUGH.md`.
+
+Важно: stage 2 не обучает ML-модель и не делает промышленную рекомендацию. Он
+делает входную data-границу воспроизводимой, чтобы ML и backend работали на одном
+подготовленном датасете.
 
 ---
 
@@ -343,6 +363,25 @@ runs/<run_id>/
 - `result.json` - итоговая рекомендация.
 
 Папка `runs/` не коммитится.
+
+### Подготовить оригинальные данные
+
+```bash
+python -m source.main prepare --materials materials --config config/runtime.toml
+```
+
+Команда пишет prepared dataset в `data/processed/<dataset_id>/` и печатает
+короткий JSON-summary: `dataset_id`, путь, количество строк, диапазоны времени и
+число issues.
+
+### Собрать состояние на исторический момент
+
+```bash
+python -m source.main build-state --dataset data/processed/<dataset_id> --scenario history --as-of 2025-01-15T10:00:00+03:00
+```
+
+Команда печатает валидный `ProcessState`: что backend знает на момент `as_of`.
+Если значение ещё не было доступно, оно не попадёт в selected observation.
 
 ---
 
@@ -1232,14 +1271,15 @@ abstain
 Важно: UI не должен пересчитывать бизнес-логику. Он только вызывает `run_cycle`
 и отображает `Recommendation`.
 
-### CLI для подготовки данных
+### Улучшение CLI подготовленных данных
 
-Сейчас есть функция `prepare_dataset`, но CLI-команда `prepare` еще не оформлена.
-Нужно будет добавить:
+Команды `prepare` и `build-state` уже оформлены. Следующие улучшения:
 
-```bash
-python -m source.main prepare --materials materials --config config/runtime.toml
-```
+- добавить короткий `--summary` для `build-state`, потому полный `ProcessState`
+  может быть очень большим;
+- добавить команду просмотра `manifest.json` без ручного открытия файла;
+- добавить понятный вывод последних доступных наблюдений по required signals;
+- сохранить совместимость полного JSON-вывода для тестов и интеграции с ML.
 
 ### Подключение ML-модели
 
@@ -1540,6 +1580,8 @@ rg "<{7}|={7}|>{7}" source README.md STAGE1.md PROJECT_GUIDE.md
 - `python -m pytest`;
 - `python -m source.main validate-stage0`;
 - demo-команды stage 1 возвращают ожидаемые статусы;
-- `README.md`, `STAGE1.md` и этот гайд объясняют текущее состояние проекта;
+- stage-2 команды `prepare` и `build-state` работают на fixtures;
+- `README.md`, `STAGE1.md`, `STAGE2.md`, `CODE_WALKTHROUGH.md` и этот гайд
+  объясняют текущее состояние проекта;
 - в коммит не попали `.test_tmp/`, `.pytest_cache/`, `.pytest_tmp/`, `runs/`,
   распакованные данные и случайные артефакты.
