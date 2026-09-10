@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Sequence
 
 from source.config import load_runtime_config, load_scenario, load_tag_dictionary
-from source.contracts import ProcessState, Recommendation
+from source.contracts import DecisionContext, ProcessState, Recommendation
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -37,15 +38,48 @@ def validate_stage0(root: Path = PROJECT_ROOT) -> dict[str, int]:
     }
 
 
+def run_model_demo(scenario_id: str, root: Path = PROJECT_ROOT) -> Recommendation:
+    """Run one deterministic stage-1 model-demo scenario on fixture data."""
+    from source.orchestrator import run_cycle
+
+    config = load_runtime_config(root / "config/runtime.toml")
+    scenario = load_scenario(root / f"config/scenarios/{scenario_id}.json")
+    fixture = json.loads(
+        (root / f"global_tests/fixtures/model_demo/{scenario_id}.json").read_text(encoding="utf-8")
+    )
+    state = ProcessState.model_validate(fixture["state"])
+    return run_cycle(
+        data=None,
+        as_of=state.as_of,
+        model=None,
+        scenario=scenario,
+        config=config,
+        context=DecisionContext(),
+        run_dir=root / config.runs_dir,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse the CLI command and run the requested stage-0 validation."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="Нефтекод recommendation prototype")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate-stage0", help="validate contracts, configs and fixtures")
+    demo = subparsers.add_parser("run-model-demo", help="run a stage-1 model-demo scenario")
+    demo.add_argument(
+        "scenario",
+        choices=("blend_normal", "blend_risk", "blend_missing"),
+        help="scenario id from config/scenarios",
+    )
     args = parser.parse_args(argv)
     if args.command == "validate-stage0":
-        result = validate_stage0()
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        summary = validate_stage0()
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.command == "run-model-demo":
+        recommendation = run_model_demo(args.scenario)
+        print(recommendation.model_dump_json(indent=2))
         return 0
     return 1
 

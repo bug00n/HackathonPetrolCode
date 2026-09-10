@@ -1,0 +1,83 @@
+"""Decision-run journal writer for stage 1."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+from typing import Iterable
+
+from pydantic import BaseModel
+
+from source.contracts import (
+    CandidateEvaluation,
+    DecisionContext,
+    ProcessState,
+    Recommendation,
+    ScenarioConfig,
+)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", newline="\n", dir=path.parent, delete=False
+    ) as stream:
+        stream.write(text)
+        temporary = Path(stream.name)
+    temporary.replace(path)
+
+
+def _json_line(payload: object) -> str:
+    if isinstance(payload, BaseModel):
+        return payload.model_dump_json() + "\n"
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+
+
+def write_run_journal(
+    run_dir: Path,
+    state: ProcessState,
+    scenario: ScenarioConfig,
+    context: DecisionContext,
+    candidates: Iterable[CandidateEvaluation],
+    result: Recommendation,
+) -> Path:
+    """Write a compact reproducible record of one successful run."""
+    target = run_dir / result.run_id
+    target.mkdir(parents=True, exist_ok=True)
+    _atomic_write(
+        target / "metadata.json",
+        json.dumps(
+            {
+                "schema_version": result.schema_version,
+                "run_id": result.run_id,
+                "dataset_id": state.dataset_id,
+                "scenario_id": scenario.id,
+                "model_id": result.model_id,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+    )
+    _atomic_write(
+        target / "input.json",
+        json.dumps(
+            {
+                "state": state.model_dump(mode="json"),
+                "scenario": scenario.model_dump(mode="json"),
+                "context": context.model_dump(mode="json"),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+    )
+    _atomic_write(target / "features.json", json.dumps({"features": []}, indent=2))
+    _atomic_write(target / "trace.jsonl", _json_line({"event": "run_cycle_completed"}))
+    _atomic_write(target / "candidates.jsonl", "".join(_json_line(item) for item in candidates))
+    _atomic_write(target / "result.json", result.model_dump_json(indent=2))
+    return target
+
+
+__all__ = ["write_run_journal"]
