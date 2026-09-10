@@ -214,5 +214,12 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# Extracted and prepared data stay local; materials/data.rar is the canonical LFS source.
+data/*.csv
+data/processed/
+artifacts/
+reports/
+runs/
+
 # Streamlit
 .streamlit/secrets.toml

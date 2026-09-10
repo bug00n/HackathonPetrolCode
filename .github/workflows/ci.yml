@@ -30,5 +30,8 @@ jobs:
           ruff format --check .
           ruff check .
 
+      - name: Run mypy
+        run: mypy source
+
       - name: Run Pytest
         run: pytest

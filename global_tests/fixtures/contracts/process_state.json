@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0",
+  "state_id": "fixture-state-history",
+  "as_of": "2026-01-15T09:00:00Z",
+  "dataset_id": "0123456789ab",
+  "mode": "history",
+  "signals": {
+    "ht:2:Mg.Sulfur": {
+      "selected": {
+        "id": "lims-sulfur-1",
+        "signal_id": "ht:2:Mg.Sulfur",
+        "stage": "ht",
+        "source": "lims",
+        "measured_at": "2026-01-15T08:00:00Z",
+        "available_at": "2026-01-15T08:30:00Z",
+        "value": 8.4,
+        "unit": "mg/kg",
+        "validity": "valid",
+        "source_ref": "fixture/quality.csv#row=2"
+      },
+      "alternatives": [],
+      "age_seconds": 3600.0,
+      "fresh": true,
+      "issues": []
+    }
+  },
+  "issues": []
+}

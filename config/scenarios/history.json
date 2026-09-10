@@ -1,0 +1,30 @@
+{
+  "id": "history",
+  "mode": "history",
+  "required_signals": ["ht:2:Mg.Sulfur"],
+  "controls": [],
+  "constraints": [
+    {
+      "id": "product_sulfur",
+      "metric": "sulfur",
+      "stage": "ht",
+      "lower": null,
+      "upper": 10.0,
+      "unit": "mg/kg",
+      "use_upper_estimate": true,
+      "required": true,
+      "basis": "tz",
+      "evidence_ref": "materials/ТЗ_нефтекод.docx"
+    }
+  ],
+  "blend_components": [],
+  "total_mass_t": null,
+  "current_blend_mass_fractions": {},
+  "active_criteria": ["risk_index", "throughput", "cost_proxy"],
+  "materiality_thresholds": {"risk_index": 0.02, "throughput": 0.02, "cost_proxy": 0.02},
+  "require_upper_bound": true,
+  "action_cooldown_minutes": 60,
+  "assumptions": [
+    "Real setpoint controls are disabled until a validated action model exists."
+  ]
+}

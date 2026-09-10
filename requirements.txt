@@ -1,7 +1,14 @@
-pandas>=2.2.0
-numpy>=1.26.0
-scikit-learn>=1.4.0
-pydantic>=2.6.0
-streamlit>=1.31.0
-pytest>=8.0.0
-ruff>=0.3.0
+pandas>=2.2.0,<3
+numpy>=1.26.0,<2
+pydantic>=2.6.0,<3
+openpyxl>=3.1.0,<4
+tzdata>=2024.1.0
+
+# Development tools
+mypy>=1.13,<2
+pandas-stubs>=2.2.0,<3
+ruff>=0.3.0,<1
+pytest>=8.0.0,<9
+pre-commit>=3.6.0,<5
+types-pytz>=2024.1.0
+types-openpyxl>=0.1.8

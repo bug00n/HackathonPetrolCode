@@ -1,0 +1,19 @@
+{
+  "state": {
+    "schema_version": "1.0",
+    "state_id": "fixture-state-risk",
+    "as_of": "2026-01-15T09:00:00Z",
+    "dataset_id": "modeldemo001",
+    "mode": "model_demo",
+    "signals": {},
+    "issues": []
+  },
+  "expected": {
+    "status": "recommend",
+    "current_sulfur_mg_kg": 13.2,
+    "current_upper_sulfur_mg_kg": 14.2,
+    "selected_sulfur_mg_kg": 8.4,
+    "selected_upper_sulfur_mg_kg": 9.4,
+    "selected_blend_mass_fractions": {"A": 0.9, "B": 0.1}
+  }
+}
