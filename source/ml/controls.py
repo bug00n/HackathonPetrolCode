@@ -205,9 +205,26 @@ def assess_action_capability(
     else:
         if evidence.change_episode_count < minimum_episodes:
             reasons.append("INSUFFICIENT_CHANGE_EPISODES")
+        if not np.isfinite(evidence.change_episode_count) or evidence.change_episode_count < 0:
+            reasons.append("ACTION_EPISODE_COUNT_INVALID")
+        if not all(
+            np.isfinite(value)
+            for value in (
+                evidence.best_lag_minutes,
+                evidence.baseline_mae,
+                evidence.action_model_mae,
+            )
+        ):
+            reasons.append("ACTION_EFFECT_METRICS_NON_FINITE")
+        if evidence.baseline_mae < 0 or evidence.action_model_mae < 0:
+            reasons.append("ACTION_EFFECT_METRICS_INVALID")
         if not 0 <= evidence.best_lag_minutes <= 180:
             reasons.append("ACTION_LAG_OUT_OF_RANGE")
-        if evidence.action_model_mae >= evidence.baseline_mae:
+        if (
+            np.isfinite(evidence.baseline_mae)
+            and np.isfinite(evidence.action_model_mae)
+            and evidence.action_model_mae >= evidence.baseline_mae
+        ):
             reasons.append("ACTION_MODEL_NO_TEMPORAL_GAIN")
     return ActionCapabilityReport(
         supports_actions=not reasons,

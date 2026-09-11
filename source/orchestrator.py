@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pandas as pd
+
 from source.agents.optimizer import evaluate_candidates, generate_candidates
 from source.constraints import check_constraints
 from source.contracts import (
@@ -29,6 +31,8 @@ from source.contracts import (
 )
 from source.explain import build_explanation
 from source.journal import write_run_journal
+from source.ml.features import build_features
+from source.ml.policy import PolicyParameters, assess_change_policy
 
 
 def _model_demo_state(as_of: datetime, scenario: ScenarioConfig) -> ProcessState:
@@ -115,51 +119,6 @@ def _metric_value(
     return None
 
 
-def _criterion_delta(
-    criterion: str,
-    baseline: CandidateEvaluation,
-    candidate: CandidateEvaluation,
-) -> float | None:
-    baseline_value = _metric_value(baseline.assessments, criterion)
-    candidate_value = _metric_value(candidate.assessments, criterion)
-    if baseline_value is None or candidate_value is None:
-        return None
-    if criterion == "throughput":
-        return candidate_value - baseline_value
-    if criterion in {"risk_index", "cost_proxy"}:
-        return baseline_value - candidate_value
-    return None
-
-
-def _has_material_improvement(
-    baseline: CandidateEvaluation,
-    candidate: CandidateEvaluation,
-    scenario: ScenarioConfig,
-) -> bool:
-    for criterion in scenario.active_criteria:
-        delta = _criterion_delta(criterion, baseline, candidate)
-        if delta is None:
-            continue
-        threshold = scenario.materiality_thresholds.get(criterion, 0.0)
-        if delta > threshold:
-            return True
-        if delta < -threshold:
-            return False
-    return False
-
-
-def _cooldown_active(
-    as_of: datetime,
-    scenario: ScenarioConfig,
-    context: DecisionContext,
-) -> bool:
-    if context.last_recommended_at is None or scenario.action_cooldown_minutes <= 0:
-        return False
-    last = context.last_recommended_at.astimezone(UTC)
-    elapsed_seconds = (as_of - last).total_seconds()
-    return elapsed_seconds >= 0 and elapsed_seconds < scenario.action_cooldown_minutes * 60
-
-
 def _select_result(
     evaluations: tuple[CandidateEvaluation, ...],
     scenario: ScenarioConfig,
@@ -176,23 +135,44 @@ def _select_result(
         if not feasible:
             return RecommendationStatus.HOLD, baseline, (), "hold"
         best = min(feasible, key=_required_rank_key)
-        if not _has_material_improvement(baseline, best, scenario):
+        hold_values = {
+            criterion: _metric_value(baseline.assessments, criterion)
+            for criterion in scenario.active_criteria
+        }
+        candidate_values = {
+            criterion: _metric_value(best.assessments, criterion)
+            for criterion in scenario.active_criteria
+        }
+        policy = assess_change_policy(
+            hold_values,
+            candidate_values,
+            scenario.active_criteria,
+            hold_feasible=True,
+            now=as_of,
+            last_recommended_at=context.last_recommended_at,
+            parameters=PolicyParameters(
+                risk=scenario.materiality_thresholds.get("risk_index", 0.0),
+                throughput=scenario.materiality_thresholds.get("throughput", 0.0),
+                cost_proxy=scenario.materiality_thresholds.get("cost_proxy", 0.0),
+                cooldown_minutes=scenario.action_cooldown_minutes,
+            ),
+        )
+        if not policy.allow_change:
             return (
                 RecommendationStatus.HOLD,
                 baseline,
-                ("NO_MATERIAL_IMPROVEMENT",),
-                "no_material_improvement",
+                (policy.reason_code,),
+                policy.reason_code.lower(),
             )
-        if _cooldown_active(as_of, scenario, context):
-            return RecommendationStatus.HOLD, baseline, ("ACTION_COOLDOWN",), "action_cooldown"
         return RecommendationStatus.RECOMMEND, best, ("MATERIAL_IMPROVEMENT",), "recommend"
     if not feasible:
         reasons = _blocking_reason_codes(evaluations) or ("NO_FEASIBLE_CANDIDATE",)
         return RecommendationStatus.ABSTAIN, None, reasons, "no_feasible_candidate"
+    reasons = _blocking_reason_codes((baseline,)) or ("BASELINE_INFEASIBLE",)
     return (
         RecommendationStatus.RECOMMEND,
         min(feasible, key=_required_rank_key),
-        ("QUALITY_LIMIT",),
+        reasons,
         "baseline_infeasible_recommend",
     )
 
@@ -226,13 +206,17 @@ def run_cycle(
     run_dir: Path,
 ) -> Recommendation:
     """Run one backend recommendation cycle and persist its journal."""
-    _ = model
     if as_of.tzinfo is None or as_of.utcoffset() is None:
         raise ValueError("as_of must be timezone-aware")
     as_of = as_of.astimezone(UTC)
+    if model is not None and scenario.mode is OperationMode.HISTORY and data is None:
+        raise ValueError("prepared data is required when a forecast model is supplied")
     state = _build_cycle_state(data, as_of, scenario, config)
+    features: pd.DataFrame | None = None
+    if model is not None and scenario.mode is OperationMode.HISTORY:
+        features = build_features(data, as_of, state, model)
     candidates = generate_candidates(state, scenario, config)
-    evaluations = evaluate_candidates(state, candidates, scenario)
+    evaluations = evaluate_candidates(state, candidates, scenario, features=features, model=model)
     baseline = next(item for item in evaluations if item.candidate.kind is CandidateKind.HOLD)
     status, selected, reason_codes, selection_reason = _select_result(
         evaluations, scenario, context, as_of
@@ -264,7 +248,15 @@ def run_cycle(
         assumptions=tuple(
             dict.fromkeys((*scenario.assumptions, "stage-3 deterministic backend cycle"))
         ),
-        model_id=None,
+        model_id=(
+            (
+                getattr(model.metadata, "model_id", None)
+                if not isinstance(getattr(model, "metadata", None), dict)
+                else model.metadata.get("model_id")
+            )
+            if model is not None
+            else None
+        ),
     )
     write_run_journal(
         run_dir,
@@ -275,6 +267,7 @@ def run_cycle(
         result,
         selection_reason=selection_reason,
         rejection_summary=_rejection_summary(evaluations),
+        features=features,
     )
     return result
 

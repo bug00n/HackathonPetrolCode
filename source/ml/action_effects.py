@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 
 from source.contracts import CandidateAction, CandidateKind, ControlSpec
 from source.ml.controls import JointControlDomain
@@ -123,6 +124,10 @@ def evaluate_linear_action(
             reasons.append("CONTROL_LIMITS_UNCONFIRMED")
         else:
             change_size += abs(delta) / step
+    if not all(isfinite(value) for value in (sulfur, risk, throughput, cost, change_size)) or (
+        sulfur_upper is not None and not isfinite(sulfur_upper)
+    ):
+        reasons.append("NON_FINITE_ACTION_FORECAST")
     if sulfur_upper is None:
         reasons.append("UNCERTAINTY_UNAVAILABLE")
     elif sulfur_upper > sulfur_upper_limit:

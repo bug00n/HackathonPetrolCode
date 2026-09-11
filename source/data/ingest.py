@@ -110,13 +110,13 @@ def read_telemetry_csv(
     for column in [name for name in valid.columns if name != "timestamp"]:
         original = valid[column]
         numeric = pd.to_numeric(original, errors="coerce")
-        bad_value = original.notna() & numeric.isna()
+        bad_value = original.notna() & ~numeric.map(isfinite)
         for row_index in valid.index[bad_value]:
             source_ref = f"{path.as_posix()}#row={row_index + 2};column={column}"
             issues.append(
                 _issue("INVALID_VALUE", "telemetry value is not finite numeric data", source_ref)
             )
-        valid[column] = numeric
+        valid[column] = numeric.mask(bad_value)
 
     valid = _collapse_telemetry_duplicates(valid, path, issues)
     valid = valid.sort_values("timestamp", kind="stable").reset_index(drop=True)

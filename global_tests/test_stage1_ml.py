@@ -93,7 +93,8 @@ def test_model_demo_quality_is_calculated_from_components(
 
     assessment = predict_quality(state, pd.DataFrame(), None, scenario)
 
-    assert assessment.status.value == "ok"
+    assert assessment.status.value == "unavailable"
+    assert "UNASSESSED_REQUIRED_PROPERTY" in {issue.code for issue in assessment.issues}
     assert assessment.metrics["sulfur"].value == pytest.approx(value)
     assert assessment.metrics["sulfur"].upper == pytest.approx(upper)
     assert assessment.metrics["sulfur"].basis.value == "formula"
@@ -107,7 +108,9 @@ def test_missing_component_quality_is_unavailable_not_zero() -> None:
     assert assessment.status.value == "unavailable"
     assert assessment.metrics["sulfur"].value is None
     assert assessment.metrics["sulfur"].upper is None
-    assert {issue.code for issue in assessment.issues} == {"MISSING_REQUIRED_SIGNAL"}
+    assert {"MISSING_REQUIRED_SIGNAL", "UNASSESSED_REQUIRED_PROPERTY"}.issubset(
+        {issue.code for issue in assessment.issues}
+    )
 
 
 def test_stage1_refuses_to_emulate_hybrid_mode() -> None:

@@ -45,34 +45,30 @@ def _metric(evaluation, name: str):
     raise AssertionError(f"metric {name} not found")
 
 
-def test_stage1_holds_when_current_blend_is_feasible(
+def test_stage1_refuses_incomplete_blend_even_when_sulfur_is_feasible(
     runtime_config,
     tmp_path: Path,
 ) -> None:
-    """Normal model-demo scenario should preserve the current recipe."""
+    """Missing T95/cetane prevents an operator-facing hold decision."""
     result = _run_demo(runtime_config, "blend_normal", tmp_path)
 
-    assert result.status is RecommendationStatus.HOLD
-    assert result.selected is not None
-    assert result.selected.candidate.id == "hold"
-    assert result.selected.candidate.blend_mass_fractions == {}
-    assert _metric(result.selected, "sulfur").upper == pytest.approx(9.4)
+    assert result.status is RecommendationStatus.ABSTAIN
+    assert result.selected is None
+    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
 
 
-def test_stage1_recommends_feasible_blend_when_current_violates_sulfur(
+def test_stage1_refuses_risk_blend_without_full_product_spec(
     runtime_config,
     tmp_path: Path,
 ) -> None:
-    """Risk model-demo scenario should select the cheapest feasible recipe on the grid."""
+    """Sulfur remediation is diagnostic only until T95 and cetane are assessed."""
     result = _run_demo(runtime_config, "blend_risk", tmp_path)
 
-    assert result.status is RecommendationStatus.RECOMMEND
+    assert result.status is RecommendationStatus.ABSTAIN
     assert result.baseline is not None
     assert result.baseline.feasible is False
-    assert result.selected is not None
-    assert result.selected.candidate.blend_mass_fractions == {"A": 0.9, "B": 0.1}
-    assert _metric(result.selected, "sulfur").upper == pytest.approx(9.4)
-    assert "QUALITY_LIMIT" in result.reason_codes
+    assert result.selected is None
+    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
 
 
 def test_stage1_abstains_when_required_component_quality_is_missing(
@@ -102,4 +98,4 @@ def test_stage1_writes_journal_files(
     assert (run_path / "result.json").is_file()
     saved = json.loads((run_path / "result.json").read_text(encoding="utf-8"))
     assert saved["run_id"] == result.run_id
-    assert saved["status"] == "recommend"
+    assert saved["status"] == "abstain"
