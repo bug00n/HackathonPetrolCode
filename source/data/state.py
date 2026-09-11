@@ -67,15 +67,26 @@ def build_state(
         candidates = [
             _observation(row) for _, row in visible[visible["signal_id"] == signal_id].iterrows()
         ]
-        candidates.sort(
-            key=lambda item: (item.measured_at, -_SOURCE_PRIORITY[item.source]), reverse=True
-        )
         usable = [
             item
             for item in candidates
             if item.validity is Validity.VALID and item.value is not None
         ]
-        selected = usable[0] if usable else None
+
+        def is_fresh(item: Observation) -> bool:
+            age_seconds = (as_of - item.measured_at).total_seconds()
+            return age_seconds <= config.freshness_minutes.get(item.source, 0) * 60
+
+        fresh_candidates = [item for item in usable if is_fresh(item)]
+        pool = fresh_candidates or usable
+        selected = (
+            min(
+                pool,
+                key=lambda item: (_SOURCE_PRIORITY[item.source], -item.measured_at.timestamp()),
+            )
+            if pool
+            else None
+        )
         issues: list[Issue] = []
         if selected is None:
             issues.append(
@@ -88,12 +99,12 @@ def build_state(
                 )
             )
             age_seconds = None
-            fresh = False
+            selected_is_fresh = False
         else:
             age_seconds = (as_of - selected.measured_at).total_seconds()
             limit_seconds = config.freshness_minutes.get(selected.source, 0) * 60
-            fresh = age_seconds <= limit_seconds
-            if not fresh:
+            selected_is_fresh = age_seconds <= limit_seconds
+            if not selected_is_fresh:
                 issues.append(
                     Issue(
                         code="STALE_REQUIRED_SIGNAL",
@@ -107,7 +118,7 @@ def build_state(
             selected=selected,
             alternatives=tuple(item for item in candidates if item != selected),
             age_seconds=age_seconds,
-            fresh=fresh,
+            fresh=selected_is_fresh,
             issues=tuple(issues),
         )
         state_issues.extend(issues)

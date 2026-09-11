@@ -41,6 +41,19 @@ def _quality_check(
             evidence_ref=constraint.evidence_ref,
             reason_code="UNCERTAINTY_UNAVAILABLE",
         )
+    if metric.unit != constraint.unit:
+        return ConstraintResult(
+            constraint_id=constraint.id,
+            candidate_id=candidate.id,
+            status=ConstraintStatus.UNKNOWN,
+            actual=None,
+            lower=constraint.lower,
+            upper=constraint.upper,
+            unit=metric.unit,
+            basis=constraint.basis,
+            evidence_ref=constraint.evidence_ref,
+            reason_code="UNIT_MISMATCH",
+        )
     actual = metric.upper if constraint.use_upper_estimate else metric.value
     status = ConstraintStatus.PASS
     reason = "OK"

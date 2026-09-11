@@ -1,5 +1,9 @@
 # Stage 5: uncertainty, applicability, policy guardrails
 
+> Актуальный статус: Stage-5 helpers и artifact contract реализованы и покрыты
+> тестами. Локальный Tkinter UI пока вызывает только `run_model_demo`, поэтому не
+> загружает Stage-5 artifact и не демонстрирует historical forecast.
+
 ## Зачем нужен этап
 
 До Stage 5 backend мог работать с точечным прогнозом серы: модель говорит "ожидаю 9.2 mg/kg", а дальше constraints сравнивают это с лимитом. Проблема в том, что точечный прогноз сам по себе слишком смелый: он не говорит, насколько прогноз надежен, похож ли текущий режим на обучающие данные и можно ли вообще использовать модель сейчас.
@@ -11,7 +15,8 @@ Stage 5 добавляет честный слой осторожности:
 - robustness-отчет по стрессовым случаям;
 - materiality/cooldown policy для решения, стоит ли менять рекомендацию.
 
-Это всё еще backend-only. Этап не включает action model, не разрешает управление газом и не делает промышленную оптимизацию уставок.
+Это ML/backend safety layer. Этап не включает action model, не разрешает управление
+газом и не делает промышленную оптимизацию уставок.
 
 ## Что реализовано
 
@@ -125,6 +130,6 @@ python -m source.main run-model-demo blend_missing
 
 Ожидаемо:
 
-- `blend_normal` -> `hold`;
-- `blend_risk` -> `recommend`;
+- `blend_normal` -> `abstain`;
+- `blend_risk` -> `abstain`;
 - `blend_missing` -> `abstain`.

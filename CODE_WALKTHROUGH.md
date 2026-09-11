@@ -11,17 +11,18 @@
 3. `STAGE2.md` - что именно добавил stage 2.
 4. `STAGE3.md` - как backend выбирает результат и отбраковывает кандидатов.
 5. Этот файл - как код устроен по папкам и строкам.
-6. `DESIGN.md` - строгая целевая архитектура.
+6. `DESIGN.md` - целевая архитектура и зафиксированные границы.
 
 ## 1. Главная хронология программы
 
-Сейчас есть три основные CLI-команды:
+Сейчас есть четыре основные CLI-команды и desktop UI:
 
 ```bash
 python -m source.main validate-stage0
 python -m source.main run-model-demo blend_normal
 python -m source.main prepare --materials materials --config config/runtime.toml
 python -m source.main build-state --dataset data/processed/<dataset_id> --scenario history --as-of 2025-01-15T10:00:00+03:00
+python -m source.ui --smoke --scenario blend_risk
 ```
 
 В хронологическом виде backend делает так:
@@ -89,8 +90,9 @@ README не должен быть огромным учебником. Его з
 
 ### `DESIGN.md`
 
-Самый строгий документ. Если `README.md`, `PROJECT_GUIDE.md` или этот файл
-расходятся с `DESIGN.md`, правильным считать `DESIGN.md`.
+Самый строгий документ о контрактах и целевой архитектуре. Для списка реально
+доступных команд приоритет у `README.md`: дизайн также содержит ещё не реализованные
+цели.
 
 ### `IMPLEMENTATION_PLAN.md`
 
@@ -191,11 +193,11 @@ source_timezone = "Europe/Moscow"
 время.
 
 ```toml
-lims_delay_hours = 6.0
+lims_delay_hours = 4.0
 ```
 
 Лабораторный анализ ЛИМС не доступен мгновенно. Если он измерен в 12:00, backend
-считает его доступным только в 18:00 локального времени.
+считает его доступным только в 16:00 локального времени.
 
 ```toml
 horizon_minutes = 60

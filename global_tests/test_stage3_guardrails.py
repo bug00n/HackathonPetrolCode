@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from source.config import load_runtime_config, load_scenario
-from source.contracts import DecisionContext, RecommendationStatus
+from source.contracts import AssessmentStatus, DecisionContext, RecommendationStatus
 from source.orchestrator import run_cycle
 
 AS_OF = datetime(2026, 1, 15, 9, tzinfo=UTC)
@@ -47,28 +47,27 @@ def _baseline_feasible_cost_scenario(cost_threshold: float):
 
 
 def test_stage3_keeps_hold_when_improvement_is_not_material(runtime_config, tmp_path: Path) -> None:
-    """A feasible baseline should not change for a tiny economic proxy improvement."""
+    """An incomplete blend must abstain before materiality can create an action."""
     scenario = _baseline_feasible_cost_scenario(cost_threshold=0.05)
 
     result = _run(scenario, runtime_config, tmp_path)
 
-    assert result.status is RecommendationStatus.HOLD
-    assert result.selected is not None
-    assert result.selected.candidate.id == "hold"
-    assert result.reason_codes == ("NO_MATERIAL_IMPROVEMENT",)
+    assert result.status is RecommendationStatus.ABSTAIN
+    assert result.selected is None
+    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
 
 
 def test_stage3_cooldown_suppresses_repeat_when_baseline_is_feasible(
     runtime_config, tmp_path: Path
 ) -> None:
-    """Cooldown suppresses repeat actions only while holding is safe."""
+    """Cooldown is not evaluated when the product specification is incomplete."""
     scenario = _baseline_feasible_cost_scenario(cost_threshold=0.005)
     context = DecisionContext(last_recommended_at=AS_OF - timedelta(minutes=30))
 
     result = _run(scenario, runtime_config, tmp_path, context)
 
-    assert result.status is RecommendationStatus.HOLD
-    assert result.reason_codes == ("ACTION_COOLDOWN",)
+    assert result.status is RecommendationStatus.ABSTAIN
+    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
 
 
 def test_stage3_cooldown_does_not_hide_quality_violation(runtime_config, tmp_path: Path) -> None:
@@ -78,10 +77,9 @@ def test_stage3_cooldown_does_not_hide_quality_violation(runtime_config, tmp_pat
 
     result = _run(scenario, runtime_config, tmp_path, context)
 
-    assert result.status is RecommendationStatus.RECOMMEND
-    assert result.selected is not None
-    assert result.selected.candidate.kind.value == "blend"
-    assert "QUALITY_LIMIT" in result.reason_codes
+    assert result.status is RecommendationStatus.ABSTAIN
+    assert result.selected is None
+    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
 
 
 def test_stage3_journal_records_rejection_summary(runtime_config, tmp_path: Path) -> None:
@@ -93,8 +91,8 @@ def test_stage3_journal_records_rejection_summary(runtime_config, tmp_path: Path
     metadata = json.loads((run_path / "metadata.json").read_text(encoding="utf-8"))
     trace = json.loads((run_path / "trace.jsonl").read_text(encoding="utf-8"))
 
-    assert metadata["selection_reason"] == "baseline_infeasible_recommend"
-    assert metadata["rejection_summary"]["QUALITY_LIMIT"] >= 1
+    assert metadata["selection_reason"] == "no_feasible_candidate"
+    assert metadata["rejection_summary"]["UNASSESSED_REQUIRED_PROPERTY"] >= 1
     assert trace["selection_reason"] == metadata["selection_reason"]
     assert trace["rejection_summary"] == metadata["rejection_summary"]
 
@@ -104,6 +102,19 @@ def test_stage3_rechecks_selected_candidate_with_same_constraints(
 ) -> None:
     """A selected candidate must fail closed if its repeated hard checks drift."""
     scenario = load_scenario("config/scenarios/blend_normal.json")
+
+    original = __import__(
+        "source.agents.optimizer", fromlist=["assess_blend_candidate"]
+    ).assess_blend_candidate
+
+    def complete_quality(*args):
+        assessments = original(*args)
+        return tuple(
+            item.model_copy(update={"status": AssessmentStatus.OK, "issues": ()})
+            for item in assessments
+        )
+
+    monkeypatch.setattr("source.agents.optimizer.assess_blend_candidate", complete_quality)
     monkeypatch.setattr("source.orchestrator.check_constraints", lambda *args: ())
 
     with pytest.raises(ValueError, match="selected constraint recheck mismatch"):

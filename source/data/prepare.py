@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -283,44 +284,53 @@ def prepare_dataset(materials_dir: Path, config: RuntimeConfig) -> PreparedData:
 
 def write_prepared_dataset(data: PreparedData, output_root: Path) -> Path:
     """Atomically publish the stage-2 prepared files under ``dataset_id``."""
+    output_root.mkdir(parents=True, exist_ok=True)
     target = output_root / data.manifest.dataset_id
-    target.mkdir(parents=True, exist_ok=True)
     manifest_path = target / "manifest.json"
     feature_order_path = target / "feature_order.json"
+    files = {
+        "telemetry.csv.gz": data.telemetry,
+        "quality.csv.gz": data.quality,
+        "issues.csv.gz": data.issues,
+    }
     if manifest_path.exists():
         existing = DatasetManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
         if existing.model_dump(exclude={"created_at"}) != data.manifest.model_dump(
             exclude={"created_at"}
         ):
             raise FileExistsError(f"dataset_id collision at {target}")
-        if not feature_order_path.exists():
-            feature_order_path.write_text(
-                json.dumps(list(data.feature_order), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-                newline="\n",
-            )
+        missing = [
+            path.name
+            for path in (feature_order_path, *(target / name for name in files))
+            if not path.is_file()
+        ]
+        if missing:
+            raise FileExistsError(f"incomplete prepared dataset at {target}: missing {missing}")
         return target
-    files = {
-        "telemetry.csv.gz": data.telemetry,
-        "quality.csv.gz": data.quality,
-        "issues.csv.gz": data.issues,
-    }
-    for name, frame in files.items():
-        temporary = target / f".{name}.tmp"
-        frame.to_csv(temporary, index=False, compression="gzip")
-        temporary.replace(target / name)
-    temporary_manifest = target / ".manifest.json.tmp"
-    temporary_manifest.write_text(
-        data.manifest.model_dump_json(indent=2), encoding="utf-8", newline="\n"
-    )
-    temporary_manifest.replace(manifest_path)
-    temporary_feature_order = target / ".feature_order.json.tmp"
-    temporary_feature_order.write_text(
-        json.dumps(list(data.feature_order), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-        newline="\n",
-    )
-    temporary_feature_order.replace(feature_order_path)
+
+    temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=output_root))
+    try:
+        for name, frame in files.items():
+            frame.to_csv(temporary / name, index=False, compression="gzip")
+        (temporary / "manifest.json").write_text(
+            data.manifest.model_dump_json(indent=2), encoding="utf-8", newline="\n"
+        )
+        (temporary / "feature_order.json").write_text(
+            json.dumps(list(data.feature_order), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+            newline="\n",
+        )
+        required = (
+            temporary / "manifest.json",
+            temporary / "feature_order.json",
+            *(temporary / name for name in files),
+        )
+        if any(not path.is_file() for path in required):
+            raise OSError("prepared dataset publication is incomplete")
+        temporary.replace(target)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
     return target
 
 

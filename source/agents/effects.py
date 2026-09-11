@@ -154,9 +154,27 @@ def assess_blend_candidate(
     sulfur = metrics["sulfur"]
     quality_issues: tuple[Issue, ...] = ()
     quality_status = AssessmentStatus.OK
+    quality_issues = (
+        Issue(
+            code="UNASSESSED_REQUIRED_PROPERTY",
+            severity=Severity.BLOCKING,
+            signal_id="blend:t95",
+            detail="T95 is required for a blend decision but has no model or measurement.",
+            source_ref=f"scenario:{scenario.id}",
+        ),
+        Issue(
+            code="UNASSESSED_REQUIRED_PROPERTY",
+            severity=Severity.BLOCKING,
+            signal_id="blend:cetane_number",
+            detail=(
+                "Cetane number is required for a blend decision but has no model or measurement."
+            ),
+            source_ref=f"scenario:{scenario.id}",
+        ),
+    )
+    quality_status = AssessmentStatus.UNAVAILABLE
     if sulfur.value is None:
-        quality_status = AssessmentStatus.UNAVAILABLE
-        quality_issues = (
+        quality_issues += (
             Issue(
                 code="MISSING_REQUIRED_SIGNAL",
                 severity=Severity.BLOCKING,
@@ -166,8 +184,7 @@ def assess_blend_candidate(
             ),
         )
     elif scenario.require_upper_bound and sulfur.upper is None:
-        quality_status = AssessmentStatus.DEGRADED
-        quality_issues = (
+        quality_issues += (
             Issue(
                 code="UNCERTAINTY_UNAVAILABLE",
                 severity=Severity.BLOCKING,

@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+import pandas as pd
 from pydantic import BaseModel
 
 from source.contracts import (
@@ -44,6 +45,7 @@ def write_run_journal(
     *,
     selection_reason: str = "unknown",
     rejection_summary: dict[str, int] | None = None,
+    features: pd.DataFrame | None = None,
 ) -> Path:
     """Write a compact reproducible record of one successful run."""
     rejection_summary = rejection_summary or {}
@@ -79,7 +81,13 @@ def write_run_journal(
             sort_keys=True,
         ),
     )
-    _atomic_write(target / "features.json", json.dumps({"features": []}, indent=2))
+    feature_records: list[dict[str, object]] = []
+    if features is not None:
+        feature_records = json.loads(features.to_json(orient="records", date_format="iso"))
+    _atomic_write(
+        target / "features.json",
+        json.dumps({"features": feature_records}, ensure_ascii=False, indent=2, allow_nan=False),
+    )
     _atomic_write(
         target / "trace.jsonl",
         _json_line(

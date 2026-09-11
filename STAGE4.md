@@ -1,5 +1,9 @@
 # Stage 4: Hybrid Chain, Blending, Gas Context
 
+> Актуальный статус: blending и hybrid chain остаются модельным контуром. В
+> пользовательском UI доступен model-demo; historical ML forecast и реальные actions
+> в UI пока не подключены.
+
 ## Результат
 
 Stage 4 демонстрирует связанную цепочку:
