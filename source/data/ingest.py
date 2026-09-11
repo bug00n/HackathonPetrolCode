@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import timedelta
+from math import isfinite
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
 import pandas as pd
 
 from source.contracts import (
+    Conversion,
     Issue,
     MappingStatus,
     Observation,
@@ -161,13 +163,15 @@ def normalize_section(section: str) -> str:
 
 def _mapping(
     raw_name: str, raw_unit: object, stage: Stage, tags: dict[str, TagMeta], source_ref: str
-) -> tuple[str, str, Validity, list[Issue]]:
+) -> tuple[str, str, Conversion, Validity, list[Issue]]:
     """Resolve a raw tag and unit while recording every mapping violation."""
     meta = tags.get(raw_name)
-    unit = resolve_unit(raw_unit)
+    source_unit = resolve_unit(raw_unit)
     issues: list[Issue] = []
     validity = Validity.VALID
     signal_id = meta.signal_id if meta else raw_name
+    canonical_unit = meta.canonical_unit if meta else source_unit
+    conversion = meta.conversion if meta else Conversion.NONE
     if meta is None or meta.mapping_status is not MappingStatus.CONFIRMED:
         validity = Validity.INVALID
         issues.append(
@@ -183,17 +187,62 @@ def _mapping(
         issues.append(
             _issue("TAG_STAGE_MISMATCH", "tag stage differs from source", source_ref, signal_id)
         )
-    if unit == Unit.UNKNOWN.value or (meta and meta.canonical_unit != unit):
+    expected_source_unit = resolve_unit(meta.raw_unit) if meta and meta.raw_unit else source_unit
+    if (
+        source_unit == Unit.UNKNOWN.value
+        or expected_source_unit != source_unit
+        or canonical_unit == Unit.UNKNOWN.value
+    ):
         validity = Validity.INVALID
         issues.append(
             _issue(
                 "UNIT_UNCONFIRMED",
-                "source unit is unknown or differs from the canonical dictionary",
+                "source unit is unknown or differs from the confirmed dictionary",
                 source_ref,
                 signal_id,
             )
         )
-    return signal_id, unit, validity, issues
+    elif conversion is Conversion.PPM_MASS_TO_MG_KG and (
+        source_unit != Unit.PPM.value or canonical_unit != Unit.MG_KG.value
+    ):
+        validity = Validity.INVALID
+        issues.append(
+            _issue(
+                "UNIT_CONVERSION_INVALID",
+                "mass-ppm conversion requires ppm input and mg/kg output",
+                source_ref,
+                signal_id,
+            )
+        )
+    elif conversion is Conversion.MASS_PERCENT_TO_MG_KG and (
+        source_unit != Unit.PERCENT_MASS.value or canonical_unit != Unit.MG_KG.value
+    ):
+        validity = Validity.INVALID
+        issues.append(
+            _issue(
+                "UNIT_CONVERSION_INVALID",
+                "mass-percent conversion requires mass% input and mg/kg output",
+                source_ref,
+                signal_id,
+            )
+        )
+    elif conversion is Conversion.NONE and source_unit != canonical_unit:
+        issues.append(
+            _issue(
+                "UNIT_HEADER_OVERRIDDEN",
+                "confirmed indicator semantics override an erroneous source unit header",
+                source_ref,
+                signal_id,
+            )
+        )
+    return signal_id, canonical_unit, conversion, validity, issues
+
+
+def _convert_value(value: float, conversion: Conversion) -> float:
+    """Apply only the two unit conversions explicitly allowed by the contract."""
+    if conversion is Conversion.MASS_PERCENT_TO_MG_KG:
+        return value * 10_000.0
+    return value
 
 
 def read_pak(
@@ -215,7 +264,7 @@ def read_pak(
         raw_name = str(tag_raw).strip()
         raw_unit = raw.iloc[1, col]
         mapping_ref = f"{path.as_posix()}#rows=1:2;columns={col + 1},{col + 2}"
-        signal_id, unit, mapping_validity, mapping_issues = _mapping(
+        signal_id, unit, conversion, mapping_validity, mapping_issues = _mapping(
             raw_name, raw_unit, Stage.HYDROTREATMENT, tags, mapping_ref
         )
         issues.extend(mapping_issues)
@@ -233,12 +282,14 @@ def read_pak(
                 continue
             numeric = pd.to_numeric(pd.Series([value_raw]), errors="coerce").iloc[0]
             validity = mapping_validity
-            value = None if pd.isna(numeric) else float(numeric)
+            value = None if pd.isna(numeric) or not isfinite(float(numeric)) else float(numeric)
             if value is None:
                 validity = Validity.INVALID
                 issues.append(
                     _issue("INVALID_VALUE", "PAK value is not numeric", source_ref, signal_id)
                 )
+            else:
+                value = _convert_value(value, conversion)
             observations.append(
                 Observation(
                     id=_observation_id(source_ref),
@@ -261,7 +312,7 @@ def read_lims(
     path: str | Path,
     tags: dict[str, TagMeta],
     source_timezone: str = "Europe/Moscow",
-    lims_delay_hours: float = 6.0,
+    lims_delay_hours: float = 4.0,
 ) -> QualityRead:
     """Read each LIMS timestamp/value pair and apply publication delay."""
     path = Path(path)
@@ -284,7 +335,7 @@ def read_lims(
         stage = tag_stage(namespace.split(".", 1)[0])
         raw_unit = raw.iloc[_ROW_UNIT, col]
         mapping_ref = f"{path.as_posix()}#rows=1:3;columns={col + 1},{col + 2}"
-        signal_id, unit, mapping_validity, mapping_issues = _mapping(
+        signal_id, unit, conversion, mapping_validity, mapping_issues = _mapping(
             raw_name, raw_unit, stage, tags, mapping_ref
         )
         issues.extend(mapping_issues)
@@ -302,12 +353,14 @@ def read_lims(
                 continue
             numeric = pd.to_numeric(pd.Series([value_raw]), errors="coerce").iloc[0]
             validity = mapping_validity
-            value = None if pd.isna(numeric) else float(numeric)
+            value = None if pd.isna(numeric) or not isfinite(float(numeric)) else float(numeric)
             if value is None:
                 validity = Validity.INVALID
                 issues.append(
                     _issue("INVALID_VALUE", "LIMS value is not numeric", source_ref, signal_id)
                 )
+            else:
+                value = _convert_value(value, conversion)
             observations.append(
                 Observation(
                     id=_observation_id(source_ref),

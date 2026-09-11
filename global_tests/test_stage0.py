@@ -25,7 +25,7 @@ from source.contracts import (
     Validity,
 )
 from source.data.ingest import read_lims, read_pak, read_telemetry_csv
-from source.data.prepare import PreparedData
+from source.data.prepare import PreparedData, known_feature_order
 from source.data.state import build_state
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -35,7 +35,7 @@ def test_all_versioned_configs_load() -> None:
     """Verify runtime settings and every checked-in scenario load successfully."""
     runtime = load_runtime_config("config/runtime.toml")
     assert runtime.source_timezone == "Europe/Moscow"
-    assert runtime.lims_delay_hours == 6
+    assert runtime.lims_delay_hours == 4
     assert runtime.horizon_minutes == 60
     assert runtime.max_candidates == 125
     assert {load_scenario(path).id for path in Path("config/scenarios").glob("*.json")} == {
@@ -46,14 +46,31 @@ def test_all_versioned_configs_load() -> None:
     }
 
 
-def test_tag_dictionary_records_unknowns_without_enabling_controls() -> None:
-    """Verify ambiguous tags are retained but cannot enable controls."""
+def test_tag_dictionary_uses_confirmed_expert_clarifications() -> None:
+    """Verify expert-confirmed mappings, conversion and controllable signals."""
     tags = load_tag_dictionary("config/tags.csv")
     assert len(tags) == 170
-    assert all(not tag.controllable for tag in tags.values())
-    assert tags["24-2000:Mg.Sulfur"].mapping_status is MappingStatus.AMBIGUOUS
-    assert tags["24-2000:Mg.Sulfur"].canonical_unit == Unit.UNKNOWN.value
+    assert {tag.signal_id for tag in tags.values() if tag.controllable} == {
+        "ht:F19",
+        "ht:P8",
+        "ht:T11",
+    }
+    pak_sulfur = tags["24-2000:Mg.Sulfur"]
+    assert pak_sulfur.mapping_status is MappingStatus.CONFIRMED
+    assert pak_sulfur.signal_id == "ht:2:Mg.Sulfur"
+    assert pak_sulfur.canonical_unit == Unit.MG_KG.value
+    assert pak_sulfur.conversion.value == "ppm_mass_to_mg_kg"
     assert tags["ЛИМС:Гидроочистка.2:Mg.Sulfur"].mapping_status is MappingStatus.CONFIRMED
+
+
+def test_ml_feature_order_excludes_unconfirmed_mappings() -> None:
+    """Unknown tags stay inspectable but cannot silently become model inputs."""
+    tags = load_tag_dictionary("config/tags.csv")
+
+    feature_order = known_feature_order(tags)
+
+    assert "ht:2:Mg.Sulfur" in feature_order
+    assert "ht:sulfur" not in feature_order
 
 
 def test_serialized_contract_examples_validate() -> None:
@@ -237,6 +254,66 @@ def test_pak_and_lims_keep_time_semantics_and_invalid_values(tmp_path: Path) -> 
     assert lims.observations[0].available_at - lims.observations[0].measured_at == pd.Timedelta(
         hours=6
     )
+
+
+def test_expert_confirmed_pak_conversion_and_lims_unit_override(tmp_path: Path) -> None:
+    """Apply only the PAK conversion and bad-header override confirmed by experts."""
+    pak_path = tmp_path / "pak_sulfur.xlsx"
+    pd.DataFrame(
+        [
+            ["24-2000:Mg.Sulfur", None],
+            ["ppm", None],
+            [datetime(2026, 1, 15, 12), 7.5],
+        ]
+    ).to_excel(pak_path, header=False, index=False)
+    lims_path = tmp_path / "lims_bad_unit.xlsx"
+    section = "Установка 'АВТ'. Точка отбора '1'. Продукт 'ДТ'"
+    pd.DataFrame(
+        [
+            [section, None],
+            ["50%.T", None],
+            ["кг/м3", None],
+            ["Количество значений:", 1],
+            [datetime(2026, 1, 15, 12), 250.0],
+        ]
+    ).to_excel(lims_path, header=False, index=False)
+    tags = {
+        "24-2000:Mg.Sulfur": TagMeta(
+            signal_id="ht:2:Mg.Sulfur",
+            raw_name="24-2000:Mg.Sulfur",
+            stage="ht",
+            meaning="sulfur",
+            raw_unit="ppm",
+            canonical_unit="mg/kg",
+            conversion="ppm_mass_to_mg_kg",
+            mapping_status="confirmed",
+            controllable=False,
+            evidence_ref="DESIGN §16",
+        ),
+        "ЛИМС:АВТ.1:50%.T": TagMeta(
+            signal_id="avt:1:50%.T",
+            raw_name="ЛИМС:АВТ.1:50%.T",
+            stage="avt",
+            meaning="50 percent boiling temperature",
+            raw_unit="кг/м3",
+            canonical_unit="degC",
+            conversion="none",
+            mapping_status="confirmed",
+            controllable=False,
+            evidence_ref="DESIGN §16",
+        ),
+    }
+
+    pak = read_pak(pak_path, tags)
+    lims = read_lims(lims_path, tags, lims_delay_hours=4)
+
+    assert pak.observations[0].signal_id == "ht:2:Mg.Sulfur"
+    assert pak.observations[0].unit == "mg/kg"
+    assert pak.observations[0].value == pytest.approx(7.5)
+    assert pak.observations[0].validity is Validity.VALID
+    assert lims.observations[0].unit == "degC"
+    assert lims.observations[0].validity is Validity.VALID
+    assert {issue.code for issue in lims.issues} == {"UNIT_HEADER_OVERRIDDEN"}
 
 
 def test_build_state_cannot_see_delayed_lims() -> None:

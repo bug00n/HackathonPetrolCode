@@ -4,7 +4,7 @@
   "preparation_version": "1",
   "created_at": "2026-01-15T09:00:00Z",
   "source_timezone": "Europe/Moscow",
-  "assumptions": ["LIMS availability delayed by 6 hours"],
+  "assumptions": ["LIMS availability delayed by 4 hours"],
   "sources": [
     {
       "path": "global_tests/fixtures/data/quality.csv",

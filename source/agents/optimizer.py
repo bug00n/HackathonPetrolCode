@@ -15,6 +15,7 @@ from source.agents.reliability import assess_reliability
 from source.constraints import check_constraints
 from source.contracts import (
     AgentAssessment,
+    AssessmentStatus,
     CandidateAction,
     CandidateEvaluation,
     CandidateKind,
@@ -23,6 +24,7 @@ from source.contracts import (
     ProcessState,
     RuntimeConfig,
     ScenarioConfig,
+    Severity,
 )
 
 
@@ -52,12 +54,24 @@ def generate_candidates(
     if set(current) != {component_a, component_b} or abs(sum(current.values()) - 1.0) > 1e-9:
         raise ValueError("current blend must contain both components and sum to one")
 
-    candidates = [hold]
+    recipes: list[dict[str, float]] = []
     for step in range(21):
         fraction_b = step / 20
         recipe = {component_a: 1.0 - fraction_b, component_b: fraction_b}
         if all(abs(recipe[key] - current[key]) <= 1e-9 for key in recipe):
             continue
+        recipes.append(recipe)
+
+    candidate_count = 1 + len(recipes)
+    if candidate_count > max_candidates:
+        raise ValueError(
+            f"candidate grid requires {candidate_count} candidates including hold, "
+            f"but max_candidates={max_candidates}"
+        )
+
+    candidates = [hold]
+    for recipe in recipes:
+        fraction_b = recipe[component_b]
         candidates.append(
             CandidateAction(
                 id=f"blend:{component_a}={recipe[component_a]:.2f},{component_b}={fraction_b:.2f}",
@@ -67,27 +81,33 @@ def generate_candidates(
                 is_model_scenario=scenario.mode is OperationMode.MODEL_DEMO,
             )
         )
-        if len(candidates) >= max_candidates:
-            break
     return tuple(candidates)
 
 
-def _metric_value(assessments: tuple[AgentAssessment, ...], name: str) -> float:
+def _metric_value(assessments: tuple[AgentAssessment, ...], name: str) -> float | None:
     for assessment in assessments:
         metric = assessment.metrics.get(name)
         if metric is not None and metric.value is not None:
             return metric.value
-    return 0.0
+    return None
 
 
 def _rank_key(
-    assessments: tuple[AgentAssessment, ...], candidate_id: str
-) -> tuple[float, float, float, float, str]:
+    assessments: tuple[AgentAssessment, ...],
+    candidate_id: str,
+    active_criteria: tuple[str, ...],
+) -> tuple[float, float, float, float, str] | None:
+    values = {
+        name: _metric_value(assessments, name)
+        for name in ("risk_index", "throughput", "cost_proxy", "change_size")
+    }
+    if any(values.get(name) is None for name in active_criteria):
+        return None
     return (
-        _metric_value(assessments, "risk_index"),
-        -_metric_value(assessments, "throughput"),
-        _metric_value(assessments, "cost_proxy"),
-        _metric_value(assessments, "change_size"),
+        values["risk_index"] or 0.0,
+        -(values["throughput"] or 0.0),
+        values["cost_proxy"] or 0.0,
+        values["change_size"] or 0.0,
         candidate_id,
     )
 
@@ -96,12 +116,19 @@ def _candidate_assessments(
     state: ProcessState,
     candidate: CandidateAction,
     scenario: ScenarioConfig,
+    features: pd.DataFrame | None = None,
+    model: object | None = None,
 ) -> tuple[AgentAssessment, ...]:
     if scenario.mode is OperationMode.MODEL_DEMO:
         return assess_blend_candidate(state, candidate, scenario)
     if candidate.kind is not CandidateKind.HOLD:
         raise ValueError("stage-1 history and hybrid modes support hold only")
-    quality = predict_quality(state, pd.DataFrame(), None, scenario)
+    quality = predict_quality(
+        state,
+        pd.DataFrame() if features is None else features,
+        model,
+        scenario,
+    )
     reliability = assess_reliability(state, scenario)
     return (quality, reliability)
 
@@ -110,20 +137,34 @@ def evaluate_candidates(
     state: ProcessState,
     candidates: tuple[CandidateAction, ...],
     scenario: ScenarioConfig,
+    *,
+    features: pd.DataFrame | None = None,
+    model: object | None = None,
 ) -> tuple[CandidateEvaluation, ...]:
     """Evaluate candidates through agents and the single hard-constraint filter."""
     evaluations: list[CandidateEvaluation] = []
     for candidate in candidates:
-        assessments = _candidate_assessments(state, candidate, scenario)
+        assessments = _candidate_assessments(state, candidate, scenario, features, model)
         checks = check_constraints(state, candidate, assessments, scenario)
-        feasible = bool(checks) and all(item.status is ConstraintStatus.PASS for item in checks)
+        rank_key = _rank_key(assessments, candidate.id, scenario.active_criteria)
+        assessments_available = all(
+            assessment.status is not AssessmentStatus.UNAVAILABLE
+            and all(issue.severity is not Severity.BLOCKING for issue in assessment.issues)
+            for assessment in assessments
+        )
+        feasible = (
+            bool(checks)
+            and all(item.status is ConstraintStatus.PASS for item in checks)
+            and assessments_available
+            and rank_key is not None
+        )
         evaluations.append(
             CandidateEvaluation(
                 candidate=candidate,
                 assessments=assessments,
                 checks=checks,
                 feasible=feasible,
-                rank_key=_rank_key(assessments, candidate.id) if feasible else None,
+                rank_key=rank_key if feasible else None,
             )
         )
     return tuple(evaluations)
