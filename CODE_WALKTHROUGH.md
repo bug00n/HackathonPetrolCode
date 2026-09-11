@@ -9,8 +9,9 @@
 1. `README.md` - что проект умеет сейчас.
 2. `PROJECT_GUIDE.md` - общая картина и обязанности backend.
 3. `STAGE2.md` - что именно добавил stage 2.
-4. Этот файл - как код устроен по папкам и строкам.
-5. `DESIGN.md` - строгая целевая архитектура.
+4. `STAGE3.md` - как backend выбирает результат и отбраковывает кандидатов.
+5. Этот файл - как код устроен по папкам и строкам.
+6. `DESIGN.md` - строгая целевая архитектура.
 
 ## 1. Главная хронология программы
 
@@ -18,6 +19,7 @@
 
 ```bash
 python -m source.main validate-stage0
+python -m source.main run-model-demo blend_normal
 python -m source.main prepare --materials materials --config config/runtime.toml
 python -m source.main build-state --dataset data/processed/<dataset_id> --scenario history --as-of 2025-01-15T10:00:00+03:00
 ```
@@ -33,6 +35,7 @@ source.main
 -> prepare: читает materials и пишет data/processed/<dataset_id>
 -> build-state: читает data/processed/<dataset_id>
 -> собирает ProcessState на момент as_of
+-> run-model-demo: генерирует кандидатов, проверяет constraints и пишет журнал
 -> печатает JSON
 ```
 
@@ -1478,9 +1481,10 @@ from source.data import build_state, prepare_dataset
 
 Agents - это будущий слой оценок качества, надёжности и вариантов действий.
 
-В текущей ветке stage 2 основной рабочий поток идёт через data preparation и
-`build_state`. Agent-файлы есть, но полноценный orchestrator/recommendation cycle
-на реальной истории ещё не подключён.
+После stage 2 основной data-поток идёт через `prepare` и `build_state`. После
+stage 3 demo-cycle дополнительно прогоняет кандидатов через constraints, ranking
+guardrails и журналирование. На реальной истории orchestrator всё ещё не меняет
+промышленные уставки.
 
 ### `source/agents/optimizer.py`
 
@@ -1588,6 +1592,7 @@ global_tests/
 ├── test_stage0.py
 ├── test_stage1_ml.py
 ├── test_stage2_data.py
+├── test_stage3_guardrails.py
 ├── test_formula_inventory.py
 └── fixtures/
 ```
@@ -1627,6 +1632,19 @@ global_tests/
 - запускает `build-state` с несуществующим dataset;
 - ожидает exit code `1`;
 - проверяет понятную ошибку.
+
+### `test_stage3_guardrails.py`
+
+Проверяет новый stage 3.
+
+Главные сценарии:
+
+- feasible baseline остаётся `hold`;
+- materiality threshold не даёт рекомендовать слишком маленькое улучшение;
+- cooldown подавляет повторную рекомендацию, когда baseline безопасен;
+- cooldown не скрывает нарушение качества;
+- journal сохраняет `selection_reason` и `rejection_summary`;
+- selected повторно проверяется через `check_constraints()`.
 
 ### `fixtures`
 
@@ -1736,3 +1754,80 @@ raw materials -> prepared dataset -> ProcessState -> future ML/recommendation
 
 На текущей стадии самая ценная работа backend - сделать эту цепочку честной,
 проверяемой и воспроизводимой.
+
+## 21. Что изменил Stage 3 в коде
+
+Stage 3 касается не подготовки данных, а принятия решения в demo-cycle.
+
+Хронология `run-model-demo` теперь такая:
+
+```text
+source.main
+-> run_model_demo_command()
+-> run_cycle()
+-> _build_cycle_state()
+-> generate_candidates()
+-> evaluate_candidates()
+-> check_constraints() для каждого кандидата
+-> _select_result()
+-> _recheck_selected()
+-> build_explanation()
+-> write_run_journal()
+```
+
+### `source/orchestrator.py`
+
+`run_cycle()` - главный проводник одного запуска.
+
+После Stage 3 он делает не только "сгенерировать и выбрать", а полный безопасный
+контур:
+
+1. Собирает `ProcessState`.
+2. Создаёт кандидатов через `generate_candidates()`.
+3. Оценивает кандидатов через `evaluate_candidates()`.
+4. Находит baseline-кандидата `hold`.
+5. Выбирает итог через `_select_result()`.
+6. Повторно проверяет selected через `_recheck_selected()`.
+7. Формирует `Recommendation`.
+8. Пишет журнал.
+
+`_select_result()` содержит правила:
+
+- baseline feasible и улучшения нет -> `hold`;
+- baseline feasible и улучшение меньше threshold -> `hold`;
+- baseline feasible и cooldown активен -> `hold`;
+- baseline feasible и улучшение существенное -> `recommend`;
+- baseline infeasible и есть feasible альтернатива -> `recommend`;
+- baseline infeasible и альтернатив нет -> `abstain`.
+
+`_recheck_selected()` нужен как fail-closed защита. Если selected в момент выбора
+считался feasible, но повторная проверка через тот же `check_constraints()` дала
+другой результат, backend падает с `ValueError`. Это лучше, чем молча записать
+сомнительную рекомендацию.
+
+### `source/constraints.py`
+
+Это единственное место hard checks.
+
+Stage 3 специально держит это правило жёстким: `orchestrator` выбирает между уже
+проверенными кандидатами, но не придумывает собственные ограничения.
+
+### `source/journal.py`
+
+В журнал добавлены:
+
+- `selection_reason` - короткая причина выбора;
+- `rejection_summary` - сколько кандидатов отлетело по каждому `reason_code`;
+- trace-событие с теми же полями.
+
+`candidates.jsonl` остаётся полным списком кандидатов и их checks.
+
+### `global_tests/test_stage3_guardrails.py`
+
+Тесты Stage 3 проверяют именно поведение guardrails:
+
+- feasible baseline остаётся `hold`;
+- cooldown подавляет повторную рекомендацию только когда baseline безопасен;
+- cooldown не скрывает нарушение качества;
+- journal пишет summary причин отбраковки;
+- selected повторно проходит constraints.

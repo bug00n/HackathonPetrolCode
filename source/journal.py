@@ -1,4 +1,4 @@
-"""Decision-run journal writer for stage 1."""
+"""Decision-run journal writer."""
 
 from __future__ import annotations
 
@@ -41,8 +41,12 @@ def write_run_journal(
     context: DecisionContext,
     candidates: Iterable[CandidateEvaluation],
     result: Recommendation,
+    *,
+    selection_reason: str = "unknown",
+    rejection_summary: dict[str, int] | None = None,
 ) -> Path:
     """Write a compact reproducible record of one successful run."""
+    rejection_summary = rejection_summary or {}
     target = run_dir / result.run_id
     target.mkdir(parents=True, exist_ok=True)
     _atomic_write(
@@ -54,6 +58,8 @@ def write_run_journal(
                 "dataset_id": state.dataset_id,
                 "scenario_id": scenario.id,
                 "model_id": result.model_id,
+                "selection_reason": selection_reason,
+                "rejection_summary": rejection_summary,
             },
             ensure_ascii=False,
             indent=2,
@@ -74,7 +80,17 @@ def write_run_journal(
         ),
     )
     _atomic_write(target / "features.json", json.dumps({"features": []}, indent=2))
-    _atomic_write(target / "trace.jsonl", _json_line({"event": "run_cycle_completed"}))
+    _atomic_write(
+        target / "trace.jsonl",
+        _json_line(
+            {
+                "event": "run_cycle_completed",
+                "status": result.status.value,
+                "selection_reason": selection_reason,
+                "rejection_summary": rejection_summary,
+            }
+        ),
+    )
     _atomic_write(target / "candidates.jsonl", "".join(_json_line(item) for item in candidates))
     _atomic_write(target / "result.json", result.model_dump_json(indent=2))
     return target

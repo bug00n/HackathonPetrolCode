@@ -215,8 +215,8 @@ production-загрузчик данных в ноутбуке.
 
 ## 6. Что уже реализовано сейчас
 
-Проект прошел stage 0, имеет backend-каркас stage 1 и backend-срез stage 2 для
-подготовки оригинальных данных.
+Проект прошел stage 0, имеет backend-каркас stage 1, backend-срез stage 2 для
+подготовки оригинальных данных и guardrails stage 3 для выбора безопасного результата.
 
 ### Stage 0: база данных и контрактов
 
@@ -288,6 +288,24 @@ backend-контур, куда потом можно подключать нас
 делает входную data-границу воспроизводимой, чтобы ML и backend работали на одном
 подготовленном датасете.
 
+### Stage 3: constraints и guardrails выбора
+
+Реализовано:
+
+- единый hard-constraint фильтр через `check_constraints()`;
+- сохранение checks для каждого кандидата;
+- запрет ранжировать infeasible кандидатов;
+- summary причин отбраковки по `reason_code`;
+- повторная проверка selected перед записью результата;
+- materiality threshold, чтобы не рекомендовать микроскопические улучшения;
+- cooldown, который подавляет повторные рекомендации только если baseline безопасен;
+- тесты `global_tests/test_stage3_guardrails.py`;
+- документация `STAGE3.md`.
+
+Важно: stage 3 всё ещё не подключает ML-модель. Он делает backend-решение
+строже и объяснимее, но не доказывает эффект реальных промышленных управляющих
+действий.
+
 ---
 
 ## 7. Что можно сделать программой прямо сейчас
@@ -357,7 +375,7 @@ runs/<run_id>/
 
 - `metadata.json` - общая информация о запуске;
 - `input.json` - состояние, сценарий, контекст;
-- `features.json` - пока пустой список признаков для stage 1;
+- `features.json` - пока пустой список признаков для текущего demo-cycle;
 - `trace.jsonl` - trace цикла;
 - `candidates.jsonl` - все кандидаты и их проверки;
 - `result.json` - итоговая рекомендация.
@@ -397,6 +415,12 @@ python -m pytest
 
 ```bash
 python -m pytest global_tests/test_stage1_cycle.py
+```
+
+Проверка только stage 3:
+
+```bash
+python -m pytest global_tests/test_stage3_guardrails.py
 ```
 
 Линтер:
@@ -1293,7 +1317,8 @@ abstain
 
 ### Улучшение журнала
 
-Сейчас журнал stage 1 компактный. Позже нужно будет сохранять:
+Сейчас журнал demo-cycle компактный, но уже сохраняет `selection_reason`,
+`rejection_summary`, candidates и итоговый result. Позже нужно будет сохранять:
 
 - хеши config/scenario/model;
 - timings;
@@ -1347,7 +1372,9 @@ global_tests/
 
 - `test_stage0.py`;
 - `test_formula_inventory.py`;
-- `test_stage1_cycle.py`.
+- `test_stage1_cycle.py`;
+- `test_stage2_data.py`;
+- `test_stage3_guardrails.py`.
 
 ---
 
@@ -1579,9 +1606,46 @@ rg "<{7}|={7}|>{7}" source README.md STAGE1.md PROJECT_GUIDE.md
 - `python -m mypy source`;
 - `python -m pytest`;
 - `python -m source.main validate-stage0`;
-- demo-команды stage 1 возвращают ожидаемые статусы;
+- demo-команды stage 1/3 возвращают ожидаемые статусы;
 - stage-2 команды `prepare` и `build-state` работают на fixtures;
 - `README.md`, `STAGE1.md`, `STAGE2.md`, `CODE_WALKTHROUGH.md` и этот гайд
   объясняют текущее состояние проекта;
 - в коммит не попали `.test_tmp/`, `.pytest_cache/`, `.pytest_tmp/`, `runs/`,
   распакованные данные и случайные артефакты.
+
+---
+
+## 34. Что добавляет Stage 3
+
+Stage 3 делает backend-cycle строже. Он не добавляет ML-модель, не обучает прогноз
+и не оптимизирует реальные уставки. Его задача - закрыть опасную дыру между
+"кандидат посчитался" и "кандидата можно показать оператору".
+
+После Stage 3 backend обязан:
+
+- проверять каждого кандидата через единый `check_constraints()`;
+- сохранять hard checks в `CandidateEvaluation`;
+- не ранжировать infeasible кандидатов;
+- объяснять, почему кандидаты были отброшены;
+- повторно проверить selected перед записью результата;
+- учитывать materiality, чтобы не рекомендовать микроскопические улучшения;
+- учитывать cooldown, но только если текущий режим безопасен.
+
+Главное правило:
+
+```text
+если baseline нарушает качество, cooldown не имеет права превратить это в hold
+```
+
+В коде это живёт здесь:
+
+- `source/orchestrator.py` - выбор `hold`/`recommend`/`abstain`;
+- `source/constraints.py` - единственное место hard checks;
+- `source/agents/optimizer.py` - оценка кандидатов и `rank_key`;
+- `source/explain.py` - человеческое объяснение checks и источников границ;
+- `source/journal.py` - metadata/trace/rejection summary;
+- `global_tests/test_stage3_guardrails.py` - regression tests для guardrails.
+
+Если следующий этап будет добавлять ML, он должен встроиться в этот контур, а не
+обходить его. ML может дать прогноз или оценку эффекта действия, но финальное
+решение всё равно должно пройти `check_constraints()` и журналирование.
