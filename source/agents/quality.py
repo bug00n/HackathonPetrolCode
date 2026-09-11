@@ -159,10 +159,43 @@ def _forecast_history_quality(
     predict = getattr(model, "predict", None)
     if not callable(predict):
         raise ValueError("model bundle must expose predict(features)")
+    check_applicability = getattr(model, "check_applicability", None)
+    if getattr(capabilities, "supports_uncertainty", False):
+        if not callable(check_applicability):
+            return _unavailable(
+                state,
+                "APPLICABILITY_UNAVAILABLE",
+                target_signal,
+                "The uncertainty artifact has no applicability check.",
+            )
+        applicability = check_applicability(features)
+        if not getattr(applicability, "available", False):
+            code = str(getattr(applicability, "reason_code", "OUT_OF_DOMAIN"))
+            return _unavailable(
+                state,
+                code,
+                target_signal,
+                "Forecast features are missing or outside the validated training domain.",
+            )
     prediction = float(predict(features)[0])
+    upper: float | None = None
+    interval_kind = IntervalKind.NONE
+    interval_level: float | None = None
+    if getattr(capabilities, "supports_uncertainty", False):
+        predict_upper = getattr(model, "predict_upper", None)
+        if not callable(predict_upper):
+            return _unavailable(
+                state,
+                "UNCERTAINTY_UNAVAILABLE",
+                target_signal,
+                "The artifact declares uncertainty but exposes no upper predictor.",
+            )
+        upper = float(predict_upper(features)[0])
+        interval_kind = IntervalKind.EMPIRICAL
+        interval_level = 0.95
     issues: tuple[Issue, ...] = ()
     status = AssessmentStatus.OK
-    if scenario.require_upper_bound:
+    if scenario.require_upper_bound and upper is None:
         status = AssessmentStatus.DEGRADED
         issues = (
             Issue(
@@ -183,16 +216,19 @@ def _forecast_history_quality(
             "sulfur": MetricEstimate(
                 value=prediction,
                 lower=None,
-                upper=None,
+                upper=upper,
                 unit=target_unit,
                 basis=EstimateBasis.FORECAST,
-                interval_kind=IntervalKind.NONE,
-                interval_level=None,
+                interval_kind=interval_kind,
+                interval_level=interval_level,
                 reference=f"model:{metadata.model_id}",
                 assumptions=(
                     f"{horizon_minutes}-minute point forecast",
                     f"training target source: {metadata.target_source}",
                     "supports_forecast does not imply supports_actions",
+                    "0.95 empirical coverage is not a safety guarantee"
+                    if upper is not None
+                    else "upper estimate unavailable",
                 ),
             )
         },
