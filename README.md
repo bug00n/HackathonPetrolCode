@@ -7,6 +7,7 @@
 - [Гайд по проекту](PROJECT_GUIDE.md) — объяснение с нуля: суть ТЗ, роли backend/ML, объекты, этапы и рабочий процесс.
 - [Stage 1](STAGE1.md) — первый сквозной backend-цикл, demo-сценарии, журнал и ограничения этапа.
 - [Stage 2](STAGE2.md) — как оригинальные материалы превращаются в prepared dataset и `ProcessState`.
+- [Stage 3](STAGE3.md) — hard constraints, причины отбраковки кандидатов, materiality и cooldown.
 - [Code walkthrough](CODE_WALKTHROUGH.md) — папки, файлы и хронология вызовов почти построчно.
 - [ML system design](DESIGN.md#8-ml-неопределённость-и-модель-последствий) — обучение, метрики, анализ ошибок и жизненный цикл модели; общие контракты и данные описаны в том же документе.
 - [Материалы задания](materials/README.md) — ТЗ, схемы и исходные данные.
@@ -23,11 +24,14 @@
 - stage 1: первый backend-цикл для model-demo сценариев через `run-model-demo`;
 - backend-срез stage 2: CLI-команды `prepare` и `build-state`, чтобы оригинальные
   `materials/` можно было превратить в `data/processed/<dataset_id>/` и собрать
-  `ProcessState` для сценария `history`.
+  `ProcessState` для сценария `history`;
+- backend-срез stage 3: более строгий выбор `hold`/`recommend`/`abstain`, единые
+  hard checks, причины отбраковки кандидатов, повторная проверка selected и trace
+  в журнале.
 
 Полноценной ML-модели, промышленного управления реальными уставками и Streamlit UI пока
-нет. Текущий backend уже умеет готовить данные и запускать безопасный demo-каркас, но не
-выдаёт промышленную рекомендацию на реальной истории.
+нет. Текущий backend уже умеет готовить данные и запускать безопасный demo-каркас с
+guardrails, но не выдаёт промышленную рекомендацию на реальной истории.
 
 ## Проверка
 
@@ -47,7 +51,7 @@ python -m mypy source
 словарь известных входных тегов. Неизвестные единицы и управляющие параметры помечены
 `ambiguous`, все реальные управляющие воздействия отключены.
 
-## Demo Stage 1
+## Demo Stage 1/3
 
 ```bash
 python -m source.main run-model-demo blend_normal
@@ -60,6 +64,11 @@ python -m source.main run-model-demo blend_missing
 - `blend_normal` -> `hold`;
 - `blend_risk` -> `recommend`;
 - `blend_missing` -> `abstain`.
+
+Stage 3 не меняет публичные demo-команды. Он делает внутренний выбор строже:
+infeasible-кандидаты не ранжируются, причины отказа сохраняются в журнале, selected
+повторно проверяется через `check_constraints()`, а cooldown не скрывает нарушение
+качества.
 
 ## Stage 2: подготовка реальных данных
 
