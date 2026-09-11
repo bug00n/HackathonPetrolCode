@@ -1673,3 +1673,75 @@ Stage 4 связывает прогноз гидроочистки с модел
 
 В коде Stage 4 живёт в `source/ml/blending.py`, а regression-тесты - в
 `global_tests/test_stage4_blending.py`.
+
+---
+
+## 36. Что добавляет Stage 5
+
+Stage 5 делает ML-прогноз честнее. До этого backend мог иметь только point forecast:
+
+```text
+ожидаемая сера = 9.2 mg/kg
+```
+
+Но одного числа мало. Нужно понимать:
+
+- насколько верхняя граница риска выше point-прогноза;
+- похож ли текущий режим на train-данные;
+- можно ли использовать модель именно сейчас;
+- стоит ли вообще менять рекомендацию, если улучшение слишком маленькое.
+
+Поэтому Stage 5 добавляет три слоя.
+
+### Uncertainty
+
+`source/ml/uncertainty.py` строит empirical upper estimate уровня `0.95`.
+
+Простыми словами:
+
+```text
+point = модельное ожидание
+upper = осторожная верхняя оценка
+```
+
+Если constraint требует серу `<= 10`, backend должен смотреть на `upper`, а не только
+на point. Если upper нет, это не pass. Это `UNCERTAINTY_UNAVAILABLE`.
+
+### Applicability
+
+`ModelBundle.check_applicability()` проверяет, не вышли ли входные признаки за
+train-only bounds.
+
+Результаты:
+
+- `FEATURES_UNAVAILABLE` - нужного признака нет или он нечисловой;
+- `OUT_OF_DOMAIN` - признак есть, но режим не похож на train-данные;
+- available - можно использовать forecast.
+
+Это важно: модель не должна уверенно отвечать там, где она не обучалась.
+
+### Policy Guardrails
+
+`source/ml/policy.py` решает не качество рецепта, а вопрос:
+
+```text
+достаточно ли отличие кандидата от hold, чтобы вообще давать новую рекомендацию
+```
+
+Правила:
+
+- маленькое улучшение не создает рекомендацию;
+- изменение только `change_size` не считается полезным;
+- cooldown подавляет повторные рекомендации только когда hold безопасен;
+- если hold нарушает hard constraint, cooldown не имеет права скрыть нарушение.
+
+### Где это в коде
+
+- `source/ml/uncertainty.py` - calibration, upper bound, applicability, robustness;
+- `source/ml/policy.py` - materiality/cooldown policy;
+- `source/ml/artifacts.py` - `supports_uncertainty`, `predict_upper`, `check_applicability`;
+- `source/agents/quality.py` - осторожное применение uncertainty в history mode;
+- `global_tests/test_stage5_uncertainty_policy.py` - regression tests.
+
+Stage 5 всё ещё не включает реальное управление установкой. Газ, setpoint-ы и action
+model остаются вне разрешенных действий backend.

@@ -1,89 +1,130 @@
-# Stage 5: Неопределённость, область применимости и устойчивость
+# Stage 5: uncertainty, applicability, policy guardrails
 
-## Результат
+## Зачем нужен этап
 
-Исторический прогноз серы дополнен эмпирической верхней оценкой уровня `0.95`.
-Quality-agent использует её для ограничения `sulfur <= 10 mg/kg`; если upper или
-область применимости недоступны, результат становится `unknown/unavailable`, а не
-`pass`.
+До Stage 5 backend мог работать с точечным прогнозом серы: модель говорит "ожидаю 9.2 mg/kg", а дальше constraints сравнивают это с лимитом. Проблема в том, что точечный прогноз сам по себе слишком смелый: он не говорит, насколько прогноз надежен, похож ли текущий режим на обучающие данные и можно ли вообще использовать модель сейчас.
 
-## Обучение без утечки
+Stage 5 добавляет честный слой осторожности:
 
-1. Point-модель и фиксированные временные границы берутся из строгого Stage-2
-   artifact.
-2. HGB quantile-кандидаты обучаются только на train с `loss="quantile"`,
-   `quantile=0.95` и отключённым внутренним случайным early stopping.
-3. Первая половина validation выбирает конфигурацию по pinball loss.
-4. Вторая половина validation вычисляет
-   `shift=max(0, q95(y - upper_raw))`.
-5. Test используется один раз только для coverage и средней ширины.
+- empirical upper estimate уровня `0.95`;
+- проверку области применимости признаков;
+- robustness-отчет по стрессовым случаям;
+- materiality/cooldown policy для решения, стоит ли менять рекомендацию.
 
-Artifact сохраняет calibration split, shift, train-only feature bounds,
-`supports_uncertainty=true`, `supports_actions=false` и поведение OOD.
+Это всё еще backend-only. Этап не включает action model, не разрешает управление газом и не делает промышленную оптимизацию уставок.
 
-## Проверка на полном наборе
+## Что реализовано
 
-Источник: prepared dataset `aacc7c1ab3d9`, PAK sulfur, 189 649 supervised строк,
-54 признака, горизонт 60 минут.
+### Uncertainty
 
-| Показатель | Значение |
-| --- | ---: |
-| Выбранная upper-модель | `hgb_quantile_1` |
-| Selection / calibration | 26 277 / 26 277 строк |
-| Начало calibration | `2025-07-02T08:30:00Z` |
-| Calibration shift | 0.0 mg/kg |
-| Test | 31 819 строк |
-| Test coverage | 0.96342 |
-| Средняя ширина upper − point | 1.94352 mg/kg |
-| Доля test внутри feature domain | 0.63362 |
-| Coverage внутри feature domain | 0.95987 |
-| Средняя ширина внутри domain | 1.96250 mg/kg |
-| Coverage при +0.5 mg/kg measurement error | 0.84327 |
-| Coverage на последней четверти test | 0.97800 |
+Файл `source/ml/uncertainty.py` содержит отдельный слой для верхней оценки прогноза:
 
-Локальный проверенный artifact: `artifacts/models/sulfur-upper-aacc7c1ab3d9`.
-Он не коммитится: модели и полные prepared data исключены из Git.
+- `fit_upper_calibrator()` выбирает upper-модель на первой половине validation и калибрует additive shift на второй половине validation;
+- `evaluate_upper_bounds()` считает held-out coverage и среднюю ширину `upper - point`;
+- `check_applicability()` отклоняет missing, invalid и out-of-domain features;
+- `fit_stage5_uncertainty()` строит uncertainty-capable predictor поверх уже существующей point-модели;
+- `save_stage5_model()` сохраняет artifact с `supports_uncertainty=true` и `supports_actions=false`.
 
-## Admission, OOD и robustness
+Важно: test-часть используется только для финальной оценки качества. Она не участвует в подборе upper-модели или policy.
 
-- `ModelBundle.predict_upper` проверяет feature order, конечность и `upper >= point`.
-- Train-only q0.001/q0.999 по каждому признаку задают консервативный marginal
-  applicability gate. Пропуск даёт `FEATURES_UNAVAILABLE`, выход — `OUT_OF_DOMAIN`.
-- В отчёте отдельно видны nominal test, ошибка измерения `+0.5 mg/kg`, последняя
-  четверть test как простой regime-shift slice и факт 4-часовой задержки ЛИМС.
-- Резкое падение coverage до 0.84327 при систематической ошибке +0.5 показывает,
-  что 0.95 — эмпирическая характеристика истории, не гарантия безопасности.
+### Model Artifact
 
-## Materiality и cooldown
+`source/ml/artifacts.py` теперь умеет обслуживать uncertainty-capable artifact:
 
-- Сравнивается первый различающийся активный критерий.
-- Risk использует абсолютный порог 0.02; throughput и cost — относительные 2%.
-- Различие только в `change_size` не считается улучшением.
-- Cooldown 60 минут подавляет повторное изменение только при feasible hold.
-- Если hold нарушает обязательное ограничение, cooldown и экономический порог не
-  блокируют поиск безопасного действия.
-- `tune_policy` выбирает параметры только по validation replay, сначала минимизируя
-  пропущенные обязательные изменения, затем лишние и общее число действий.
+- `ModelCapabilities.supports_uncertainty`;
+- `ModelBundle.predict_upper(features)`;
+- `ModelBundle.check_applicability(features)`.
 
-## Что остаётся ограничением
+`predict_upper()` проверяет порядок признаков, конечность значений и гарантирует, что `upper >= point`. Если artifact не заявляет uncertainty support, метод падает явно, а не возвращает фиктивную границу.
 
-- Upper coverage зависит от исторического распределения и ухудшается при bias или
-  новом режиме; для production нужен drift monitor и периодическая recalibration.
-- Marginal feature bounds не заменяют полноценную многомерную OOD-модель.
-- Текущий строгий gate пропускает только 63.36% test-строк: это безопасное
-  воздержание, но слишком высокая доля отказов для production. Нужна отдельная
-  калибровка applicability threshold на validation без ослабления missing-data gate.
-- Реальные setpoint-рекомендации всё ещё отключены: Stage 5 не создаёт причинную
-  action-модель и не исправляет неизвестные единицы/пределы `P8/T11/F19`.
-- T95 и цетановое число не имеют валидированных blend/effect моделей, поэтому
-  полное соответствие товарного дизеля не заявляется.
+### Quality-Agent
 
-## Проверка
+`source/agents/quality.py` в `history` mode использует Stage 5 осторожно:
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\ruff.exe check source global_tests
-.\.venv\Scripts\ruff.exe format --check source global_tests
-.\.venv\Scripts\mypy.exe source
-.\.venv\Scripts\python.exe -m source.main validate-stage0
+- если модель поддерживает uncertainty, сначала вызывается applicability gate;
+- missing features дают `FEATURES_UNAVAILABLE`;
+- выход за train-only bounds дает `OUT_OF_DOMAIN`;
+- если upper недоступен, результат становится unavailable/degraded issue, а не pass;
+- constraint по сере использует upper, когда scenario требует верхнюю границу.
+
+### Policy
+
+`source/ml/policy.py` содержит чистые helper-функции без DTO и без CLI:
+
+- `PolicyParameters` задает пороги risk/throughput/cost и cooldown;
+- `assess_change_policy()` решает, является ли отличие кандидата от hold существенным;
+- `tune_policy()` выбирает policy по validation replay.
+
+Правила:
+
+- risk threshold абсолютный, по умолчанию `0.02`;
+- throughput/cost thresholds относительные, по умолчанию `2%`;
+- изменение только `change_size` не считается полезным улучшением;
+- cooldown подавляет повторную рекомендацию только если baseline/hold feasible;
+- если hold нарушает hard constraint, cooldown не скрывает проблему.
+
+### Lazy Facade
+
+`source/ml/__init__.py` экспортирует Stage 5 helper API лениво. Это нужно, чтобы пользователь мог импортировать `source.ml.fit_stage5_uncertainty` или `source.ml.assess_change_policy`, но обычный импорт `source.ml` не тянул тяжелые зависимости раньше времени.
+
+## Поток работы
+
+Логика Stage 5 выглядит так:
+
+```text
+prepared dataset
+-> supervised features
+-> point model artifact
+-> fit_stage5_uncertainty()
+-> calibrated upper predictor
+-> save_stage5_model()
+-> quality.predict_quality()
+-> ModelBundle.check_applicability()
+-> ModelBundle.predict() + predict_upper()
+-> check_constraints()
 ```
+
+Policy flow отдельно:
+
+```text
+hold candidate + best feasible candidate
+-> active ranking criteria
+-> assess_change_policy()
+-> allow recommend / keep hold / cooldown
+```
+
+На текущем этапе эти helper-функции уже покрыты unit tests. Отдельной публичной CLI-команды Stage 5 нет: внешний контракт проекта пока остается прежним.
+
+## Что не реализовано
+
+- Нет causal/action model.
+- Нет реального управления газом.
+- Нет разрешенных промышленных setpoint-рекомендаций.
+- Нет гарантии safety coverage: `0.95` является эмпирической исторической оценкой, а не промышленной гарантией.
+- Applicability bounds являются marginal q0.001/q0.999 по train-признакам, а не полноценной многомерной OOD-моделью.
+- `T95`, цетановое число и полный паспорт товарного дизеля остаются `not_assessed`.
+
+## Как проверять
+
+```bash
+python -m pytest global_tests/test_stage5_uncertainty_policy.py
+python -m pytest global_tests/test_stage4_blending.py
+python -m pytest
+python -m ruff check .
+python -m mypy source
+python -m source.main validate-stage0
+```
+
+Demo-команды должны сохранить прежние статусы:
+
+```bash
+python -m source.main run-model-demo blend_normal
+python -m source.main run-model-demo blend_risk
+python -m source.main run-model-demo blend_missing
+```
+
+Ожидаемо:
+
+- `blend_normal` -> `hold`;
+- `blend_risk` -> `recommend`;
+- `blend_missing` -> `abstain`.

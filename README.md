@@ -9,6 +9,7 @@
 - [Stage 2](STAGE2.md) — как оригинальные материалы превращаются в prepared dataset и `ProcessState`.
 - [Stage 3](STAGE3.md) — hard constraints, причины отбраковки кандидатов, materiality и cooldown.
 - [Stage 4](STAGE4.md) — hybrid chain, model blending и газовые теги как context-only сигналы.
+- [Stage 5](STAGE5.md) — uncertainty, applicability, robustness и policy guardrails без action model.
 - [Code walkthrough](CODE_WALKTHROUGH.md) — папки, файлы и хронология вызовов почти построчно.
 - [ML system design](DESIGN.md#8-ml-неопределённость-и-модель-последствий) — обучение, метрики, анализ ошибок и жизненный цикл модели; общие контракты и данные описаны в том же документе.
 - [Материалы задания](materials/README.md) — ТЗ, схемы и исходные данные.
@@ -31,6 +32,8 @@
   в журнале;
 - stage 4: модельная связка гидроочистка -> блендинг, массовый баланс рецептур и
   gas context для `ht:F9`, `ht:F22`, `ht:Q21` без включения реального управления газом.
+- stage 5: empirical upper estimate для прогноза серы, applicability/OOD gate, robustness
+  reporting и materiality/cooldown policy helpers без включения action model.
 
 Полноценной ML-модели, промышленного управления реальными уставками и Streamlit UI пока
 нет. Текущий backend уже умеет готовить данные и запускать безопасный demo-каркас с
@@ -41,6 +44,11 @@ Stage 4 показывает связанную цепочку и модельн
 диапазонов и модели эффекта. Полная товарная спецификация также не заявлена:
 `T95`, цетановое число и весь паспорт продукта пока `not_assessed`.
 
+Stage 5 добавляет осторожность вокруг ML-прогноза: если artifact поддерживает uncertainty,
+quality-agent сначала проверяет область применимости признаков, потом использует point и
+upper sulfur. Missing/OOD/отсутствующий upper не превращаются в pass. Это не action model:
+backend по-прежнему не рекомендует реальные setpoint-изменения и не управляет газом.
+
 ## Проверка
 
 Нужны Python 3.11, Git LFS и `tar` с поддержкой RAR.
@@ -50,6 +58,7 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 python -m source.main validate-stage0
 python -m pytest
+python -m pytest global_tests/test_stage5_uncertainty_policy.py
 python -m ruff check .
 python -m ruff format --check .
 python -m mypy source
