@@ -29,6 +29,7 @@ class ModelCapabilities(BaseModel):
 
     supports_forecast: bool
     supports_actions: bool
+    supports_uncertainty: bool = False
 
 
 class ModelMetadata(BaseModel):
@@ -134,6 +135,51 @@ class ModelBundle:
         if not np.isfinite(prediction).all():
             raise ValueError("predictor returned a non-finite value")
         return prediction
+
+    def predict_upper(self, features: pd.DataFrame) -> np.ndarray:
+        """Return a validated empirical upper estimate when the artifact supports it."""
+        if not self.metadata.capabilities.supports_uncertainty:
+            raise ValueError("model artifact does not declare uncertainty support")
+        actual = tuple(str(name) for name in features.columns)
+        if actual != self.metadata.feature_names:
+            raise ValueError(
+                f"feature order mismatch: expected {self.metadata.feature_names}, received {actual}"
+            )
+        predict_upper = getattr(self.predictor, "predict_upper", None)
+        if not callable(predict_upper):
+            raise ValueError("uncertainty-capable predictor must expose predict_upper(features)")
+        prediction = np.asarray(predict_upper(features), dtype=float)
+        if prediction.shape != (len(features),) or not np.isfinite(prediction).all():
+            raise ValueError("upper predictor must return one finite value per feature row")
+        point = self.predict(features)
+        if np.any(prediction < point):
+            raise ValueError("upper prediction cannot be below point prediction")
+        return prediction
+
+    def check_applicability(self, features: pd.DataFrame) -> object:
+        """Check persisted train-only feature bounds before a Stage-5 forecast."""
+        from source.ml.uncertainty import ApplicabilityResult, check_applicability
+
+        raw_bounds = self.metadata.applicability.get("feature_bounds")
+        if not isinstance(raw_bounds, Mapping):
+            return ApplicabilityResult(False, "APPLICABILITY_UNAVAILABLE")
+        if len(features) != 1:
+            raise ValueError("applicability check requires exactly one feature row")
+        bounds: dict[str, tuple[float, float]] = {}
+        for name in self.feature_names:
+            value = raw_bounds.get(name)
+            if (
+                not isinstance(value, Sequence)
+                or isinstance(value, (str, bytes))
+                or len(value) != 2
+            ):
+                return ApplicabilityResult(False, "APPLICABILITY_UNAVAILABLE", (name,))
+            bounds[name] = (float(value[0]), float(value[1]))
+        row = features.iloc[0]
+        values = {
+            name: None if pd.isna(row[name]) else float(row[name]) for name in self.feature_names
+        }
+        return check_applicability(values, bounds)
 
 
 def sha256_file(path: Path) -> str:
