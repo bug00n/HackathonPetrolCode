@@ -414,7 +414,7 @@ class DecisionContext(ContractModel):
 
 class RuntimeConfig(ContractModel):
     source_timezone: str = "Europe/Moscow"
-    lims_delay_hours: NonNegativeFloat = 6.0
+    lims_delay_hours: NonNegativeFloat = 4.0
     freshness_minutes: dict[SourceKind, PositiveInt] = Field(
         default_factory=lambda: {
             SourceKind.TELEMETRY: 20,

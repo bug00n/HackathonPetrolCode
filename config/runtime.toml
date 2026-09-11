@@ -1,5 +1,5 @@
 source_timezone = "Europe/Moscow"
-lims_delay_hours = 6.0
+lims_delay_hours = 4.0
 horizon_minutes = 60
 seed = 42
 max_candidates = 125
