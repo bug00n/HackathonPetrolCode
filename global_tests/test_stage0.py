@@ -43,6 +43,7 @@ def test_all_versioned_configs_load() -> None:
         "blend_normal",
         "blend_risk",
         "blend_missing",
+        "hybrid_blend",
     }
 
 
