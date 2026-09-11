@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -11,10 +12,16 @@ from source.contracts import (
     EstimateBasis,
     IntervalKind,
     MetricEstimate,
+    Stage,
+    TagMeta,
     Unit,
 )
 
 FRACTION_TOLERANCE = 1e-9
+GAS_CONTEXT_SIGNAL_IDS = ("ht:F9", "ht:F22", "ht:Q21")
+GAS_CONTEXT_REASON = (
+    "context_only: gas signals are observed process context, not enabled action controls"
+)
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,44 @@ class BlendOption:
             self.change_size,
             self.recipe_id,
         )
+
+
+@dataclass(frozen=True)
+class GasContextSignal:
+    """Observed gas signal metadata that is deliberately not an action control."""
+
+    signal_id: str
+    meaning: str
+    unit: str
+    evidence_ref: str
+    action_enabled: Literal[False]
+    reason: str
+
+
+def collect_gas_context(
+    tag_dictionary: Mapping[str, TagMeta],
+    signal_ids: tuple[str, ...] = GAS_CONTEXT_SIGNAL_IDS,
+) -> tuple[GasContextSignal, ...]:
+    """Return known hydrotreatment gas tags as context-only process signals."""
+    by_signal_id = {tag.signal_id: tag for tag in tag_dictionary.values()}
+    result: list[GasContextSignal] = []
+    for signal_id in signal_ids:
+        tag = by_signal_id.get(signal_id)
+        if tag is None:
+            continue
+        if tag.stage is not Stage.HYDROTREATMENT:
+            raise ValueError(f"gas context signal must belong to hydrotreatment: {signal_id}")
+        result.append(
+            GasContextSignal(
+                signal_id=tag.signal_id,
+                meaning=tag.meaning,
+                unit=tag.canonical_unit,
+                evidence_ref=tag.evidence_ref,
+                action_enabled=False,
+                reason=GAS_CONTEXT_REASON,
+            )
+        )
+    return tuple(result)
 
 
 def apply_hydrotreater_forecast(
@@ -265,9 +310,13 @@ def rank_feasible_blends(
 __all__ = [
     "BlendOption",
     "BlendResult",
+    "GAS_CONTEXT_REASON",
+    "GAS_CONTEXT_SIGNAL_IDS",
+    "GasContextSignal",
     "HybridComponentForecast",
     "apply_hydrotreater_forecast",
     "calculate_mass_blend",
+    "collect_gas_context",
     "enumerate_two_component_recipes",
     "rank_feasible_blends",
     "sulfur_constraint_status",

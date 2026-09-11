@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from source.config import load_scenario
+from source.config import load_scenario, load_tag_dictionary
 from source.contracts import ConstraintStatus, EstimateBasis, IntervalKind, MetricEstimate
 from source.ml.blending import (
+    GAS_CONTEXT_REASON,
+    GAS_CONTEXT_SIGNAL_IDS,
     HybridComponentForecast,
     apply_hydrotreater_forecast,
     calculate_mass_blend,
+    collect_gas_context,
     enumerate_two_component_recipes,
     rank_feasible_blends,
     sulfur_constraint_status,
@@ -117,3 +120,15 @@ def test_stock_and_recipe_validation_are_enforced() -> None:
         calculate_mass_blend({"A": 0.8, "B": 0.1}, components, 100.0)
     with pytest.raises(ValueError, match="nonnegative"):
         calculate_mass_blend({"A": 1.1, "B": -0.1}, components, 100.0)
+
+
+def test_gas_tags_are_context_only_not_action_controls() -> None:
+    tags = load_tag_dictionary("config/tags.csv")
+
+    context = collect_gas_context(tags)
+
+    assert tuple(item.signal_id for item in context) == GAS_CONTEXT_SIGNAL_IDS
+    assert all(not item.action_enabled for item in context)
+    assert all(item.reason == GAS_CONTEXT_REASON for item in context)
+    assert all(tags[item.signal_id].controllable is False for item in context)
+    assert {item.unit for item in context} == {"unknown"}

@@ -1831,3 +1831,64 @@ Stage 3 специально держит это правило жёстким: 
 - cooldown не скрывает нарушение качества;
 - journal пишет summary причин отбраковки;
 - selected повторно проходит constraints.
+
+## 22. Что добавил Stage 4
+
+Stage 4 показывает связанную цепочку от прогноза гидроочистки к модельному
+блендингу:
+
+```text
+Hydrotreater forecast
+-> apply_hydrotreater_forecast()
+-> calculate_mass_blend()
+-> sulfur_constraint_status()
+-> rank_feasible_blends()
+```
+
+### `source/ml/blending.py`
+
+`HybridComponentForecast` описывает прогноз серы гидроочищенного компонента. В нём
+есть point sulfur, upper sulfur, `source_state_id`, ссылка на входное качество и
+диапазон транспортного лага.
+
+`apply_hydrotreater_forecast()` заменяет только один компонент смеси. Сейчас это
+компонент `A` в `hybrid_blend`.
+
+`calculate_mass_blend()` считает серу смеси по массовым долям:
+
+```text
+S_mix = sum(w_i * S_i)
+```
+
+Эта же формула применяется к `upper`, но это не статистический доверительный
+интервал смеси. Это консервативная сценарная граница.
+
+`sulfur_constraint_status()` возвращает:
+
+- `pass`, если upper sulfur доступна и не выше лимита;
+- `fail`, если нарушена сера или запас компонента;
+- `unknown`, если upper sulfur отсутствует.
+
+`rank_feasible_blends()` сначала отбрасывает infeasible рецептуры, потом сортирует
+оставшиеся по `(risk, -throughput, cost, change_size, id)`.
+
+### Gas Context
+
+`collect_gas_context()` берёт из `config/tags.csv` газовые теги `ht:F9`, `ht:F22`,
+`ht:Q21` и возвращает их как `GasContextSignal`.
+
+Важное ограничение: `GasContextSignal.action_enabled` всегда `False`. Эти сигналы
+можно показывать как технологический контекст, но нельзя рекомендовать менять как
+уставки, пока не подтверждены единицы, диапазоны и модель эффекта.
+
+### `global_tests/test_stage4_blending.py`
+
+Тесты Stage 4 проверяют:
+
+- замену только нужного компонента прогнозом гидроочистки;
+- массовый баланс point/upper sulfur;
+- изменение feasible рецептур при изменении качества компонента;
+- `UNKNOWN`, если нет upper sulfur;
+- stock shortfall;
+- запрет невалидных долей;
+- context-only статус газовых тегов.
