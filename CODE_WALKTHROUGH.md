@@ -1892,3 +1892,125 @@ S_mix = sum(w_i * S_i)
 - stock shortfall;
 - запрет невалидных долей;
 - context-only статус газовых тегов.
+
+## 23. Что добавил Stage 5
+
+Stage 5 добавляет слой неопределенности и применимости вокруг исторического ML-прогноза.
+Он не меняет внешний CLI и не включает реальные управляющие воздействия.
+
+Общий поток:
+
+```text
+prepared dataset
+-> supervised features
+-> point model artifact
+-> fit_stage5_uncertainty()
+-> calibrated upper predictor
+-> save_stage5_model()
+-> predict_quality()
+-> check_applicability()
+-> predict() + predict_upper()
+-> check_constraints()
+```
+
+### `source/ml/uncertainty.py`
+
+`fit_upper_calibrator()` получает реальные validation targets и несколько вариантов raw
+upper-прогнозов. Первая половина validation выбирает модель по pinball loss, вторая
+половина считает non-negative shift:
+
+```text
+shift = max(0, q95(y - upper_raw))
+```
+
+`evaluate_upper_bounds()` проверяет held-out качество upper-границы: coverage и среднюю
+ширину `upper - point`.
+
+`check_applicability()` не прогнозирует серу. Он только отвечает, можно ли применять
+модель к текущей строке признаков:
+
+- missing/NaN -> `FEATURES_UNAVAILABLE`;
+- выход за bounds -> `OUT_OF_DOMAIN`;
+- все признаки внутри bounds -> available.
+
+`fit_stage5_uncertainty()` проверяет, что point artifact и dataset используют один и тот же
+feature order и одни временные split boundaries. Потом обучает quantile-регрессоры,
+калибрует upper, считает test metrics и robustness cases.
+
+`save_stage5_model()` сохраняет artifact так, чтобы metadata явно говорила:
+
+```text
+supports_forecast = true
+supports_uncertainty = true
+supports_actions = false
+```
+
+### `source/ml/artifacts.py`
+
+`ModelBundle.predict_upper()` нужен для serving. Он проверяет:
+
+- artifact действительно заявил `supports_uncertainty`;
+- feature order совпадает с metadata;
+- predictor вернул одно конечное значение на строку;
+- upper не ниже point.
+
+`ModelBundle.check_applicability()` берет `feature_bounds` из metadata и вызывает
+`source.ml.uncertainty.check_applicability()`.
+
+### `source/agents/quality.py`
+
+В `history` mode quality-agent теперь ведет себя так:
+
+1. Проверяет совместимость target signal/unit/horizon.
+2. Если artifact поддерживает uncertainty, вызывает applicability gate.
+3. Если gate недоступен или не пройден, возвращает unavailable issue.
+4. Считает point forecast.
+5. Если доступен uncertainty, считает upper forecast.
+6. Возвращает `MetricEstimate` с `interval_kind=EMPIRICAL` и `interval_level=0.95`.
+
+Главная идея: если upper нужен, но его нет, backend не должен делать вид, что качество
+прошло constraint.
+
+### `source/ml/policy.py`
+
+Policy helpers работают отдельно от модели качества. Они отвечают на вопрос:
+
+```text
+достаточно ли кандидат лучше hold, чтобы разрешить рекомендацию
+```
+
+`assess_change_policy()` смотрит на первый отличающийся active criterion. Если отличие
+только в `change_size`, это не улучшение. Если есть существенное улучшение, проверяется
+cooldown. Cooldown действует только при feasible hold.
+
+`tune_policy()` выбирает параметры на validation replay: сначала минимизирует пропущенные
+обязательные изменения, потом лишние действия, потом общее число действий.
+
+### `source/ml/__init__.py`
+
+Фасад лениво экспортирует Stage 5 helper API:
+
+- `fit_stage5_uncertainty`;
+- `fit_upper_calibrator`;
+- `check_applicability`;
+- `evaluate_upper_bounds`;
+- `assess_change_policy`;
+- `tune_policy`;
+- `PolicyParameters`.
+
+Это удобно для внешнего кода и не заставляет импортировать тяжелые ML-зависимости, пока
+конкретная функция не запрошена.
+
+### `global_tests/test_stage5_uncertainty_policy.py`
+
+Тесты Stage 5 проверяют:
+
+- раздельный selection/calibration split;
+- held-out coverage и width;
+- missing/OOD не превращаются в pass;
+- robustness cases сохраняют unavailable;
+- materiality threshold и first differing criterion;
+- cooldown только при feasible hold;
+- tuning policy на validation replay;
+- интеграцию quality-agent с upper bound;
+- доступность Stage 5 helper API через lazy `source.ml` facade.

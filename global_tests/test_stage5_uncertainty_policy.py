@@ -298,6 +298,15 @@ def test_stage5_fit_uses_temporal_splits_and_reports_held_out_robustness() -> No
     }
 
 
+def test_stage5_helpers_are_available_from_lazy_ml_facade() -> None:
+    import source.ml as ml
+
+    assert ml.fit_upper_calibrator is fit_upper_calibrator
+    assert ml.check_applicability is check_applicability
+    assert ml.assess_change_policy is assess_change_policy
+    assert ml.PolicyParameters is PolicyParameters
+
+
 def test_quality_agent_uses_upper_bound_and_rejects_ood() -> None:
     state = ProcessState.model_validate_json(
         Path("global_tests/fixtures/contracts/process_state.json").read_text(encoding="utf-8")
