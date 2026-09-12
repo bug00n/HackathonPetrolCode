@@ -192,6 +192,10 @@ python -m source.main acceptance --output reports/final-acceptance
 python -m source.main verify-model-freeze
 ```
 
+`config/model_freeze.json` относится к артефактам, обученным на указанном в нём
+`training_git_commit`. Модели не коммитятся; для точного воспроизведения нужно обучить их
+на этом commit, затем вернуться в финальную ветку и выполнить проверку хешей.
+
 `acceptance` создаёт `summary.json`, каталоги полных запусков и `journals.zip`. Повторный
 запуск требует нового output-каталога, поэтому ранее полученное доказательство не
 перезаписывается. Один или несколько обычных журналов экспортируются отдельно:
