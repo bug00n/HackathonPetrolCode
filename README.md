@@ -10,14 +10,16 @@
 - [Stage 3](STAGE3.md) — hard constraints, причины отбраковки кандидатов, materiality и cooldown.
 - [Stage 4](STAGE4.md) — hybrid chain, model blending и газовые теги как context-only сигналы.
 - [Stage 5](STAGE5.md) — uncertainty, applicability, robustness и policy guardrails без action model.
+- [Stage 6](STAGE6.md) — чистый запуск, frozen models, исторические метрики и приёмочная демонстрация.
 - [Code walkthrough](CODE_WALKTHROUGH.md) — папки, файлы и хронология вызовов почти построчно.
 - [ML system design](DESIGN.md#8-ml-неопределённость-и-модель-последствий) — обучение, метрики, анализ ошибок и жизненный цикл модели; общие контракты и данные описаны в том же документе.
 - [Материалы задания](materials/README.md) — ТЗ, схемы и исходные данные.
 
 ## Текущее состояние проекта
 
-Реализация дошла до Stage 5 и содержит desktop UI. Часть команд и возможностей в
-дизайн-документе по-прежнему целевые; актуальный исполняемый контракт описан ниже.
+Реализация дошла до Stage 6 и содержит desktop UI, воспроизводимое обучение,
+историческую оценку, replay и приёмочную демонстрацию. Промышленная action model не
+заявлена; актуальный исполняемый контракт описан ниже.
 
 Сейчас реализованы:
 
@@ -34,6 +36,8 @@
   gas context для `ht:F9`, `ht:F22`, `ht:Q21` без включения реального управления газом.
 - stage 5: empirical upper estimate для прогноза серы, applicability/OOD gate, robustness
   reporting и materiality/cooldown policy helpers без включения action model.
+- stage 6: точные версии зависимостей, команды `train`/`evaluate`/`replay`, каталог
+  демонстрационных эпизодов, проверка frozen models и экспорт полного журнала.
 
 Полноценной промышленной ML-модели и управления реальными уставками пока нет. Доступен
 локальный desktop UI на Python: он запускает существующие model-demo сценарии, показывает
@@ -51,16 +55,17 @@ backend по-прежнему не рекомендует реальные setpo
 
 ## Проверка
 
-Нужны совместимое с проектом Python-окружение, Git LFS и `tar` с поддержкой RAR.
-Локальный артефакт Stage 5 был собран в Python 3.12.3 со scikit-learn 1.9.0; перед
-воспроизведением или переобучением нужно сверять версии из metadata артефакта.
+Нужны Python 3.11 или 3.12, Git LFS и `tar` с поддержкой RAR. Для приёмочного запуска
+используется точный набор прямых зависимостей из `requirements.lock.txt`.
 
 ```bash
+git lfs install
+git lfs pull
 python -m venv .venv
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.lock.txt
 python -m source.main validate-stage0
 python -m pytest
-python -m pytest global_tests/test_stage5_uncertainty_policy.py
 python -m ruff check .
 python -m ruff format --check .
 python -m mypy source
@@ -134,6 +139,37 @@ python -m source.main build-state --dataset data/processed/<dataset_id> --scenar
 `build-state` печатает валидный `ProcessState`: только данные, которые были измерены и
 доступны к `as_of`. Если нужного сигнала нет или он устарел, это фиксируется в issues,
 а не заменяется придуманным значением.
+
+## Stage 6: обучение, оценка и приёмка
+
+Обучение запускается только из чистого Git worktree; test не участвует в выборе модели:
+
+```bash
+python -m source.main train --dataset data/processed/<dataset_id> --with-uncertainty
+```
+
+Сравнить frozen point model с persistence baseline на одинаковых timestamp:
+
+```bash
+python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --source pak --split test
+python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --source lims --split test
+```
+
+Воспроизвести историческую точку и отдельно прогнать фиксированные модельные эпизоды:
+
+```bash
+python -m source.main replay --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --scenario history --at 2026-01-15T12:00:00+03:00
+python -m source.main acceptance --output reports/final-acceptance
+python -m source.main verify-model-freeze
+```
+
+`acceptance` создаёт `summary.json`, каталоги полных запусков и `journals.zip`. Повторный
+запуск требует нового output-каталога, поэтому ранее полученное доказательство не
+перезаписывается. Один или несколько обычных журналов экспортируются отдельно:
+
+```bash
+python -m source.main export-journal --run <run_id> --output reports/journal-export.zip
+```
 
 ## Данные
 

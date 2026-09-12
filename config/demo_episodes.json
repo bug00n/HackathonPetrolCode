@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0",
+  "episodes": [
+    {
+      "id": "stable_blend",
+      "scenario": "blend_normal",
+      "expected_status": "abstain",
+      "expected_reason_codes": ["UNASSESSED_REQUIRED_PROPERTY"],
+      "expected_baseline_upper": 9.4,
+      "expected_sulfur_only_upper": 9.4,
+      "expected_sulfur_only_blend": null
+    },
+    {
+      "id": "sulfur_risk",
+      "scenario": "blend_risk",
+      "expected_status": "abstain",
+      "expected_reason_codes": ["UNASSESSED_REQUIRED_PROPERTY", "QUALITY_LIMIT"],
+      "expected_baseline_upper": 14.2,
+      "expected_sulfur_only_upper": 9.4,
+      "expected_sulfur_only_blend": {"A": 0.9, "B": 0.1}
+    },
+    {
+      "id": "missing_component_quality",
+      "scenario": "blend_missing",
+      "expected_status": "abstain",
+      "expected_reason_codes": ["MISSING_REQUIRED_SIGNAL"],
+      "expected_baseline_upper": null,
+      "expected_sulfur_only_upper": null,
+      "expected_sulfur_only_blend": null
+    }
+  ]
+}

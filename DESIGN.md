@@ -2,8 +2,9 @@
 
 Версия контракта: **1.0**. Статус: **частично реализованная спецификация**.
 
-Документ содержит целевую архитектуру. Актуальный runtime: Stages 0–5 и Tkinter UI
-для `model_demo`; исторический ML-артефакт ещё не подключён к UI.
+Документ содержит целевую архитектуру. Актуальный runtime: Stages 0–6, Tkinter UI
+для `model_demo` и CLI для frozen training/evaluation/replay. Исторический ML-артефакт
+ещё не подключён к UI.
 
 Основания: [техническое задание](materials/ТЗ_нефтекод.docx), [материалы](materials/README.md), [поэтапный план](IMPLEMENTATION_PLAN.md). ТЗ определяет обязательные требования, этот документ — технические контракты, план — порядок реализации. При изменении контракта документ и тестовые примеры обновляются в том же PR.
 
@@ -517,8 +518,9 @@ forecast.
 ### Реализованные и целевые команды
 
 Команды выполняются из корня репозитория после активации совместимого окружения.
-Сейчас реализованы `validate-stage0`, `run-model-demo`, `prepare`, `build-state` и
-`python -m source.ui`; `train`, `evaluate` и `replay` ниже остаются целевыми CLI.
+Реализованы `validate-stage0`, `run-model-demo`/`demo`, `prepare`, `build-state`,
+`train`, `evaluate`, `replay`, `acceptance`, `verify-model-freeze`, `export-journal`
+и `python -m source.ui`.
 
 ```bash
 python -m pip install -r requirements.txt

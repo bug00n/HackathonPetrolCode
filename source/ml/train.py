@@ -53,11 +53,20 @@ HGB_CONFIGS: tuple[dict[str, Any], ...] = (
 class TrainingDatasetLike(Protocol):
     """Structural contract supplied by ``ml.features.SupervisedDataset``."""
 
-    frame: pd.DataFrame
-    feature_names: tuple[str, ...]
-    target_signal_id: str
-    target_unit: str
-    target_source: object
+    @property
+    def frame(self) -> pd.DataFrame: ...
+
+    @property
+    def feature_names(self) -> tuple[str, ...]: ...
+
+    @property
+    def target_signal_id(self) -> str: ...
+
+    @property
+    def target_unit(self) -> str: ...
+
+    @property
+    def target_source(self) -> object: ...
 
 
 @dataclass(frozen=True)

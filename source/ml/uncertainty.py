@@ -64,8 +64,11 @@ class RobustnessCaseResult:
 
 
 class UncertaintyDataset(Protocol):
-    frame: pd.DataFrame
-    feature_names: tuple[str, ...]
+    @property
+    def frame(self) -> pd.DataFrame: ...
+
+    @property
+    def feature_names(self) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True)

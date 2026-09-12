@@ -1,0 +1,18 @@
+# Exact direct dependency versions verified for the Stage-6 release.
+# CI validates this set on Python 3.11; the local final evaluation used Python 3.12.3.
+pandas==2.3.3
+numpy==1.26.4
+pydantic==2.13.5
+openpyxl==3.1.5
+tzdata==2026.3
+scikit-learn==1.9.0
+joblib==1.6.0
+
+# Development and acceptance tools
+mypy==1.20.2
+pandas-stubs==2.3.3.260113
+ruff==0.16.6
+pytest==8.4.2
+pre-commit==4.6.2
+types-pytz==2026.3.1.20260727
+types-openpyxl==3.1.5.20260827

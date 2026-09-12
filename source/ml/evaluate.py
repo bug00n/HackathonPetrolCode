@@ -22,8 +22,11 @@ _TIME_COLUMNS = ("as_of", "target_at", "target_available_at")
 class SupervisedDatasetLike(Protocol):
     """Small structural contract shared with ``ml.features``."""
 
-    frame: pd.DataFrame
-    feature_names: tuple[str, ...]
+    @property
+    def frame(self) -> pd.DataFrame: ...
+
+    @property
+    def feature_names(self) -> tuple[str, ...]: ...
 
 
 @dataclass(frozen=True)
