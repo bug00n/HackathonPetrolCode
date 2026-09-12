@@ -32,12 +32,15 @@
 - backend-срез stage 3: более строгий выбор `hold`/`recommend`/`abstain`, единые
   hard checks, причины отбраковки кандидатов, повторная проверка selected и trace
   в журнале;
-- stage 4: модельная связка гидроочистка -> блендинг, массовый баланс рецептур и
-  gas context для `ht:F9`, `ht:F22`, `ht:Q21` без включения реального управления газом.
+- stage 4: модельная связка гидроочистка -> блендинг, массовый баланс рецептур,
+  модельные контуры T95/цетанового числа, присадка до 3% и gas context для
+  `ht:F9`, `ht:F22`, `ht:Q21` без включения реального управления газом.
 - stage 5: empirical upper estimate для прогноза серы, applicability/OOD gate, robustness
   reporting и materiality/cooldown policy helpers без включения action model.
 - stage 6: точные версии зависимостей, команды `train`/`evaluate`/`replay`, каталог
-  демонстрационных эпизодов, проверка frozen models и экспорт полного журнала.
+  демонстрационных эпизодов, проверка frozen models и экспорт полного журнала. Пять
+  сценариев покрывают `hold`, рекомендации по сере/T95/цетановому числу и отказ при
+  неполном паспорте компонента.
 
 Полноценной промышленной ML-модели и управления реальными уставками пока нет. Доступен
 локальный desktop UI на Python: он запускает существующие model-demo сценарии, показывает
@@ -45,8 +48,10 @@
 
 Stage 4 показывает связанную цепочку и модельный блендинг. Газовые теги видны как
 технологический контекст, но не становятся action controls: нет подтверждённых единиц,
-диапазонов и модели эффекта. Полная товарная спецификация также не заявлена:
-`T95`, цетановое число и весь паспорт продукта пока `not_assessed`.
+диапазонов и модели эффекта. В `model_demo` проверяются сера, T95 и цетановое число:
+T95 и базовое цетановое число линейно смешиваются как явное допущение, а эффект присадки
+берётся из настраиваемой сценарной кривой. Это полный паспорт внутри синтетической модели,
+но не подтверждение промышленного соответствия товарному стандарту.
 
 Stage 5 добавляет осторожность вокруг ML-прогноза: если artifact поддерживает uncertainty,
 quality-agent сначала проверяет область применимости признаков, потом использует point и
@@ -71,7 +76,7 @@ python -m ruff format --check .
 python -m mypy source
 ```
 
-Ожидаемый результат `validate-stage0`: пять сценариев, три model-demo fixture и полный
+Ожидаемый результат `validate-stage0`: семь сценариев, пять model-demo fixtures и полный
 словарь известных входных тегов. Неизвестные единицы и управляющие параметры помечены
 `ambiguous`, все реальные управляющие воздействия отключены.
 
@@ -80,14 +85,17 @@ python -m mypy source
 ```bash
 python -m source.main run-model-demo blend_normal
 python -m source.main run-model-demo blend_risk
+python -m source.main run-model-demo blend_t95_risk
+python -m source.main run-model-demo blend_cetane_risk
 python -m source.main run-model-demo blend_missing
 ```
 
 Ожидаемые статусы:
 
-- все три demo-сценария -> `abstain`: T95 и цетановое число обязательны для
-  операторского решения, но пока не имеют измерительной или validated-model оценки;
-  серная часть и кандидаты сохраняются в журнале как диагностический расчёт.
+- `blend_normal` -> `hold`;
+- `blend_risk`, `blend_t95_risk`, `blend_cetane_risk` -> `recommend` с одновременным
+  прохождением верхних границ серы/T95 и нижней границы цетанового числа;
+- `blend_missing` -> `abstain`: неизвестное качество не превращается в `pass`.
 
 Stage 3 не меняет публичные demo-команды. Он делает внутренний выбор строже:
 infeasible-кандидаты не ранжируются, причины отказа сохраняются в журнале, selected
@@ -107,13 +115,16 @@ python -m source.ui
 ```bash
 python -m source.ui --scenario blend_normal
 python -m source.ui --scenario blend_risk
+python -m source.ui --scenario blend_t95_risk
+python -m source.ui --scenario blend_cetane_risk
 python -m source.ui --scenario blend_missing
 ```
 
 Интерфейс сохраняет текущие возможности системы: модельный расчёт рецептуры, доступные
 ограничения, экспорт результата, журнал запусков, проверку конфигурации, подготовку данных
-и сборку historical state. T95 и цетановое число показываются как неподтверждённые свойства,
-поэтому UI не выдаёт операторское действие по неполному паспорту. Для проверки без дисплея:
+и сборку historical state. UI показывает рассчитанные верхние границы серы/T95, нижнюю
+границу цетанового числа и долю присадки; модельный характер расчёта остаётся видимым.
+Для проверки без дисплея:
 
 ```bash
 python -m source.ui --smoke --scenario blend_risk
@@ -159,7 +170,7 @@ python -m source.main evaluate --dataset data/processed/<dataset_id> --model art
 
 ```bash
 python -m source.main replay --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --scenario history --at 2026-01-15T12:00:00+03:00
-python -m source.main acceptance --output reports/final-acceptance
+python -m source.main acceptance --output reports/full-quality-acceptance
 python -m source.main verify-model-freeze
 ```
 

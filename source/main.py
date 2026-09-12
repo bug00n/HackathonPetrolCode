@@ -27,6 +27,13 @@ if TYPE_CHECKING:
 
 SplitName = Literal["train", "validation", "test"]
 TRAINING_TELEMETRY_SIGNALS = ("ht:P8", "ht:T11", "ht:F19")
+MODEL_DEMO_SCENARIOS = (
+    "blend_normal",
+    "blend_risk",
+    "blend_t95_risk",
+    "blend_cetane_risk",
+    "blend_missing",
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -321,13 +328,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     demo = subparsers.add_parser("run-model-demo", help="run a stage-1 model-demo scenario")
     demo.add_argument(
         "scenario",
-        choices=("blend_normal", "blend_risk", "blend_missing"),
+        choices=MODEL_DEMO_SCENARIOS,
         help="scenario id from config/scenarios",
     )
     demo_alias = subparsers.add_parser("demo", help="run a deterministic model-demo episode")
     demo_alias.add_argument(
         "scenario",
-        choices=("blend_normal", "blend_risk", "blend_missing"),
+        choices=MODEL_DEMO_SCENARIOS,
     )
     prepare = subparsers.add_parser(
         "prepare", help="prepare original materials into data/processed"

@@ -54,7 +54,12 @@ def _quality_check(
             evidence_ref=constraint.evidence_ref,
             reason_code="UNIT_MISMATCH",
         )
-    actual = metric.upper if constraint.use_upper_estimate else metric.value
+    if constraint.use_upper_estimate:
+        actual = metric.upper
+    elif constraint.use_lower_estimate:
+        actual = metric.lower
+    else:
+        actual = metric.value
     status = ConstraintStatus.PASS
     reason = "OK"
     if actual is None:
@@ -83,11 +88,24 @@ def _quality_check(
 def _stock_checks(
     scenario: ScenarioConfig, candidate: CandidateAction
 ) -> tuple[ConstraintResult, ...]:
-    if candidate.kind is not CandidateKind.BLEND or scenario.total_mass_t is None:
+    if (
+        candidate.kind not in {CandidateKind.HOLD, CandidateKind.BLEND}
+        or scenario.total_mass_t is None
+    ):
         return ()
     by_id = {item.id: item for item in scenario.blend_components}
+    fractions = (
+        scenario.current_blend_mass_fractions
+        if candidate.kind is CandidateKind.HOLD
+        else candidate.blend_mass_fractions
+    )
+    additive_fraction = (
+        scenario.current_additive_mass_fraction
+        if candidate.kind is CandidateKind.HOLD
+        else candidate.additive_mass_fraction
+    )
     checks: list[ConstraintResult] = []
-    for component_id, fraction in candidate.blend_mass_fractions.items():
+    for component_id, fraction in fractions.items():
         component = by_id[component_id]
         requested = fraction * scenario.total_mass_t
         status = (
@@ -109,6 +127,33 @@ def _stock_checks(
                 reason_code="OK" if status is ConstraintStatus.PASS else "COMPONENT_STOCK",
             )
         )
+    additive = scenario.cetane_additive
+    if additive is not None:
+        additive_mass = additive_fraction * scenario.total_mass_t
+        for constraint_id, actual, upper, reason_code in (
+            (
+                "additive_fraction",
+                additive_fraction,
+                additive.max_mass_fraction,
+                "ADDITIVE_LIMIT",
+            ),
+            ("additive_stock", additive_mass, additive.available_mass_t, "ADDITIVE_STOCK"),
+        ):
+            status = ConstraintStatus.PASS if actual <= upper + 1e-9 else ConstraintStatus.FAIL
+            checks.append(
+                ConstraintResult(
+                    constraint_id=constraint_id,
+                    candidate_id=candidate.id,
+                    status=status,
+                    actual=actual,
+                    lower=None,
+                    upper=upper,
+                    unit="1" if constraint_id == "additive_fraction" else "t",
+                    basis="model_assumption",
+                    evidence_ref=additive.evidence_ref,
+                    reason_code="OK" if status is ConstraintStatus.PASS else reason_code,
+                )
+            )
     return tuple(checks)
 
 

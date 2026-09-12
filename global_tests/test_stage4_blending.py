@@ -66,9 +66,11 @@ def test_mass_balance_uses_point_and_upper_sulfur_by_mass() -> None:
     assert result.sulfur.value == pytest.approx(8.4)
     assert result.sulfur.upper == pytest.approx(9.4)
     assert sulfur_constraint_status(result, 10.0) is ConstraintStatus.PASS
-    assert result.checked_properties == ("sulfur", "component_stock")
-    assert result.unassessed_properties == ("t95", "cetane_number")
-    assert result.full_specification_status == "not_assessed"
+    assert result.t95.upper == pytest.approx(354.0)
+    assert result.cetane_number.lower == pytest.approx(49.6)
+    assert result.checked_properties == ("sulfur", "t95", "cetane_number", "component_stock")
+    assert result.unassessed_properties == ()
+    assert result.full_specification_status == "assessed"
 
 
 def test_component_quality_changes_recipe_feasibility() -> None:
@@ -88,17 +90,39 @@ def test_hybrid_quality_changes_the_set_of_feasible_recipes() -> None:
         _components(_forecast(upper=7.0)),
         100.0,
         scenario.current_blend_mass_fractions,
+        additive_mass_fraction=0.01,
+        additive=scenario.cetane_additive,
     )
     degraded = rank_feasible_blends(
         recipes,
         _components(_forecast(upper=9.0)),
         100.0,
         scenario.current_blend_mass_fractions,
+        additive_mass_fraction=0.01,
+        additive=scenario.cetane_additive,
     )
 
     assert good and degraded
     assert {option.recipe_id for option in good} != {option.recipe_id for option in degraded}
-    assert all(option.result.full_specification_status == "not_assessed" for option in good)
+    assert all(option.result.full_specification_status == "assessed" for option in good)
+
+
+def test_additive_curve_enables_cetane_constraint_inside_model_scenario() -> None:
+    scenario = load_scenario("config/scenarios/blend_risk.json")
+    recipe = {"A": 0.891, "B": 0.099}
+
+    without_additive = calculate_mass_blend({"A": 0.9, "B": 0.1}, _components(), 100.0)
+    with_additive = calculate_mass_blend(
+        recipe,
+        _components(),
+        100.0,
+        additive_mass_fraction=0.01,
+        additive=scenario.cetane_additive,
+    )
+
+    assert without_additive.cetane_number.lower == pytest.approx(49.6)
+    assert with_additive.cetane_number.lower == pytest.approx(52.6)
+    assert with_additive.sulfur.upper == pytest.approx(9.306)
 
 
 def test_missing_upper_is_unknown_not_zero_or_pass() -> None:

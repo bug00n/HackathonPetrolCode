@@ -42,6 +42,8 @@ def test_all_versioned_configs_load() -> None:
         "history",
         "blend_normal",
         "blend_risk",
+        "blend_t95_risk",
+        "blend_cetane_risk",
         "blend_missing",
         "hybrid_blend",
     }
@@ -82,9 +84,22 @@ def test_serialized_contract_examples_validate() -> None:
     Recommendation.model_validate_json(
         (FIXTURES / "contracts/recommendation.json").read_text(encoding="utf-8")
     )
+    legacy = json.loads((FIXTURES / "contracts/recommendation.json").read_text(encoding="utf-8"))
+    legacy["schema_version"] = "1.0"
+    legacy["selected"]["candidate"].pop("additive_mass_fraction")
+    Recommendation.model_validate(legacy)
 
 
-@pytest.mark.parametrize("name", ["blend_normal", "blend_risk", "blend_missing"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "blend_normal",
+        "blend_risk",
+        "blend_t95_risk",
+        "blend_cetane_risk",
+        "blend_missing",
+    ],
+)
 def test_model_demo_state_fixtures_validate(name: str) -> None:
     """Verify each model-demo fixture contains a valid process state and status."""
     fixture = json.loads((FIXTURES / f"model_demo/{name}.json").read_text(encoding="utf-8"))
@@ -104,10 +119,10 @@ def test_model_demo_numbers_match_design() -> None:
             for item in scenario.blend_components
         )
 
-    assert sulfur(normal, "value") == pytest.approx(8.4)
-    assert sulfur(normal, "upper") == pytest.approx(9.4)
-    assert sulfur(risk, "value") == pytest.approx(13.2)
-    assert sulfur(risk, "upper") == pytest.approx(14.2)
+    assert sulfur(normal, "value") == pytest.approx(8.316)
+    assert sulfur(normal, "upper") == pytest.approx(9.306)
+    assert sulfur(risk, "value") == pytest.approx(13.068)
+    assert sulfur(risk, "upper") == pytest.approx(14.058)
     missing = load_scenario("config/scenarios/blend_missing.json")
     assert missing.blend_components[0].sulfur.value is None
     assert missing.blend_components[0].sulfur.upper is None

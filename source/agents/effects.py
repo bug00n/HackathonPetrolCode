@@ -11,6 +11,7 @@ from source.contracts import (
     AssessmentStatus,
     CandidateAction,
     CandidateKind,
+    CetaneAdditiveSpec,
     EstimateBasis,
     IntervalKind,
     Issue,
@@ -25,48 +26,68 @@ from source.contracts import (
 FRACTION_TOLERANCE = 1e-9
 
 
-def _recipe(candidate: CandidateAction, scenario: ScenarioConfig) -> dict[str, float]:
+def _recipe(candidate: CandidateAction, scenario: ScenarioConfig) -> tuple[dict[str, float], float]:
     component_ids = {component.id for component in scenario.blend_components}
     if len(component_ids) != 2:
         raise ValueError("stage-1 blending requires exactly two components")
     current = scenario.current_blend_mass_fractions
-    if set(current) != component_ids or abs(sum(current.values()) - 1.0) > FRACTION_TOLERANCE:
-        raise ValueError("current blend must contain every component and sum to one")
+    if set(current) != component_ids:
+        raise ValueError("current blend must contain every component")
 
     if candidate.kind is CandidateKind.HOLD:
         recipe = dict(current)
+        additive_fraction = scenario.current_additive_mass_fraction
     elif candidate.kind is CandidateKind.BLEND:
         recipe = dict(candidate.blend_mass_fractions)
+        additive_fraction = candidate.additive_mass_fraction
     else:
         raise ValueError("stage-1 effects cannot evaluate setpoint actions")
 
     if set(recipe) != component_ids:
         raise ValueError("blend recipe must contain every scenario component exactly once")
-    if abs(sum(recipe.values()) - 1.0) > FRACTION_TOLERANCE:
-        raise ValueError("blend mass fractions must sum to one")
-    return recipe
+    if abs(sum(recipe.values()) + additive_fraction - 1.0) > FRACTION_TOLERANCE:
+        raise ValueError("blend and additive mass fractions must sum to one")
+    if additive_fraction and scenario.cetane_additive is None:
+        raise ValueError("additive dose needs a configured cetane additive model")
+    return recipe, additive_fraction
 
 
-def _weighted(recipe: Mapping[str, float], values: Mapping[str, float | None]) -> float | None:
+def _weighted(
+    recipe: Mapping[str, float],
+    values: Mapping[str, float | None],
+    *,
+    normalize: bool = False,
+) -> float | None:
     if any(values[component_id] is None for component_id, weight in recipe.items() if weight > 0):
         return None
-    return sum(weight * (values[component_id] or 0.0) for component_id, weight in recipe.items())
+    total = sum(weight * (values[component_id] or 0.0) for component_id, weight in recipe.items())
+    return total / sum(recipe.values()) if normalize else total
+
+
+def _additive_gain(spec: CetaneAdditiveSpec | None, dose: float) -> float:
+    """Interpolate the explicit scenario response curve without extrapolation."""
+    if dose == 0:
+        return 0.0
+    if spec is None or dose > spec.max_mass_fraction + FRACTION_TOLERANCE:
+        raise ValueError("additive dose is outside the configured scenario model")
+    for left, right in zip(spec.response_curve, spec.response_curve[1:], strict=False):
+        if left.mass_fraction <= dose <= right.mass_fraction:
+            share = (dose - left.mass_fraction) / (right.mass_fraction - left.mass_fraction)
+            return left.cetane_gain + share * (right.cetane_gain - left.cetane_gain)
+    raise ValueError("additive response curve does not cover the requested dose")
 
 
 def calculate_blend_metrics(
     candidate: CandidateAction, scenario: ScenarioConfig
 ) -> dict[str, MetricEstimate]:
-    """Calculate sulfur and transparent ranking proxies for one recipe."""
+    """Calculate the complete synthetic product passport and ranking proxies."""
     if scenario.mode is not OperationMode.MODEL_DEMO:
         raise ValueError("stage-1 blending effects are only valid in model_demo mode")
     if scenario.total_mass_t is None:
         raise ValueError("blend scenario needs total_mass_t")
 
-    recipe = _recipe(candidate, scenario)
+    recipe, additive_fraction = _recipe(candidate, scenario)
     components = {component.id: component for component in scenario.blend_components}
-    sulfur_units = {component.sulfur.unit for component in components.values()}
-    if sulfur_units != {Unit.MG_KG.value}:
-        raise ValueError("all sulfur components must use mg/kg")
 
     sulfur_value = _weighted(
         recipe, {key: component.sulfur.value for key, component in components.items()}
@@ -74,16 +95,68 @@ def calculate_blend_metrics(
     sulfur_upper = _weighted(
         recipe, {key: component.sulfur.upper for key, component in components.items()}
     )
-    risk_index = sum(recipe[key] * component.risk_index for key, component in components.items())
+    t95_value = _weighted(
+        recipe,
+        {
+            key: None if component.t95 is None else component.t95.value
+            for key, component in components.items()
+        },
+        normalize=True,
+    )
+    t95_upper = _weighted(
+        recipe,
+        {
+            key: None if component.t95 is None else component.t95.upper
+            for key, component in components.items()
+        },
+        normalize=True,
+    )
+    cetane_value = _weighted(
+        recipe,
+        {
+            key: None if component.cetane_number is None else component.cetane_number.value
+            for key, component in components.items()
+        },
+        normalize=True,
+    )
+    cetane_lower = _weighted(
+        recipe,
+        {
+            key: None if component.cetane_number is None else component.cetane_number.lower
+            for key, component in components.items()
+        },
+        normalize=True,
+    )
+    cetane_gain = _additive_gain(scenario.cetane_additive, additive_fraction)
+    if cetane_value is not None:
+        cetane_value += cetane_gain
+    if cetane_lower is not None:
+        cetane_lower += cetane_gain
+    diesel_fraction = sum(recipe.values())
+    risk_index = (
+        sum(recipe[key] * component.risk_index for key, component in components.items())
+        / diesel_fraction
+    )
     cost_proxy = sum(
         recipe[key] * component.cost_proxy_per_t for key, component in components.items()
     )
+    if scenario.cetane_additive is not None:
+        cost_proxy += additive_fraction * scenario.cetane_additive.cost_proxy_per_t
     change_size = sum(
         abs(recipe[key] - scenario.current_blend_mass_fractions.get(key, 0.0)) for key in recipe
-    )
-    assumptions = tuple(scenario.assumptions) + (
-        "Sulfur and its scenario upper bound are mixed by mass fraction.",
-        "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+    ) + abs(additive_fraction - scenario.current_additive_mass_fraction)
+    assumptions = (
+        tuple(scenario.assumptions)
+        + (
+            "Sulfur and its scenario upper bound are mixed by mass fraction.",
+            "T95 and base cetane number are linear scenario approximations over diesel components.",
+            (
+                "The additive has zero modeled sulfur/T95 effect; "
+                "cetane gain follows the configured curve."
+            ),
+            "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+        )
+        + (() if scenario.cetane_additive is None else scenario.cetane_additive.assumptions)
     )
 
     def estimate(
@@ -92,12 +165,13 @@ def calculate_blend_metrics(
         basis: EstimateBasis,
         reference: str,
         *,
+        lower: float | None = None,
         upper: float | None = None,
         interval_kind: IntervalKind = IntervalKind.NONE,
     ) -> MetricEstimate:
         return MetricEstimate(
             value=value,
-            lower=None,
+            lower=lower,
             upper=upper,
             unit=unit,
             basis=basis,
@@ -116,6 +190,32 @@ def calculate_blend_metrics(
             "DESIGN.md#9",
             upper=sulfur_upper,
             interval_kind=sulfur_interval,
+        ),
+        "t95": estimate(
+            t95_value,
+            Unit.CELSIUS.value,
+            EstimateBasis.FORMULA,
+            "scenario linear T95 blend assumption",
+            upper=t95_upper,
+            interval_kind=(
+                IntervalKind.SCENARIO_BOUND if t95_upper is not None else IntervalKind.NONE
+            ),
+        ),
+        "cetane_number": estimate(
+            cetane_value,
+            Unit.CETANE.value,
+            EstimateBasis.FORMULA,
+            "scenario linear cetane blend and additive response curve",
+            lower=cetane_lower,
+            interval_kind=(
+                IntervalKind.SCENARIO_BOUND if cetane_lower is not None else IntervalKind.NONE
+            ),
+        ),
+        "additive_mass_fraction": estimate(
+            additive_fraction,
+            Unit.DIMENSIONLESS.value,
+            EstimateBasis.FORMULA,
+            "config scenario cetane_additive",
         ),
         "risk_index": estimate(
             risk_index,
@@ -152,27 +252,10 @@ def assess_blend_candidate(
         raise ValueError("state and scenario modes must match")
     metrics = calculate_blend_metrics(candidate, scenario)
     sulfur = metrics["sulfur"]
+    t95 = metrics["t95"]
+    cetane = metrics["cetane_number"]
     quality_issues: tuple[Issue, ...] = ()
     quality_status = AssessmentStatus.OK
-    quality_issues = (
-        Issue(
-            code="UNASSESSED_REQUIRED_PROPERTY",
-            severity=Severity.BLOCKING,
-            signal_id="blend:t95",
-            detail="T95 is required for a blend decision but has no model or measurement.",
-            source_ref=f"scenario:{scenario.id}",
-        ),
-        Issue(
-            code="UNASSESSED_REQUIRED_PROPERTY",
-            severity=Severity.BLOCKING,
-            signal_id="blend:cetane_number",
-            detail=(
-                "Cetane number is required for a blend decision but has no model or measurement."
-            ),
-            source_ref=f"scenario:{scenario.id}",
-        ),
-    )
-    quality_status = AssessmentStatus.UNAVAILABLE
     if sulfur.value is None:
         quality_issues += (
             Issue(
@@ -183,6 +266,28 @@ def assess_blend_candidate(
                 source_ref=f"scenario:{scenario.id}",
             ),
         )
+    if t95.value is None or t95.upper is None:
+        quality_issues += (
+            Issue(
+                code="UNASSESSED_REQUIRED_PROPERTY",
+                severity=Severity.BLOCKING,
+                signal_id="blend:t95",
+                detail="T95 or its required upper scenario bound is unavailable.",
+                source_ref=f"scenario:{scenario.id}",
+            ),
+        )
+    if cetane.value is None or cetane.lower is None:
+        quality_issues += (
+            Issue(
+                code="UNASSESSED_REQUIRED_PROPERTY",
+                severity=Severity.BLOCKING,
+                signal_id="blend:cetane_number",
+                detail="Cetane number or its required lower scenario bound is unavailable.",
+                source_ref=f"scenario:{scenario.id}",
+            ),
+        )
+    if quality_issues:
+        quality_status = AssessmentStatus.UNAVAILABLE
     elif scenario.require_upper_bound and sulfur.upper is None:
         quality_issues += (
             Issue(
@@ -213,12 +318,17 @@ def assess_blend_candidate(
         )
 
     return (
-        assessment(AssessmentAgent.QUALITY, quality_status, ("sulfur",), quality_issues),
+        assessment(
+            AssessmentAgent.QUALITY,
+            quality_status,
+            ("sulfur", "t95", "cetane_number"),
+            quality_issues,
+        ),
         assessment(AssessmentAgent.RELIABILITY, AssessmentStatus.OK, ("risk_index",)),
         assessment(
             AssessmentAgent.OPTIMIZER,
             AssessmentStatus.OK,
-            ("throughput", "cost_proxy", "change_size"),
+            ("throughput", "cost_proxy", "change_size", "additive_mass_fraction"),
         ),
     )
 

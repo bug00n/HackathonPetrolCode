@@ -33,7 +33,7 @@ def generate_candidates(
     scenario: ScenarioConfig,
     config: RuntimeConfig | None = None,
 ) -> tuple[CandidateAction, ...]:
-    """Generate the deterministic stage-1 grid and an explicit hold candidate."""
+    """Generate a deterministic recipe/additive grid and an explicit hold candidate."""
     if state.mode is not scenario.mode:
         raise ValueError("state and scenario modes must match")
     horizon_minutes = config.horizon_minutes if config is not None else 60
@@ -51,16 +51,30 @@ def generate_candidates(
 
     component_a, component_b = (component.id for component in scenario.blend_components)
     current = scenario.current_blend_mass_fractions
-    if set(current) != {component_a, component_b} or abs(sum(current.values()) - 1.0) > 1e-9:
-        raise ValueError("current blend must contain both components and sum to one")
+    if set(current) != {component_a, component_b}:
+        raise ValueError("current blend must contain both components")
 
-    recipes: list[dict[str, float]] = []
-    for step in range(21):
-        fraction_b = step / 20
-        recipe = {component_a: 1.0 - fraction_b, component_b: fraction_b}
-        if all(abs(recipe[key] - current[key]) <= 1e-9 for key in recipe):
-            continue
-        recipes.append(recipe)
+    additive = scenario.cetane_additive
+    dose_steps = (
+        range(round(additive.max_mass_fraction / additive.fraction_step) + 1)
+        if additive is not None
+        else range(1)
+    )
+    recipes: list[tuple[dict[str, float], float]] = []
+    for dose_step in dose_steps:
+        dose = 0.0 if additive is None else dose_step * additive.fraction_step
+        diesel_fraction = 1.0 - dose
+        for step in range(21):
+            share_b = step / 20
+            recipe = {
+                component_a: diesel_fraction * (1.0 - share_b),
+                component_b: diesel_fraction * share_b,
+            }
+            if abs(dose - scenario.current_additive_mass_fraction) <= 1e-9 and all(
+                abs(recipe[key] - current[key]) <= 1e-9 for key in recipe
+            ):
+                continue
+            recipes.append((recipe, dose))
 
     candidate_count = 1 + len(recipes)
     if candidate_count > max_candidates:
@@ -70,13 +84,16 @@ def generate_candidates(
         )
 
     candidates = [hold]
-    for recipe in recipes:
-        fraction_b = recipe[component_b]
+    for recipe, dose in recipes:
         candidates.append(
             CandidateAction(
-                id=f"blend:{component_a}={recipe[component_a]:.2f},{component_b}={fraction_b:.2f}",
+                id=(
+                    f"blend:{component_a}={recipe[component_a]:.3f},"
+                    f"{component_b}={recipe[component_b]:.3f},additive={dose:.3f}"
+                ),
                 kind=CandidateKind.BLEND,
                 blend_mass_fractions=recipe,
+                additive_mass_fraction=dose,
                 horizon_minutes=horizon_minutes,
                 is_model_scenario=scenario.mode is OperationMode.MODEL_DEMO,
             )

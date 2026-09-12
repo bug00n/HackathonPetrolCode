@@ -1,8 +1,7 @@
 # Stage 3: Constraints, Controls, Rejection Reasons
 
-> Актуальный статус: guardrails используются и после Stage 5. Исторические ожидаемые
-> `hold`/`recommend` ниже заменены текущим fail-closed результатом `abstain`, потому
-> что model-demo не подтверждает полный товарный паспорт (`T95`, цетановое число).
+> Актуальный статус: guardrails используются в финальной версии. Model-demo теперь
+> проверяет S/T95/CN и присадку; `abstain` сохраняется для неполных данных.
 
 Stage 3 состоит из двух связанных частей:
 
@@ -105,6 +104,7 @@ Explanation показывает:
 
 - текущее значение серы;
 - выбранное значение серы;
+- верхнюю T95 и нижнюю границу цетанового числа;
 - статус checks;
 - границу ограничения;
 - `reason_code`;
@@ -177,6 +177,8 @@ Backend guardrails:
 ```bash
 python -m source.main run-model-demo blend_normal
 python -m source.main run-model-demo blend_risk
+python -m source.main run-model-demo blend_t95_risk
+python -m source.main run-model-demo blend_cetane_risk
 python -m source.main run-model-demo blend_missing
 python -m pytest global_tests/test_stage3_guardrails.py
 python -m pytest
@@ -184,8 +186,8 @@ python -m pytest
 
 Ожидаемые demo-статусы:
 
-- `blend_normal` -> `abstain`;
-- `blend_risk` -> `abstain`;
+- `blend_normal` -> `hold`;
+- `blend_risk`, `blend_t95_risk`, `blend_cetane_risk` -> `recommend`;
 - `blend_missing` -> `abstain`.
 
 ML/control checks, если соответствующие файлы есть в ветке:
