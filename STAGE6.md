@@ -1,73 +1,119 @@
-# Stage 6: acceptance and demonstration
+# Stage 6: приёмка и демонстрация
 
-> Current status: Stage 6 is an acceptance pack. It does not add a new ML model,
-> action model, or real setpoint control. History artifact serving is available
-> separately as forecast-only CLI/UI functionality.
+## Что зафиксировано
 
-## Purpose
+Этап 6 не добавляет новую технологическую модель. Он фиксирует и проверяет уже
+реализованный прототип:
 
-Stage 6 turns the implemented prototype into a reproducible handoff package. A
-second participant should be able to create an environment, run the documented
-checks, reproduce the model-demo scenarios, inspect journals, and understand the
-remaining limits without reading the whole codebase first.
+- точные версии прямых зависимостей в `requirements.lock.txt`;
+- явные CLI-команды подготовки, обучения, оценки и historical replay;
+- модельные артефакты с `supports_actions=false` и проверяемыми SHA-256;
+- три неизменяемых демонстрационных эпизода в `config/demo_episodes.json`;
+- атомарный приёмочный отчёт и полный ZIP журналов;
+- раздельное представление исторической точности и условного эффекта блендинга.
 
-## What Is Implemented
+`run-history` сохранён как legacy-алиас forecast-only replay. Он требует
+`--trusted-model`, проверяет metadata локального artifact и не включает action controls.
 
-- `python -m source.main accept-stage6` runs the final acceptance smoke.
-- The command validates configs, contracts and fixtures through `validate_stage0()`.
-- It runs `blend_normal`, `blend_risk` and `blend_missing` through the existing
-  deterministic model-demo cycle.
-- It verifies the expected status for each scenario: `hold`, `recommend` and
-  `abstain`.
-- It verifies that each run writes the required journal files:
-  `result.json`, `input.json`, `trace.jsonl` and `candidates.jsonl`.
-- It prints a JSON summary with `passed`, `validation`, `scenarios`,
-  `environment`, `limitations` and `issues`.
+## Чистый запуск
 
-By default, acceptance journals are written under `runs/stage6/`. For tests or
-clean demos, pass an explicit temporary directory:
+Из корня репозитория:
 
 ```bash
-python -m source.main accept-stage6 --run-dir .test_tmp/stage6-runs
-```
-
-## Demonstration Flow
-
-Recommended clean-run sequence:
-
-```bash
+git lfs install
+git lfs pull
 python -m venv .venv
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.lock.txt
 python -m source.main validate-stage0
-python -m source.main accept-stage6
-python -m source.ui --smoke --scenario blend_risk
 python -m pytest
+python -m source.main prepare --materials materials --config config/runtime.toml
 ```
 
-Desktop UI remains available:
+На Linux системный пакет Tk может называться `python3-tk`; он нужен только для окна UI,
+но не для CLI и тестов ML.
+
+## Обучение без утечки финального test
 
 ```bash
-python -m source.ui --scenario blend_risk
+python -m source.main train \
+  --dataset data/processed/<dataset_id> \
+  --target-source pak \
+  --with-uncertainty
 ```
 
-The UI shows the current model-demo capability: model blending diagnostics,
-constraint checks, result export, and journal inspection.
+Команда требует чистый worktree и сохраняет точный Git commit в metadata. Point model
+выбирается на validation; upper model выбирается и калибруется на двух непересекающихся
+половинах validation. Финальный test используется только для однократной оценки.
 
-## Limits
-
-- Stage 6 does not create or retrain a model.
-- Stage 6 does not recommend industrial setpoint changes.
-- T95 and cetane number in model-demo are synthetic scenario values; the complete
-  industrial product passport remains not assessed.
-- `0.95` uncertainty coverage remains an empirical historical estimate, not an
-  industrial safety guarantee.
-
-## How To Check
+Полная проверка зафиксированных локальных артефактов:
 
 ```bash
-python -m pytest global_tests/test_stage6_acceptance.py
-python -m pytest global_tests/test_ui.py global_tests/test_stage5_uncertainty_policy.py
-python -m pytest
-python -m ruff check .
-python -m mypy source
+python -m source.main verify-model-freeze --manifest config/model_freeze.json
 ```
+
+Проверяются хеши `model.joblib`, metadata, metrics и финальных агрегированных отчётов,
+dataset ID, запрет action capability и флаги неиспользования test при выборе/настройке.
+
+## Историческая оценка
+
+```bash
+python -m source.main evaluate \
+  --dataset data/processed/<dataset_id> \
+  --model artifacts/models/<point_model_id> \
+  --source pak --split test
+
+python -m source.main evaluate \
+  --dataset data/processed/<dataset_id> \
+  --model artifacts/models/<point_model_id> \
+  --source lims --split test
+```
+
+Baseline и модель сравниваются только на общих timestamp. ПАК и ЛИМС не усредняются.
+Строковые residuals сохраняются локально для разбора ошибок, агрегированные метрики
+перечислены ниже после финального frozen run.
+
+## Воспроизводимые демонстрационные эпизоды
+
+```bash
+python -m source.main acceptance --output reports/final-acceptance
+```
+
+Каталог содержит:
+
+1. `stable_blend` — серная граница текущей смеси 9.4 мг/кг;
+2. `sulfur_risk` — текущая граница 14.2 мг/кг, серный контрфактуал A=90%, B=10%
+   даёт 9.4 мг/кг;
+3. `missing_component_quality` — отсутствующая оценка компонента блокирует расчёт.
+
+Во всех трёх эпизодах итоговый статус — `abstain`, поскольку обязательные T95 и
+цетановое число не оценены. Серный контрфактуал сохраняется как результат синтетической
+модели, но явно имеет `operator_recommendation=false`. Это не всеотказывающаяся ошибка:
+система вычисляет доступную часть, показывает допустимые по сере варианты и отказывает
+только в полном операторском решении, для которого не хватает обязательного паспорта.
+
+`summary.json` хранит численные результаты, причины, время цикла и fingerprint решения
+без случайного `run_id`. `journals.zip` содержит все шесть файлов каждого запуска и
+manifest с SHA-256.
+
+## Frozen результаты
+
+Конкретные model IDs, хеши, исторические метрики и измеренное время приёмочного прогона
+фиксируются в `config/model_freeze.json` и в итоговой таблице этого раздела после запуска
+на чистом commit этапа 6.
+
+## Ограничения и основные ошибки
+
+- Финальная point model может остаться persistence baseline: более сложная модель не
+  принимается, если увеличивает число пропущенных превышений на validation.
+- Историческая точность ПАК не равна точности относительно контрольного ЛИМС; результаты
+  источников показываются раздельно.
+- Верхняя граница 0.95 — эмпирическое покрытие на истории, не промышленная гарантия.
+- Applicability использует одномерные train-квантили признаков и может отклонять много
+  test-точек при сдвиге режима.
+- T95 и цетановое число не имеют валидированной модели, поэтому соответствие полного
+  товарного паспорта не заявляется.
+- `P8`, `T11`, `F19` известны как управляющие переменные, но модель причинного эффекта
+  действий не подтверждена. Реальные setpoint-рекомендации запрещены.
+- Условный эффект блендинга доказывается только внутри синтетической массовой модели;
+  исторические данные не подтверждают невыполненные воздействия.

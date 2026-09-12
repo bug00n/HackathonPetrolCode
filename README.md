@@ -11,16 +11,18 @@
 - [Stage 3](STAGE3.md) — hard constraints, причины отбраковки кандидатов, materiality и cooldown.
 - [Stage 4](STAGE4.md) — hybrid chain, model blending и газовые теги как context-only сигналы.
 - [Stage 5](STAGE5.md) — uncertainty, applicability, robustness и policy guardrails без action model.
-- [Stage 6](STAGE6.md) — acceptance pack, reproducible demo checks and final handoff limits.
-- [Stage 7](STAGE7.md) — trusted local history artifact serving through CLI.
+- [Stage 6](STAGE6.md) — чистый запуск, frozen models, исторические метрики и приёмочная демонстрация.
+- [Stage 7](STAGE7.md) — trusted local history artifact serving через CLI/UI в forecast-only режиме.
 - [Code walkthrough](CODE_WALKTHROUGH.md) — папки, файлы и хронология вызовов почти построчно.
 - [ML system design](DESIGN.md#8-ml-неопределённость-и-модель-последствий) — обучение, метрики, анализ ошибок и жизненный цикл модели; общие контракты и данные описаны в том же документе.
 - [Материалы задания](materials/README.md) — ТЗ, схемы и исходные данные.
 
 ## Текущее состояние проекта
 
-Реализация дошла до Stage 7 и содержит desktop UI. Часть команд и возможностей в
-дизайн-документе по-прежнему целевые; актуальный исполняемый контракт описан ниже.
+Реализация дошла до Stage 6 и содержит desktop UI, воспроизводимое обучение,
+историческую оценку, replay и приёмочную демонстрацию. Промышленная action model не
+заявлена. Stage 7 forecast-only history path сохранён как legacy `run-history`;
+актуальный исполняемый контракт описан ниже.
 
 Сейчас реализованы:
 
@@ -37,10 +39,10 @@
   gas context для `ht:F9`, `ht:F22`, `ht:Q21` без включения реального управления газом.
 - stage 5: empirical upper estimate для прогноза серы, applicability/OOD gate, robustness
   reporting и materiality/cooldown policy helpers без включения action model.
-- stage 6: приемочный контур `accept-stage6`, воспроизводимый прогон трех model-demo
-  сценариев, проверка journal-файлов и явная фиксация ограничений финальной демонстрации.
-- stage 7: CLI `run-history` для подготовленного historical dataset и явно доверенного
-  локального model artifact с проверкой metadata перед загрузкой `joblib`.
+- stage 6: точные версии зависимостей, команды `train`/`evaluate`/`replay`, каталог
+  демонстрационных эпизодов, проверка frozen models и экспорт полного журнала.
+- stage 7: legacy CLI `run-history` для подготовленного historical dataset и явно
+  доверенного локального model artifact с проверкой metadata перед загрузкой `joblib`.
 
 Полноценной промышленной ML-модели и управления реальными уставками пока нет. Доступен
 локальный desktop UI на Python: он запускает model-demo сценарии, показывает
@@ -59,27 +61,30 @@ quality-agent сначала проверяет область применим�
 upper sulfur. Missing/OOD/отсутствующий upper не превращаются в pass. Это не action model:
 backend по-прежнему не рекомендует реальные setpoint-изменения и не управляет газом.
 
-Stage 6 упаковывает финальную приемку: команда `accept-stage6` валидирует конфигурацию,
-прогоняет три model-demo сценария, проверяет ожидаемые `hold`/`recommend`/`abstain`
-и наличие journal-файлов.
+Stage 6 упаковывает финальную приемку: команда `acceptance` прогоняет три
+зафиксированных model-demo эпизода, проверяет ожидаемый `abstain`, reason codes,
+сохраняет полный ZIP журналов и fingerprint решения.
 
-Stage 7 подключает history artifact serving через CLI: `run-history` загружает
-prepared dataset, проверяет metadata доверенного artifact, строит serving features и
-сохраняет обычный journal. Desktop UI имеет отдельный forecast-only экран для этого пути.
+Stage 7/history path подключает artifact serving через CLI: `replay` и legacy
+`run-history` загружают prepared dataset, проверяют metadata доверенного artifact,
+строят serving features и сохраняют обычный journal. Desktop UI имеет отдельный
+forecast-only экран для этого пути.
 
 ## Проверка
 
-Нужны совместимое с проектом Python-окружение, Git LFS и `tar` с поддержкой RAR.
-Локальный артефакт Stage 5 был собран в Python 3.12.3 со scikit-learn 1.9.0; перед
-воспроизведением или переобучением нужно сверять версии из metadata артефакта.
+Нужны Python 3.11 или 3.12, Git LFS и `tar` с поддержкой RAR. Для приёмочного запуска
+используется точный набор прямых зависимостей из `requirements.lock.txt`.
 
 ```bash
+git lfs install
+git lfs pull
 python -m venv .venv
-python -m pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.lock.txt
 python -m source.main validate-stage0
-python -m source.main accept-stage6
 python -m source.main train --dataset data/processed/<dataset_id> --target-source pak
-python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --split test
+python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --source pak --split test
+python -m source.main acceptance --output reports/final-acceptance
 python -m source.main run-history --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --trusted-model --as-of 2026-01-15T09:00:00Z
 python -m pytest
 python -m pytest global_tests/test_stage7_history_serving.py
@@ -106,12 +111,12 @@ python -m source.main run-model-demo blend_missing
 
 | Сценарий | Статус | Что показывает |
 | --- | --- | --- |
-| `blend_normal` | `hold` | текущая модельная рецептура проходит доступные проверки, лишнее действие не создаётся |
-| `blend_risk` | `recommend` | текущая рецептура нарушает sulfur limit, выбран безопасный synthetic blend |
+| `blend_normal` | `abstain` | серная граница текущей смеси 9.4 мг/кг, но полный паспорт T95/CN не подтверждён |
+| `blend_risk` | `abstain` | текущая серная граница 14.2 мг/кг, серный synthetic counterfactual A=90%/B=10% даёт 9.4 мг/кг, но не является советом оператору |
 | `blend_missing` | `abstain` | при нехватке обязательной серы система отказывается от рискованной рекомендации |
 
-`recommend` в model-demo относится только к синтетическому блендингу. Реальные
-setpoint-рекомендации для history остаются отключены.
+Серные counterfactuals в model-demo относятся только к синтетическому блендингу.
+Реальные setpoint-рекомендации для history остаются отключены.
 
 Stage 3 не меняет публичные demo-команды. Он делает внутренний выбор строже:
 infeasible-кандидаты не ранжируются, причины отказа сохраняются в журнале, selected
@@ -163,6 +168,37 @@ python -m source.main build-state --dataset data/processed/<dataset_id> --scenar
 `build-state` печатает валидный `ProcessState`: только данные, которые были измерены и
 доступны к `as_of`. Если нужного сигнала нет или он устарел, это фиксируется в issues,
 а не заменяется придуманным значением.
+
+## Stage 6: обучение, оценка и приёмка
+
+Обучение запускается только из чистого Git worktree; test не участвует в выборе модели:
+
+```bash
+python -m source.main train --dataset data/processed/<dataset_id> --with-uncertainty
+```
+
+Сравнить frozen point model с persistence baseline на одинаковых timestamp:
+
+```bash
+python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --source pak --split test
+python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --source lims --split test
+```
+
+Воспроизвести историческую точку и отдельно прогнать фиксированные модельные эпизоды:
+
+```bash
+python -m source.main replay --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --scenario history --at 2026-01-15T12:00:00+03:00
+python -m source.main acceptance --output reports/final-acceptance
+python -m source.main verify-model-freeze
+```
+
+`acceptance` создаёт `summary.json`, каталоги полных запусков и `journals.zip`. Повторный
+запуск требует нового output-каталога, поэтому ранее полученное доказательство не
+перезаписывается. Один или несколько обычных журналов экспортируются отдельно:
+
+```bash
+python -m source.main export-journal --run <run_id> --output reports/journal-export.zip
+```
 
 ## Данные
 

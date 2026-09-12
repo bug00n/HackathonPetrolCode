@@ -2,8 +2,9 @@
 
 Версия контракта: **1.0**. Статус: **частично реализованная спецификация**.
 
-Документ содержит целевую архитектуру. Актуальный runtime: Stages 0–5 и Tkinter UI
-для `model_demo`; исторический ML-артефакт ещё не подключён к UI.
+Документ содержит целевую архитектуру. Актуальный runtime: Stages 0–6, Tkinter UI
+для `model_demo` и CLI для frozen training/evaluation/replay. Исторический ML-артефакт
+ещё не подключён к UI.
 
 Основания: [техническое задание](materials/ТЗ_нефтекод.docx), [материалы](materials/README.md), [поэтапный план](IMPLEMENTATION_PLAN.md). ТЗ определяет обязательные требования, этот документ — технические контракты, план — порядок реализации. При изменении контракта документ и тестовые примеры обновляются в том же PR.
 
@@ -516,17 +517,20 @@ Metadata обязательно содержит: `model_id`, `schema_version`, 
 ### Реализованные и целевые команды
 
 Команды выполняются из корня репозитория после активации совместимого окружения.
-Сейчас реализованы `validate-stage0`, `run-model-demo`, `prepare`, `build-state`,
-`train`, `evaluate`, `run-history` и `python -m source.ui`. `replay` остаётся
-целевой командой; `run-history` закрывает один forecast-cycle.
+Реализованы `validate-stage0`, `run-model-demo`/`demo`, `prepare`, `build-state`,
+`train`, `evaluate`, `replay`, `acceptance`, `verify-model-freeze`, `export-journal`
+и `python -m source.ui`. `run-history` сохранён как legacy-алиас forecast-only
+пути `replay` и требует явного `--trusted-model`.
 
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.lock.txt
 git lfs pull
 python -m source.main prepare --materials materials --config config/runtime.toml
 python -m source.main train --dataset data/processed/<dataset_id> --target-source pak
-python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --split test
+python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --source pak --split test
+python -m source.main replay --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --scenario history --at 2026-01-15T12:00:00+03:00
 python -m source.main run-history --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --trusted-model --as-of 2026-01-15T12:00:00+03:00
+python -m source.main acceptance --output reports/final-acceptance
 python -m source.main run-model-demo blend_risk
 python -m source.ui
 python -m pytest
@@ -556,7 +560,7 @@ CI работает на малых синтетических fixtures без �
 | Пропуск оценки при активном критерии | `unknown` не превращается в допустимость или нулевой риск | Backend + ML |
 | Очень выгодный, но недопустимый вариант | Экономика не отменяет жёсткое ограничение | Backend |
 | Отсутствует action capability | Нельзя менять уставки через обычный прогноз | ML + Backend |
-| Три фиксированных сценария раздела 9 | `hold`, `recommend`, `abstain` с известными численными результатами | Оба |
+| Три фиксированных сценария раздела 9 | `abstain` с известными серными counterfactuals и reason codes | Оба |
 | Исключение агента и ошибка записи | Техническая ошибка не замаскирована технологическим отказом | Backend |
 | Повтор запуска | Совпадают решение и численные оценки, кроме служебных ID/времени | Оба |
 
