@@ -259,6 +259,12 @@ def verify_model_freeze(root: Path, manifest_path: Path) -> dict[str, Any]:
             raise ValueError("frozen model hash does not match metadata")
         if metadata.get("training_dataset_id") != payload.get("training_dataset_id"):
             raise ValueError("frozen model uses another training dataset")
+        if metadata.get("git_commit") != payload.get("training_git_commit"):
+            raise ValueError("frozen model uses another training code revision")
+        if metadata.get("python_version") != payload.get("python_version"):
+            raise ValueError("frozen model uses another Python version")
+        if metadata.get("sklearn_version") != payload.get("sklearn_version"):
+            raise ValueError("frozen model uses another scikit-learn version")
         if metadata.get("capabilities", {}).get("supports_actions") is not False:
             raise ValueError("Stage-6 forecast artifacts must not enable action control")
         if str(metadata.get("git_commit", "")).endswith("-dirty"):

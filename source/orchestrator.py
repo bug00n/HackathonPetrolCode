@@ -183,6 +183,20 @@ def _required_rank_key(evaluation: CandidateEvaluation) -> tuple[float, float, f
     return evaluation.rank_key
 
 
+def _supports_actions(model: object | None) -> bool:
+    if model is None:
+        return False
+    metadata = getattr(model, "metadata", None)
+    capabilities = (
+        metadata.get("capabilities")
+        if isinstance(metadata, dict)
+        else getattr(metadata, "capabilities", None)
+    )
+    if isinstance(capabilities, dict):
+        return capabilities.get("supports_actions") is True
+    return getattr(capabilities, "supports_actions", False) is True
+
+
 def _recheck_selected(
     state: ProcessState,
     selected: CandidateEvaluation | None,
@@ -221,17 +235,26 @@ def run_cycle(
     status, selected, reason_codes, selection_reason = _select_result(
         evaluations, scenario, context, as_of
     )
+    if scenario.mode is OperationMode.HISTORY and not _supports_actions(model):
+        status = RecommendationStatus.ABSTAIN
+        selected = None
+        reason_codes = tuple(dict.fromkeys((*reason_codes, "ACTION_MODEL_UNAVAILABLE")))
+        selection_reason = "action_model_unavailable"
     _recheck_selected(state, selected, scenario)
-    alternatives = tuple(
-        item
-        for item in sorted(
-            (
-                candidate
-                for candidate in evaluations
-                if candidate.feasible and candidate != selected
-            ),
-            key=_required_rank_key,
-        )[:3]
+    alternatives = (
+        ()
+        if status is RecommendationStatus.ABSTAIN
+        else tuple(
+            item
+            for item in sorted(
+                (
+                    candidate
+                    for candidate in evaluations
+                    if candidate.feasible and candidate != selected
+                ),
+                key=_required_rank_key,
+            )[:3]
+        )
     )
     result = Recommendation(
         run_id=str(uuid4()),

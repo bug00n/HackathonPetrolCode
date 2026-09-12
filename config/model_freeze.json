@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "frozen_on": "2026-09-12",
+  "training_dataset_id": "aacc7c1ab3d9",
+  "training_git_commit": "ff6085d24ec53deb227f5aa3ab64bd3aab214bd0",
+  "python_version": "3.12.3",
+  "sklearn_version": "1.9.0",
+  "artifacts": [
+    {
+      "role": "point_forecast",
+      "model_id": "last_value-848324f28111",
+      "path": "artifacts/models/last_value-848324f28111",
+      "model_sha256": "f6a2648569562fbdf452f7e3c12324d5b3da1876a528aad6377b49c2b0ceea37",
+      "metadata_sha256": "49aeaacf784df33c3dfab62c0db312c53e30fd24477fd0ea06d9b3cbfa7181e6",
+      "metrics_sha256": "c5a3db197430723a9f125383ada58f359748c885426192e3ca7e34bb3cb70bbf"
+    },
+    {
+      "role": "point_and_upper_forecast",
+      "model_id": "sulfur-upper-e753ac99b59e",
+      "path": "artifacts/models/sulfur-upper-e753ac99b59e",
+      "model_sha256": "744b4ed2b29419104b11234cc6ec8b976346e655a1504a06c86528e7d8407f2c",
+      "metadata_sha256": "9b9716ff6035fa9bd0347057dc713b8c5021406aa148abc0aa85d95150586825",
+      "metrics_sha256": "4a853c515fe5648c05f0f8b2c15ed8d95bae58b5a125d275ccf477a0f408e283"
+    }
+  ],
+  "evaluation_reports": [
+    {
+      "target_source": "pak",
+      "split": "test",
+      "path": "reports/final/last_value-848324f28111/pak_test/metrics.json",
+      "sha256": "ca770a1b7479ebec6c0b46a4ff902a60772828824c544c93c1284f03429743f6"
+    },
+    {
+      "target_source": "lims",
+      "split": "test",
+      "path": "reports/final/last_value-848324f28111/lims_test/metrics.json",
+      "sha256": "345232219cf907f5dd35f9c6b8586e471fbf9d111ffddf49fb71141b12836123"
+    }
+  ],
+  "evidence_boundary": {
+    "history": "Forecast accuracy only; no causal action claim.",
+    "model_demo": "Synthetic blending effect only; no plant guarantee."
+  }
+}

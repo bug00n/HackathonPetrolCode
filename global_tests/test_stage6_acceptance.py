@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,19 @@ from source.acceptance import (
     run_acceptance_suite,
     verify_model_freeze,
 )
+from source.config import load_runtime_config, load_scenario
+from source.contracts import (
+    DecisionContext,
+    Observation,
+    OperationMode,
+    ProcessState,
+    SignalSnapshot,
+    SourceKind,
+    Stage,
+    Validity,
+)
 from source.ml.artifacts import sha256_file
+from source.orchestrator import run_cycle
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,6 +96,8 @@ def test_model_freeze_verifies_hashes_and_rejects_tampering(tmp_path: Path) -> N
                 "model_sha256": model_hash,
                 "training_dataset_id": "dataset00001",
                 "git_commit": "a" * 40,
+                "python_version": "3.12.3",
+                "sklearn_version": "1.9.0",
                 "capabilities": {"supports_actions": False},
             }
         ),
@@ -95,6 +110,9 @@ def test_model_freeze_verifies_hashes_and_rejects_tampering(tmp_path: Path) -> N
             {
                 "schema_version": "1.0",
                 "training_dataset_id": "dataset00001",
+                "training_git_commit": "a" * 40,
+                "python_version": "3.12.3",
+                "sklearn_version": "1.9.0",
                 "artifacts": [
                     {
                         "model_id": "frozen-test",
@@ -126,3 +144,53 @@ def test_failed_acceptance_does_not_publish_partial_directory(tmp_path: Path) ->
     with pytest.raises(ValueError, match="status changed"):
         run_acceptance_suite(PROJECT_ROOT, episodes_path=bad_catalog, output_dir=output)
     assert not output.exists()
+
+
+def test_history_forecast_without_action_capability_abstains_explicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    as_of = datetime(2026, 1, 15, 9, tzinfo=UTC)
+    observation = Observation(
+        id="pak-sulfur",
+        signal_id="ht:2:Mg.Sulfur",
+        stage=Stage.HYDROTREATMENT,
+        source=SourceKind.PAK,
+        measured_at=as_of,
+        available_at=as_of,
+        value=8.0,
+        unit="mg/kg",
+        validity=Validity.VALID,
+        source_ref="fixture",
+    )
+    state = ProcessState(
+        state_id="history-state",
+        as_of=as_of,
+        dataset_id="dataset00001",
+        mode=OperationMode.HISTORY,
+        signals={
+            "ht:2:Mg.Sulfur": SignalSnapshot(
+                selected=observation,
+                alternatives=(),
+                age_seconds=0,
+                fresh=True,
+                issues=(),
+            )
+        },
+        issues=(),
+    )
+    monkeypatch.setattr("source.orchestrator._build_cycle_state", lambda *_: state)
+
+    result = run_cycle(
+        data=None,
+        as_of=as_of,
+        model=None,
+        scenario=load_scenario(PROJECT_ROOT / "config/scenarios/history.json"),
+        config=load_runtime_config(PROJECT_ROOT / "config/runtime.toml"),
+        context=DecisionContext(),
+        run_dir=tmp_path,
+    )
+
+    assert result.status.value == "abstain"
+    assert result.selected is None
+    assert "ACTION_MODEL_UNAVAILABLE" in result.reason_codes
