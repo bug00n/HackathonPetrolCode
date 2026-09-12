@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from source.ml.features import SupervisedDataset
 
 SplitName = Literal["train", "validation", "test"]
+TRAINING_TELEMETRY_SIGNALS = ("ht:P8", "ht:T11", "ht:F19")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DEMO_SCENARIOS: tuple[str, ...] = ("blend_normal", "blend_risk", "blend_missing")
@@ -206,6 +207,7 @@ def _supervised_dataset(
         target_source=target_source,
         feature_source=SourceKind.PAK,
         horizon_minutes=60,
+        telemetry_signals=TRAINING_TELEMETRY_SIGNALS,
     )
 
 
