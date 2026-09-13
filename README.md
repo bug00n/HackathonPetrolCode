@@ -10,13 +10,14 @@
 - [Stage 3](STAGE3.md) — hard constraints, причины отбраковки кандидатов, materiality и cooldown.
 - [Stage 4](STAGE4.md) — hybrid chain, model blending и газовые теги как context-only сигналы.
 - [Stage 5](STAGE5.md) — uncertainty, applicability, robustness и policy guardrails без action model.
+- [Stage 6](STAGE6.md) — acceptance pack, reproducible demo checks and final handoff limits.
 - [Code walkthrough](CODE_WALKTHROUGH.md) — папки, файлы и хронология вызовов почти построчно.
 - [ML system design](DESIGN.md#8-ml-неопределённость-и-модель-последствий) — обучение, метрики, анализ ошибок и жизненный цикл модели; общие контракты и данные описаны в том же документе.
 - [Материалы задания](materials/README.md) — ТЗ, схемы и исходные данные.
 
 ## Текущее состояние проекта
 
-Реализация дошла до Stage 5 и содержит desktop UI. Часть команд и возможностей в
+Реализация дошла до Stage 6 и содержит desktop UI. Часть команд и возможностей в
 дизайн-документе по-прежнему целевые; актуальный исполняемый контракт описан ниже.
 
 Сейчас реализованы:
@@ -34,6 +35,8 @@
   gas context для `ht:F9`, `ht:F22`, `ht:Q21` без включения реального управления газом.
 - stage 5: empirical upper estimate для прогноза серы, applicability/OOD gate, robustness
   reporting и materiality/cooldown policy helpers без включения action model.
+- stage 6: приемочный контур `accept-stage6`, воспроизводимый прогон трех model-demo
+  сценариев, проверка journal-файлов и явная фиксация ограничений финальной демонстрации.
 
 Полноценной промышленной ML-модели и управления реальными уставками пока нет. Доступен
 локальный desktop UI на Python: он запускает существующие model-demo сценарии, показывает
@@ -49,6 +52,10 @@ quality-agent сначала проверяет область применим�
 upper sulfur. Missing/OOD/отсутствующий upper не превращаются в pass. Это не action model:
 backend по-прежнему не рекомендует реальные setpoint-изменения и не управляет газом.
 
+Stage 6 упаковывает финальную приемку: команда `accept-stage6` валидирует конфигурацию,
+прогоняет три model-demo сценария, проверяет ожидаемый `abstain` и наличие journal-файлов.
+History artifact serving в CLI/UI остается отдельной следующей задачей.
+
 ## Проверка
 
 Нужны совместимое с проектом Python-окружение, Git LFS и `tar` с поддержкой RAR.
@@ -59,7 +66,9 @@ backend по-прежнему не рекомендует реальные setpo
 python -m venv .venv
 python -m pip install -r requirements.txt
 python -m source.main validate-stage0
+python -m source.main accept-stage6
 python -m pytest
+python -m pytest global_tests/test_stage6_acceptance.py
 python -m pytest global_tests/test_stage5_uncertainty_policy.py
 python -m ruff check .
 python -m ruff format --check .

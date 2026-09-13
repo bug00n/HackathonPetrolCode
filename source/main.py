@@ -4,16 +4,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from source.config import load_runtime_config, load_scenario, load_tag_dictionary
-from source.contracts import DecisionContext, ProcessState, Recommendation
+from source.contracts import DecisionContext, ProcessState, Recommendation, RecommendationStatus
 from source.data import build_state, load_prepared_dataset, prepare_dataset, write_prepared_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+STAGE6_SCENARIOS: tuple[str, ...] = ("blend_normal", "blend_risk", "blend_missing")
+STAGE6_EXPECTED_STATUSES: dict[str, str] = {
+    scenario_id: RecommendationStatus.ABSTAIN.value for scenario_id in STAGE6_SCENARIOS
+}
+STAGE6_JOURNAL_FILES: tuple[str, ...] = (
+    "result.json",
+    "input.json",
+    "trace.jsonl",
+    "candidates.jsonl",
+)
+STAGE6_LIMITATIONS: tuple[str, ...] = (
+    "Stage 6 is an acceptance and demonstration layer, not a new ML or action model.",
+    "Real setpoint recommendations remain disabled until a validated action model exists.",
+    "The desktop UI still demonstrates model-demo scenarios; "
+    "history artifact serving is next work.",
+)
 
 
 def validate_stage0(root: Path = PROJECT_ROOT) -> dict[str, int]:
@@ -40,7 +57,11 @@ def validate_stage0(root: Path = PROJECT_ROOT) -> dict[str, int]:
     }
 
 
-def run_model_demo(scenario_id: str, root: Path = PROJECT_ROOT) -> Recommendation:
+def run_model_demo(
+    scenario_id: str,
+    root: Path = PROJECT_ROOT,
+    run_dir: str | Path | None = None,
+) -> Recommendation:
     """Run one deterministic stage-1 model-demo scenario on fixture data."""
     from source.orchestrator import run_cycle
 
@@ -57,7 +78,7 @@ def run_model_demo(scenario_id: str, root: Path = PROJECT_ROOT) -> Recommendatio
         scenario=scenario,
         config=config,
         context=DecisionContext(),
-        run_dir=root / config.runs_dir,
+        run_dir=_resolve_path(run_dir if run_dir is not None else config.runs_dir, root),
     )
 
 
@@ -118,6 +139,80 @@ def build_state_command(
     return build_state(data, as_of, scenario_config, config)
 
 
+def accept_stage6(
+    root: Path = PROJECT_ROOT,
+    run_dir: str | Path | None = None,
+    expected_statuses: Mapping[str, str] = STAGE6_EXPECTED_STATUSES,
+) -> dict[str, object]:
+    """Run the Stage-6 reproducibility and demonstration acceptance checks."""
+    try:
+        import sklearn
+
+        sklearn_version = sklearn.__version__
+    except ImportError:
+        sklearn_version = "unavailable"
+    acceptance_run_dir = _resolve_path(run_dir if run_dir is not None else "runs/stage6", root)
+    issues: list[str] = []
+    validation: dict[str, object] = {}
+    try:
+        validation.update(validate_stage0(root))
+    except Exception as exc:
+        validation = {"error": str(exc)}
+        issues.append(f"validate_stage0 failed: {exc}")
+
+    scenario_results: list[dict[str, object]] = []
+    for scenario_id in STAGE6_SCENARIOS:
+        expected = expected_statuses[scenario_id]
+        try:
+            result = run_model_demo(scenario_id, root=root, run_dir=acceptance_run_dir)
+            journal_dir = acceptance_run_dir / result.run_id
+            missing = [name for name in STAGE6_JOURNAL_FILES if not (journal_dir / name).is_file()]
+            status = result.status.value
+            passed = status == expected and not missing
+            if status != expected:
+                issues.append(f"{scenario_id}: expected status {expected!r}, received {status!r}")
+            if missing:
+                issues.append(f"{scenario_id}: missing journal files {', '.join(missing)}")
+            scenario_results.append(
+                {
+                    "scenario_id": scenario_id,
+                    "expected_status": expected,
+                    "status": status,
+                    "passed": passed,
+                    "run_id": result.run_id,
+                    "journal_dir": journal_dir.as_posix(),
+                    "journal_files": {
+                        name: (journal_dir / name).as_posix() for name in STAGE6_JOURNAL_FILES
+                    },
+                    "missing_journal_files": missing,
+                }
+            )
+        except Exception as exc:
+            issues.append(f"{scenario_id}: {exc}")
+            scenario_results.append(
+                {
+                    "scenario_id": scenario_id,
+                    "expected_status": expected,
+                    "status": None,
+                    "passed": False,
+                    "error": str(exc),
+                }
+            )
+
+    passed = not issues and all(bool(item.get("passed")) for item in scenario_results)
+    return {
+        "passed": passed,
+        "validation": validation,
+        "scenarios": scenario_results,
+        "environment": {
+            "python_version": platform.python_version(),
+            "sklearn_version": sklearn_version,
+        },
+        "limitations": list(STAGE6_LIMITATIONS),
+        "issues": issues,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse the CLI command and run the requested backend command."""
     if hasattr(sys.stdout, "reconfigure"):
@@ -144,6 +239,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--as-of", required=True, type=_parse_as_of, help="timezone-aware ISO datetime"
     )
     state.add_argument("--config", default="config/runtime.toml", help="runtime config path")
+    accept = subparsers.add_parser(
+        "accept-stage6", help="run Stage-6 acceptance and demonstration checks"
+    )
+    accept.add_argument(
+        "--run-dir",
+        default="runs/stage6",
+        help="directory for acceptance journals, relative to project root unless absolute",
+    )
     args = parser.parse_args(argv)
     try:
         if args.command == "validate-stage0":
@@ -162,6 +265,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             state_result = build_state_command(args.dataset, args.scenario, args.as_of, args.config)
             print(state_result.model_dump_json(indent=2))
             return 0
+        if args.command == "accept-stage6":
+            acceptance_result = accept_stage6(run_dir=args.run_dir)
+            print(json.dumps(acceptance_result, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0 if acceptance_result["passed"] else 1
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
