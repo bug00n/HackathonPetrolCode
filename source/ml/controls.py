@@ -33,6 +33,7 @@ CONTROL_MEANINGS = {
 CONTROL_EVIDENCE = (
     "materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026"
 )
+ACTION_HORIZONS_MINUTES = (15, 30, 60, 120, 180)
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,11 @@ class ActionEffectEvidence:
     best_lag_minutes: int
     baseline_mae: float
     action_model_mae: float
+    per_control_episode_counts: dict[str, int] | None = None
+    conservative_coverage: float | None = None
+    sign_stable_folds: int | None = None
+    shadow_replay_passed: bool = False
+    pilot_approved: bool = False
 
 
 @dataclass(frozen=True)
@@ -106,6 +112,88 @@ class ActionCapabilityReport:
     reason_codes: tuple[str, ...]
     control_ids: tuple[str, ...]
     evidence: ActionEffectEvidence | None
+
+
+def extract_change_episodes(
+    telemetry: pd.DataFrame,
+    change_thresholds: dict[str, float],
+    *,
+    target_signal: str = "ht:2:Mg.Sulfur",
+    horizons_minutes: tuple[int, ...] = ACTION_HORIZONS_MINUTES,
+    stable_window_minutes: int = 60,
+) -> pd.DataFrame:
+    """Extract isolated natural control changes for offline action research.
+
+    The result is observational evidence only. It cannot enable controls by
+    itself because operator feedback and unobserved feed changes may confound it.
+    """
+    required = {"timestamp", target_signal, *CONTROL_IDS}
+    missing = sorted(required.difference(telemetry.columns))
+    if missing:
+        raise ValueError(f"telemetry is missing action-research columns: {missing}")
+    if set(change_thresholds) != set(CONTROL_IDS) or any(
+        not np.isfinite(value) or value <= 0 for value in change_thresholds.values()
+    ):
+        raise ValueError("positive finite change thresholds are required for every control")
+    if (
+        stable_window_minutes <= 0
+        or not horizons_minutes
+        or any(horizon <= 0 for horizon in horizons_minutes)
+    ):
+        raise ValueError("stable window and action horizons must be positive")
+
+    frame = telemetry.loc[:, ["timestamp", *CONTROL_IDS, target_signal]].copy()
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="raise")
+    frame = frame.sort_values("timestamp").drop_duplicates("timestamp", keep=False)
+    frame = frame.set_index("timestamp")
+    numeric = frame.apply(pd.to_numeric, errors="coerce")
+    changes = numeric.loc[:, list(CONTROL_IDS)].diff()
+    rows: list[dict[str, Any]] = []
+    for timestamp, deltas in changes.iterrows():
+        active = [
+            signal_id
+            for signal_id in CONTROL_IDS
+            if pd.notna(deltas[signal_id])
+            and abs(float(deltas[signal_id])) >= change_thresholds[signal_id]
+        ]
+        if len(active) != 1:
+            continue
+        signal_id = active[0]
+        start = timestamp - pd.Timedelta(minutes=stable_window_minutes)
+        before = numeric.loc[(numeric.index >= start) & (numeric.index < timestamp)]
+        if len(before) < 3 or before[[*CONTROL_IDS, target_signal]].isna().any().any():
+            continue
+        if any(
+            before[control].diff().abs().max() >= change_thresholds[control]
+            for control in CONTROL_IDS
+        ):
+            continue
+        baseline = float(before[target_signal].iloc[-1])
+        row: dict[str, Any] = {
+            "changed_at": timestamp,
+            "control_id": signal_id,
+            "control_delta": float(deltas[signal_id]),
+            "baseline_quality": baseline,
+        }
+        complete = True
+        for horizon in horizons_minutes:
+            target_at = timestamp + pd.Timedelta(minutes=horizon)
+            position = numeric.index.searchsorted(target_at)
+            if position >= len(numeric.index):
+                complete = False
+                break
+            observed_at = numeric.index[position]
+            if observed_at - target_at > pd.Timedelta(minutes=10):
+                complete = False
+                break
+            value = numeric.iloc[position][target_signal]
+            if pd.isna(value):
+                complete = False
+                break
+            row[f"delta_quality_{horizon}m"] = float(value) - baseline
+        if complete:
+            rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def unconfirmed_real_controls() -> tuple[ControlSpec, ...]:
@@ -188,7 +276,7 @@ def assess_action_capability(
     controls: tuple[ControlSpec, ...],
     evidence: ActionEffectEvidence | None,
     *,
-    minimum_episodes: int = 20,
+    minimum_episodes: int = 100,
 ) -> ActionCapabilityReport:
     """Gate action support independently from ordinary forecast performance."""
     reasons: list[str] = []
@@ -205,6 +293,11 @@ def assess_action_capability(
     else:
         if evidence.change_episode_count < minimum_episodes:
             reasons.append("INSUFFICIENT_CHANGE_EPISODES")
+        counts = evidence.per_control_episode_counts
+        if counts is None or any(
+            counts.get(control.signal_id, 0) < minimum_episodes for control in controls
+        ):
+            reasons.append("INSUFFICIENT_PER_CONTROL_EPISODES")
         if not np.isfinite(evidence.change_episode_count) or evidence.change_episode_count < 0:
             reasons.append("ACTION_EPISODE_COUNT_INVALID")
         if not all(
@@ -226,6 +319,16 @@ def assess_action_capability(
             and evidence.action_model_mae >= evidence.baseline_mae
         ):
             reasons.append("ACTION_MODEL_NO_TEMPORAL_GAIN")
+        elif evidence.action_model_mae > 0.9 * evidence.baseline_mae:
+            reasons.append("ACTION_MODEL_GAIN_BELOW_10_PERCENT")
+        if evidence.conservative_coverage is None or evidence.conservative_coverage < 0.95:
+            reasons.append("ACTION_INTERVAL_COVERAGE_INSUFFICIENT")
+        if evidence.sign_stable_folds != 3:
+            reasons.append("ACTION_EFFECT_SIGN_UNSTABLE")
+        if not evidence.shadow_replay_passed:
+            reasons.append("SHADOW_REPLAY_MISSING")
+        if not evidence.pilot_approved:
+            reasons.append("TECHNOLOGIST_PILOT_MISSING")
     return ActionCapabilityReport(
         supports_actions=not reasons,
         reason_codes=tuple(reasons),
@@ -319,6 +422,7 @@ def generate_setpoint_candidates(
 
 __all__ = [
     "ActionCapabilityReport",
+    "ACTION_HORIZONS_MINUTES",
     "ActionEffectEvidence",
     "CONTROL_EVIDENCE",
     "CONTROL_IDS",
@@ -326,6 +430,7 @@ __all__ = [
     "JointControlDomain",
     "ObservedControlStats",
     "assess_action_capability",
+    "extract_change_episodes",
     "fit_joint_control_domain",
     "generate_setpoint_candidates",
     "summarize_observed_controls",

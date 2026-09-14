@@ -25,6 +25,7 @@ from source.ml.controls import (
     CONTROL_IDS,
     ActionEffectEvidence,
     assess_action_capability,
+    extract_change_episodes,
     fit_joint_control_domain,
     generate_setpoint_candidates,
     summarize_observed_controls,
@@ -136,10 +137,67 @@ def test_joint_domain_rejects_individually_typical_but_implausible_combination()
 def test_action_capability_requires_temporal_gain_on_change_episodes() -> None:
     controls = _controls()
     weak = ActionEffectEvidence("2025-01-01", "2026-01-01", 30, 60, 1.0, 1.1)
-    useful = ActionEffectEvidence("2025-01-01", "2026-01-01", 30, 60, 1.0, 0.8)
+    useful = ActionEffectEvidence(
+        "2025-01-01",
+        "2026-01-01",
+        300,
+        60,
+        1.0,
+        0.8,
+        per_control_episode_counts={signal_id: 100 for signal_id in CONTROL_IDS},
+        conservative_coverage=0.96,
+        sign_stable_folds=3,
+        shadow_replay_passed=True,
+        pilot_approved=True,
+    )
 
     assert not assess_action_capability(controls, weak).supports_actions
     assert assess_action_capability(controls, useful).supports_actions
+
+
+def test_action_capability_stays_disabled_without_pilot_even_with_good_metrics() -> None:
+    controls = _controls()
+    evidence = ActionEffectEvidence(
+        "2025-01-01",
+        "2026-01-01",
+        300,
+        60,
+        1.0,
+        0.8,
+        per_control_episode_counts={signal_id: 100 for signal_id in CONTROL_IDS},
+        conservative_coverage=0.96,
+        sign_stable_folds=3,
+        shadow_replay_passed=True,
+        pilot_approved=False,
+    )
+
+    report = assess_action_capability(controls, evidence)
+
+    assert report.supports_actions is False
+    assert "TECHNOLOGIST_PILOT_MISSING" in report.reason_codes
+
+
+def test_change_episode_extraction_keeps_only_isolated_stable_interventions() -> None:
+    timestamp = pd.date_range("2025-01-01", periods=40, freq="10min", tz="UTC")
+    frame = pd.DataFrame(
+        {
+            "timestamp": timestamp,
+            "ht:P8": np.r_[np.full(10, 10.0), np.full(30, 11.0)],
+            "ht:T11": np.full(40, 100.0),
+            "ht:F19": np.full(40, 30.0),
+            "ht:2:Mg.Sulfur": np.r_[np.full(10, 10.0), np.linspace(10.0, 8.0, 30)],
+        }
+    )
+
+    episodes = extract_change_episodes(
+        frame,
+        {"ht:P8": 0.5, "ht:T11": 1.0, "ht:F19": 0.5},
+        horizons_minutes=(30, 60),
+    )
+
+    assert len(episodes) == 1
+    assert episodes.iloc[0]["control_id"] == "ht:P8"
+    assert episodes.iloc[0]["control_delta"] == pytest.approx(1.0)
 
 
 def test_grid_is_deterministic_bounded_and_jointly_filtered() -> None:

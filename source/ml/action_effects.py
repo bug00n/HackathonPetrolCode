@@ -6,7 +6,28 @@ from dataclasses import dataclass
 from math import isfinite
 
 from source.contracts import CandidateAction, CandidateKind, ControlSpec
-from source.ml.controls import JointControlDomain
+from source.ml.controls import ActionEffectEvidence, JointControlDomain
+
+
+@dataclass(frozen=True)
+class ActionModelBundle:
+    """Action model kept separate from an ordinary forecast artifact."""
+
+    predictor: object
+    control_ids: tuple[str, ...]
+    outcome_names: tuple[str, ...]
+    horizons_minutes: tuple[int, ...]
+    joint_domain: JointControlDomain
+    evidence: ActionEffectEvidence
+    supports_actions: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.control_ids or not self.outcome_names or not self.horizons_minutes:
+            raise ValueError("action bundle needs controls, outcomes and horizons")
+        if self.supports_actions and not (
+            self.evidence.shadow_replay_passed and self.evidence.pilot_approved
+        ):
+            raise ValueError("action capability requires shadow replay and technologist pilot")
 
 
 @dataclass(frozen=True)
@@ -169,6 +190,7 @@ def rank_linear_actions(
 
 
 __all__ = [
+    "ActionModelBundle",
     "ActionOutcome",
     "LinearActionEffectModel",
     "evaluate_linear_action",

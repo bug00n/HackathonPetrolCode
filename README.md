@@ -12,15 +12,28 @@
 - [Stage 4](STAGE4.md) — hybrid chain, model blending и газовые теги как context-only сигналы.
 - [Stage 5](STAGE5.md) — uncertainty, applicability, robustness и policy guardrails без action model.
 - [Stage 6](STAGE6.md) — чистый запуск, frozen models, исторические метрики и приёмочная демонстрация.
+- [Stage 7](STAGE7.md) — safety-first alarm, joint applicability и усиленный action gate.
+- [Stage 8](STAGE8.md) — диагностика drift, режимов, ПАК–ЛИМС и устойчивости признаков.
+- [Stage 9](STAGE9.md) — эпизодный multi-horizon shadow-прогноз и отложенный LIMS-контроль.
 - [Code walkthrough](CODE_WALKTHROUGH.md) — папки, файлы и хронология вызовов почти построчно.
 - [ML system design](DESIGN.md#8-ml-неопределённость-и-модель-последствий) — обучение, метрики, анализ ошибок и жизненный цикл модели; общие контракты и данные описаны в том же документе.
 - [Материалы задания](materials/README.md) — ТЗ, схемы и исходные данные.
 
 ## Текущее состояние проекта
 
-Реализация дошла до Stage 6 и содержит desktop UI, воспроизводимое обучение,
+Реализация дошла до Stage 9 и содержит desktop UI, воспроизводимое обучение,
 историческую оценку, replay и приёмочную демонстрацию. Промышленная action model не
 заявлена; актуальный исполняемый контракт описан ниже.
+
+Read-only диагностика ML:
+
+```bash
+python -m source.main diagnose-ml --dataset data/processed/aacc7c1ab3d9
+```
+
+Stage 9 добавляет schema-1.2 эпизодный multi-horizon прогноз только в shadow-режиме.
+Ответы Q&A 11.09 не подтверждают физический смысл/единицы `P8/T11/F19`, поэтому эти
+колонки не считаются разрешёнными действиями и требуют отдельной PAK-only ablation.
 
 Сейчас реализованы:
 
@@ -158,7 +171,16 @@ python -m source.main build-state --dataset data/processed/<dataset_id> --scenar
 
 ```bash
 python -m source.main train --dataset data/processed/<dataset_id> --with-uncertainty
+
+# Обучить point + upper + calibrated exceedance alarm.
+python -m source.main train --dataset data/processed/<dataset_id> --with-uncertainty --with-safety
+
+# Эпизодный прогноз 10/20/30/60 минут; создаёт только shadow-артефакт schema 1.2.
+python -m source.main train-v2-shadow --dataset data/processed/<dataset_id>
 ```
+
+Контракт и ограничения ML v2 описаны в [STAGE9.md](STAGE9.md). Test 2026 служит
+только audit-набором; production требует нового shadow-периода.
 
 Сравнить frozen point model с persistence baseline на одинаковых timestamp:
 
