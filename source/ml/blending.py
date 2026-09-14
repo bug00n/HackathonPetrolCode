@@ -52,9 +52,11 @@ class HybridComponentForecast:
 
 @dataclass(frozen=True)
 class BlendResult:
-    """Partial blend result: sulfur is assessed; the rest of the specification is not."""
+    """Partial blend result: core demo properties are assessed, not the full passport."""
 
     sulfur: MetricEstimate
+    t95: MetricEstimate
+    cetane_number: MetricEstimate
     stock_shortfalls_t: tuple[tuple[str, float], ...]
     checked_properties: tuple[str, ...]
     unassessed_properties: tuple[str, ...]
@@ -180,17 +182,56 @@ def calculate_mass_blend(
 
     positive_ids = [key for key, weight in mass_fractions.items() if weight > 0]
 
-    def weighted(field: Literal["value", "upper"]) -> float | None:
+    def weighted(
+        metric: Literal["sulfur", "t95", "cetane_number"], field: Literal["value", "upper"]
+    ) -> float | None:
         total = 0.0
         for key in positive_ids:
-            value = getattr(component_map[key].sulfur, field)
+            estimate = getattr(component_map[key], metric)
+            value = None if estimate is None else getattr(estimate, field)
             if value is None:
                 return None
             total += mass_fractions[key] * value
         return total
 
-    sulfur_value = weighted("value")
-    sulfur_upper = weighted("upper")
+    def metric_estimate(metric: Literal["sulfur", "t95", "cetane_number"]) -> MetricEstimate:
+        estimates = [getattr(component_map[key], metric) for key in positive_ids]
+        present = [item for item in estimates if item is not None]
+        if len(present) != len(estimates):
+            return MetricEstimate(
+                value=None,
+                lower=None,
+                upper=None,
+                unit=Unit.UNKNOWN.value,
+                basis=EstimateBasis.FORMULA,
+                interval_kind=IntervalKind.NONE,
+                interval_level=None,
+                reference="DESIGN.md#9",
+                assumptions=assumptions,
+            )
+        units = {item.unit for item in present}
+        if len(units) != 1:
+            raise ValueError(f"all component {metric} estimates must use one unit")
+        upper = weighted(metric, "upper")
+        return MetricEstimate(
+            value=weighted(metric, "value"),
+            lower=None,
+            upper=upper,
+            unit=present[0].unit,
+            basis=EstimateBasis.FORMULA,
+            interval_kind=IntervalKind.SCENARIO_BOUND if upper is not None else IntervalKind.NONE,
+            interval_level=None,
+            reference="DESIGN.md#9",
+            assumptions=assumptions
+            + tuple(
+                assumption
+                for component in components
+                for estimate in (getattr(component, metric),)
+                if estimate is not None
+                for assumption in estimate.assumptions
+            ),
+        )
+
     shortfalls = tuple(
         (component.id, mass_fractions[component.id] * total_mass_t - component.available_mass_t)
         for component in components
@@ -198,31 +239,20 @@ def calculate_mass_blend(
         > component.available_mass_t + FRACTION_TOLERANCE
     )
     assumptions = (
-        "Sulfur and its upper bound are mixed by mass fraction.",
-        "The weighted upper bound is conservative and has no joint coverage claim.",
-        "Only sulfur and component stock are assessed; T95 and cetane number are not assessed.",
+        "Sulfur, T95, cetane number and their upper bounds are mixed by mass fraction.",
+        "The weighted upper bounds are conservative scenario bounds without joint coverage claims.",
+        "Only the model-demo product properties and component stock are assessed.",
     )
-    sulfur = MetricEstimate(
-        value=sulfur_value,
-        lower=None,
-        upper=sulfur_upper,
-        unit=Unit.MG_KG.value,
-        basis=EstimateBasis.FORMULA,
-        interval_kind=(
-            IntervalKind.SCENARIO_BOUND if sulfur_upper is not None else IntervalKind.NONE
-        ),
-        interval_level=None,
-        reference="DESIGN.md#9",
-        assumptions=assumptions
-        + tuple(
-            assumption for component in components for assumption in component.sulfur.assumptions
-        ),
-    )
+    sulfur = metric_estimate("sulfur")
+    t95 = metric_estimate("t95")
+    cetane_number = metric_estimate("cetane_number")
     return BlendResult(
         sulfur=sulfur,
+        t95=t95,
+        cetane_number=cetane_number,
         stock_shortfalls_t=shortfalls,
-        checked_properties=("sulfur", "component_stock"),
-        unassessed_properties=("t95", "cetane_number"),
+        checked_properties=("sulfur", "t95", "cetane_number", "component_stock"),
+        unassessed_properties=("full_product_passport",),
         full_specification_status="not_assessed",
         assumptions=assumptions,
     )

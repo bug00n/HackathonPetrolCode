@@ -431,10 +431,9 @@ sequenceDiagram
 
 Партия — 100 т; горизонт — 60 минут. Выпуск модели — масса партии за горизонт, одинаковая для всех рецептур. Критерий риска — взвешенный индекс компонентов. Генерируются доли B от 0 до 1 с шагом 0.05; доля A равна `1-B`. Проверки доступности и качества отбрасывают неподходящие варианты. Добавляется отдельный `hold`, дубликаты рецептуры схлопываются в пользу `hold`.
 
-- Все demo-рецептуры рассчитывают серу и запас компонентов, но не имеют оценки T95 и
-  цетанового числа. Поэтому центральный цикл фиксирует кандидатов и верхнюю оценку серы,
-  но возвращает `abstain` без операторской рекомендации до появления обеих обязательных
-  оценок.
+- Model-demo рецептуры рассчитывают серу, сценарные `T95`, сценарное цетановое число
+  и запас компонентов. Эти `T95`/цетановые значения нужны только для демонстрации
+  `hold`/`recommend`/`abstain`; они не являются промышленным паспортом продукта.
 
 Для уставок после их подтверждения — до трёх параметров, до пяти значений каждого вокруг текущего режима, не больше 125 комбинаций плюс `hold`. При превышении бюджета запуск останавливается с понятной ошибкой, не обрезает пространство скрыто. Реальные шаги и границы фиксируются после анализа источников, без выдуманных температур и давлений в этом документе.
 
@@ -495,10 +494,10 @@ Metadata обязательно содержит: `model_id`, `schema_version`, 
 
 ### Текущий desktop UI и целевой экран
 
-Сейчас `source/ui.py` — локальное Tkinter-приложение. Оно запускает только
-`model_demo`, отображает checks и журнал, а также вызывает `prepare` и `build-state`
-как диагностические операции. Оно не загружает `ModelBundle` и не выполняет historical
-forecast.
+Сейчас `source/ui.py` — локальное Tkinter-приложение. Оно запускает `model_demo`,
+отображает checks и журнал, вызывает `prepare`/`build-state` как диагностические
+операции и имеет отдельный экран trusted history forecast. History forecast загружает
+совместимый `ModelBundle`, но не включает реальные actions.
 
 Целевой экран должен поддерживать:
 
@@ -517,24 +516,29 @@ forecast.
 ### Реализованные и целевые команды
 
 Команды выполняются из корня репозитория после активации совместимого окружения.
-Сейчас реализованы `validate-stage0`, `run-model-demo`, `prepare`, `build-state` и
-`python -m source.ui`; `train`, `evaluate` и `replay` ниже остаются целевыми CLI.
+Сейчас реализованы `validate-stage0`, `run-model-demo`, `prepare`, `build-state`,
+`train`, `evaluate`, `run-history` и `python -m source.ui`. `replay` остаётся
+целевой командой; `run-history` закрывает один forecast-cycle.
 
 ```bash
 python -m pip install -r requirements.txt
 git lfs pull
 python -m source.main prepare --materials materials --config config/runtime.toml
-python -m source.main train --dataset data/processed/<dataset_id> --config config/runtime.toml
+python -m source.main train --dataset data/processed/<dataset_id> --target-source pak
 python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --split test
-python -m source.main replay --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --scenario config/scenarios/history.json --at 2026-01-15T12:00:00+03:00
-python -m source.main demo --scenario config/scenarios/blend_risk.json
+python -m source.main run-history --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --trusted-model --as-of 2026-01-15T12:00:00+03:00
+python -m source.main run-model-demo blend_risk
 python -m source.ui
 python -m pytest
 python -m ruff check .
 python -m ruff format --check .
 ```
 
-`prepare/train/evaluate` печатают путь созданного результата; `replay/demo` — итог и путь журнала. `abstain` — успешный расчёт: exit code 0. Ошибки данных/конфигурации/кода — exit code 1. CLI строится на `argparse`; параметры и конфигурация разрешаются один раз в `main.py`. В UI используется тот же загрузчик конфигурации и те же функции.
+`prepare/train/evaluate` печатают путь созданного результата; `run-model-demo` и
+`run-history` — итог и путь журнала. `abstain` — успешный расчёт: exit code 0.
+Ошибки данных/конфигурации/кода — exit code 1. CLI строится на `argparse`;
+параметры и конфигурация разрешаются один раз в `main.py`. В UI используется тот
+же загрузчик конфигурации и те же функции.
 
 ## 13. Проверки и критерии приёмки
 

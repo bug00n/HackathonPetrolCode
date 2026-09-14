@@ -27,6 +27,10 @@ def _run_demo(
     tmp_path: Path,
 ):
     scenario = load_scenario(f"config/scenarios/{scenario_name}.json")
+    return _run_scenario(runtime_config, scenario, tmp_path)
+
+
+def _run_scenario(runtime_config, scenario, tmp_path: Path):
     return run_cycle(
         data=None,
         as_of=datetime(2026, 1, 15, 9, tzinfo=UTC),
@@ -45,28 +49,48 @@ def _metric(evaluation, name: str):
     raise AssertionError(f"metric {name} not found")
 
 
-def test_stage1_refuses_incomplete_blend_even_when_sulfur_is_feasible(
+def test_stage1_holds_complete_normal_blend(
     runtime_config,
     tmp_path: Path,
 ) -> None:
-    """Missing T95/cetane prevents an operator-facing hold decision."""
+    """Complete model-demo product properties allow a hold decision."""
     result = _run_demo(runtime_config, "blend_normal", tmp_path)
 
-    assert result.status is RecommendationStatus.ABSTAIN
-    assert result.selected is None
-    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
+    assert result.status is RecommendationStatus.HOLD
+    assert result.selected is not None
+    assert result.selected.candidate.id == "hold"
+    assert "NO_MATERIAL_IMPROVEMENT" in result.reason_codes
 
 
-def test_stage1_refuses_risk_blend_without_full_product_spec(
+def test_stage1_recommends_model_recipe_for_risk_blend(
     runtime_config,
     tmp_path: Path,
 ) -> None:
-    """Sulfur remediation is diagnostic only until T95 and cetane are assessed."""
+    """A risky model-demo blend can recommend a synthetic safer recipe."""
     result = _run_demo(runtime_config, "blend_risk", tmp_path)
 
-    assert result.status is RecommendationStatus.ABSTAIN
+    assert result.status is RecommendationStatus.RECOMMEND
     assert result.baseline is not None
     assert result.baseline.feasible is False
+    assert result.selected is not None
+    assert result.selected.candidate.blend_mass_fractions == {"A": 0.9, "B": 0.1}
+    assert "QUALITY_LIMIT" in result.reason_codes
+
+
+def test_stage1_abstains_when_model_demo_t95_is_missing(
+    runtime_config,
+    tmp_path: Path,
+) -> None:
+    """Missing scenario passport properties still block model-demo recommendations."""
+    scenario = load_scenario("config/scenarios/blend_normal.json")
+    first, second = scenario.blend_components
+    broken = scenario.model_copy(
+        update={"blend_components": (first.model_copy(update={"t95": None}), second)}
+    )
+
+    result = _run_scenario(runtime_config, broken, tmp_path)
+
+    assert result.status is RecommendationStatus.ABSTAIN
     assert result.selected is None
     assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
 
@@ -98,4 +122,4 @@ def test_stage1_writes_journal_files(
     assert (run_path / "result.json").is_file()
     saved = json.loads((run_path / "result.json").read_text(encoding="utf-8"))
     assert saved["run_id"] == result.run_id
-    assert saved["status"] == "abstain"
+    assert saved["status"] == "recommend"

@@ -12,7 +12,7 @@ import pytest
 from source.config import load_runtime_config, load_scenario
 from source.contracts import DecisionContext, RecommendationStatus
 from source.orchestrator import run_cycle
-from source.ui import journal_entries, recommendation_to_view
+from source.ui import history_smoke_snapshot, journal_entries, recommendation_to_view
 
 
 def _view(scenario_id: str, run_dir: Path):
@@ -32,8 +32,8 @@ def _view(scenario_id: str, run_dir: Path):
 @pytest.mark.parametrize(
     ("scenario_id", "expected_status"),
     (
-        ("blend_normal", RecommendationStatus.ABSTAIN),
-        ("blend_risk", RecommendationStatus.ABSTAIN),
+        ("blend_normal", RecommendationStatus.HOLD),
+        ("blend_risk", RecommendationStatus.RECOMMEND),
         ("blend_missing", RecommendationStatus.ABSTAIN),
     ),
 )
@@ -48,17 +48,17 @@ def test_ui_projection_preserves_backend_status(
     assert view.status == expected_status.value
 
 
-def test_ui_does_not_offer_risk_recipe_or_invent_future_metrics(tmp_path: Path) -> None:
+def test_ui_offers_synthetic_risk_recipe_and_shows_model_properties(tmp_path: Path) -> None:
     _, view = _view("blend_risk", tmp_path)
 
     assert view.baseline_upper == pytest.approx(14.2)
-    assert view.selected_upper is None
+    assert view.selected_upper == pytest.approx(9.4)
     assert view.current_fractions == {"A": 0.7, "B": 0.3}
-    assert view.proposed_fractions == {"A": 0.7, "B": 0.3}
+    assert view.proposed_fractions == {"A": 0.9, "B": 0.1}
     future = {row.name: row for row in view.constraints if row.name in {"T95", "Цетановое число"}}
     assert set(future) == {"T95", "Цетановое число"}
-    assert all(row.status == "Не оценено" for row in future.values())
-    assert all(row.actual == "—" for row in future.values())
+    assert all(row.status == "Оценено" for row in future.values())
+    assert all(row.actual != "—" for row in future.values())
 
 
 def test_ui_keeps_missing_sulfur_unavailable(tmp_path: Path) -> None:
@@ -81,3 +81,23 @@ def test_journal_lists_only_complete_results_newest_first(tmp_path: Path) -> Non
     os.utime(newer, (1_800_000_000, 1_800_000_000))
 
     assert journal_entries(tmp_path) == (newer, older)
+
+
+def test_history_smoke_snapshot_runs_trusted_artifact(tmp_path: Path) -> None:
+    from global_tests.test_stage7_history_serving import _prepared_data, _write_point_model
+    from source.data.prepare import write_prepared_dataset
+
+    data = _prepared_data()
+    dataset_path = write_prepared_dataset(data, tmp_path / "processed")
+    model_dir = _write_point_model(tmp_path / "models", data.manifest.tag_dictionary_sha256)
+
+    payload = history_smoke_snapshot(
+        dataset_path,
+        model_dir,
+        "2026-01-15T09:00:00Z",
+        run_dir=tmp_path / "runs",
+    )
+
+    assert payload["status"] == "abstain"
+    assert payload["model_id"] == model_dir.name
+    assert "UNCERTAINTY_UNAVAILABLE" in payload["reason_codes"]

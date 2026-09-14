@@ -47,27 +47,28 @@ def _baseline_feasible_cost_scenario(cost_threshold: float):
 
 
 def test_stage3_keeps_hold_when_improvement_is_not_material(runtime_config, tmp_path: Path) -> None:
-    """An incomplete blend must abstain before materiality can create an action."""
+    """A feasible baseline should stay hold when the improvement is too small."""
     scenario = _baseline_feasible_cost_scenario(cost_threshold=0.05)
 
     result = _run(scenario, runtime_config, tmp_path)
 
-    assert result.status is RecommendationStatus.ABSTAIN
-    assert result.selected is None
-    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
+    assert result.status is RecommendationStatus.HOLD
+    assert result.selected is not None
+    assert result.selected.candidate.id == "hold"
+    assert "NO_MATERIAL_IMPROVEMENT" in result.reason_codes
 
 
 def test_stage3_cooldown_suppresses_repeat_when_baseline_is_feasible(
     runtime_config, tmp_path: Path
 ) -> None:
-    """Cooldown is not evaluated when the product specification is incomplete."""
+    """Cooldown suppresses a repeat recommendation while hold is still feasible."""
     scenario = _baseline_feasible_cost_scenario(cost_threshold=0.005)
     context = DecisionContext(last_recommended_at=AS_OF - timedelta(minutes=30))
 
     result = _run(scenario, runtime_config, tmp_path, context)
 
-    assert result.status is RecommendationStatus.ABSTAIN
-    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
+    assert result.status is RecommendationStatus.HOLD
+    assert "ACTION_COOLDOWN" in result.reason_codes
 
 
 def test_stage3_cooldown_does_not_hide_quality_violation(runtime_config, tmp_path: Path) -> None:
@@ -77,9 +78,9 @@ def test_stage3_cooldown_does_not_hide_quality_violation(runtime_config, tmp_pat
 
     result = _run(scenario, runtime_config, tmp_path, context)
 
-    assert result.status is RecommendationStatus.ABSTAIN
-    assert result.selected is None
-    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
+    assert result.status is RecommendationStatus.RECOMMEND
+    assert result.selected is not None
+    assert "QUALITY_LIMIT" in result.reason_codes
 
 
 def test_stage3_journal_records_rejection_summary(runtime_config, tmp_path: Path) -> None:
@@ -91,8 +92,8 @@ def test_stage3_journal_records_rejection_summary(runtime_config, tmp_path: Path
     metadata = json.loads((run_path / "metadata.json").read_text(encoding="utf-8"))
     trace = json.loads((run_path / "trace.jsonl").read_text(encoding="utf-8"))
 
-    assert metadata["selection_reason"] == "no_feasible_candidate"
-    assert metadata["rejection_summary"]["UNASSESSED_REQUIRED_PROPERTY"] >= 1
+    assert metadata["selection_reason"] == "baseline_infeasible_recommend"
+    assert metadata["rejection_summary"]["QUALITY_LIMIT"] >= 1
     assert trace["selection_reason"] == metadata["selection_reason"]
     assert trace["rejection_summary"] == metadata["rejection_summary"]
 

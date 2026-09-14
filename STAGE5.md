@@ -1,8 +1,8 @@
 # Stage 5: uncertainty, applicability, policy guardrails
 
 > Актуальный статус: Stage-5 helpers и artifact contract реализованы и покрыты
-> тестами. Локальный Tkinter UI пока вызывает только `run_model_demo`, поэтому не
-> загружает Stage-5 artifact и не демонстрирует historical forecast.
+> тестами. Локальный Tkinter UI показывает model-demo и отдельный trusted history
+> forecast path; history forecast по-прежнему не включает action model.
 
 ## Зачем нужен этап
 
@@ -107,7 +107,8 @@ hold candidate + best feasible candidate
 - Нет разрешенных промышленных setpoint-рекомендаций.
 - Нет гарантии safety coverage: `0.95` является эмпирической исторической оценкой, а не промышленной гарантией.
 - Applicability bounds являются marginal q0.001/q0.999 по train-признакам, а не полноценной многомерной OOD-моделью.
-- `T95`, цетановое число и полный паспорт товарного дизеля остаются `not_assessed`.
+- `T95` и цетановое число в model-demo являются сценарными synthetic values; полный
+  промышленный паспорт товарного дизеля остаётся `not_assessed`.
 
 ## Как проверять
 
@@ -130,6 +131,6 @@ python -m source.main run-model-demo blend_missing
 
 Ожидаемо:
 
-- `blend_normal` -> `abstain`;
-- `blend_risk` -> `abstain`;
+- `blend_normal` -> `hold`;
+- `blend_risk` -> `recommend`;
 - `blend_missing` -> `abstain`.

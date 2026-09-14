@@ -386,6 +386,8 @@ class ConstraintSpec(ContractModel):
 class BlendComponent(ContractModel):
     id: str
     sulfur: MetricEstimate
+    t95: MetricEstimate | None = None
+    cetane_number: MetricEstimate | None = None
     available_mass_t: NonNegativeFloat
     cost_proxy_per_t: NonNegativeFloat
     risk_index: Annotated[FiniteFloat, Field(ge=0, le=1)]

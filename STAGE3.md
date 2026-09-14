@@ -1,8 +1,8 @@
 # Stage 3: Constraints, Controls, Rejection Reasons
 
-> Актуальный статус: guardrails используются и после Stage 5. Исторические ожидаемые
-> `hold`/`recommend` ниже заменены текущим fail-closed результатом `abstain`, потому
-> что model-demo не подтверждает полный товарный паспорт (`T95`, цетановое число).
+> Актуальный статус: guardrails используются и после Stage 5. Model-demo снова
+> демонстрирует `hold`/`recommend`/`abstain`, но `recommend` относится только к
+> явно синтетическому блендингу; реальные history controls остаются выключены.
 
 Stage 3 состоит из двух связанных частей:
 
@@ -184,8 +184,8 @@ python -m pytest
 
 Ожидаемые demo-статусы:
 
-- `blend_normal` -> `abstain`;
-- `blend_risk` -> `abstain`;
+- `blend_normal` -> `hold`;
+- `blend_risk` -> `recommend`;
 - `blend_missing` -> `abstain`.
 
 ML/control checks, если соответствующие файлы есть в ветке:

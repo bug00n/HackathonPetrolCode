@@ -21,6 +21,8 @@
     {
       "id": "A",
       "sulfur": {"value": 6.0, "lower": null, "upper": 7.0, "unit": "mg/kg", "basis": "formula", "interval_kind": "scenario_bound", "interval_level": null, "reference": "DESIGN.md#9", "assumptions": ["Synthetic model-demo value"]},
+      "t95": {"value": 350.0, "lower": null, "upper": 355.0, "unit": "degC", "basis": "formula", "interval_kind": "scenario_bound", "interval_level": null, "reference": "DESIGN.md#9", "assumptions": ["Synthetic model-demo T95 value"]},
+      "cetane_number": {"value": 54.0, "lower": null, "upper": 54.0, "unit": "cetane_number", "basis": "formula", "interval_kind": "scenario_bound", "interval_level": null, "reference": "DESIGN.md#9", "assumptions": ["Synthetic model-demo cetane value"]},
       "available_mass_t": 100.0,
       "cost_proxy_per_t": 1.0,
       "risk_index": 0.0,
@@ -29,6 +31,8 @@
     {
       "id": "B",
       "sulfur": {"value": 30.0, "lower": null, "upper": 31.0, "unit": "mg/kg", "basis": "formula", "interval_kind": "scenario_bound", "interval_level": null, "reference": "DESIGN.md#9", "assumptions": ["Synthetic model-demo value"]},
+      "t95": {"value": 360.0, "lower": null, "upper": 365.0, "unit": "degC", "basis": "formula", "interval_kind": "scenario_bound", "interval_level": null, "reference": "DESIGN.md#9", "assumptions": ["Synthetic model-demo T95 value"]},
+      "cetane_number": {"value": 48.0, "lower": null, "upper": 48.0, "unit": "cetane_number", "basis": "formula", "interval_kind": "scenario_bound", "interval_level": null, "reference": "DESIGN.md#9", "assumptions": ["Synthetic model-demo cetane value"]},
       "available_mass_t": 30.0,
       "cost_proxy_per_t": 0.8,
       "risk_index": 0.0,
@@ -41,5 +45,5 @@
   "materiality_thresholds": {"risk_index": 0.02, "throughput": 0.02, "cost_proxy": 0.02},
   "require_upper_bound": true,
   "action_cooldown_minutes": 60,
-  "assumptions": ["All component values are synthetic and are not plant guarantees."]
+  "assumptions": ["All component values, including T95 and cetane number, are synthetic and are not plant guarantees."]
 }

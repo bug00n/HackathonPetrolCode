@@ -1,7 +1,8 @@
 # Stage 6: acceptance and demonstration
 
 > Current status: Stage 6 is an acceptance pack. It does not add a new ML model,
-> action model, real setpoint control, or history-artifact serving in the UI.
+> action model, or real setpoint control. History artifact serving is available
+> separately as forecast-only CLI/UI functionality.
 
 ## Purpose
 
@@ -16,7 +17,8 @@ remaining limits without reading the whole codebase first.
 - The command validates configs, contracts and fixtures through `validate_stage0()`.
 - It runs `blend_normal`, `blend_risk` and `blend_missing` through the existing
   deterministic model-demo cycle.
-- It verifies the expected status for each scenario: all three remain `abstain`.
+- It verifies the expected status for each scenario: `hold`, `recommend` and
+  `abstain`.
 - It verifies that each run writes the required journal files:
   `result.json`, `input.json`, `trace.jsonl` and `candidates.jsonl`.
 - It prints a JSON summary with `passed`, `validation`, `scenarios`,
@@ -53,10 +55,10 @@ constraint checks, result export, and journal inspection.
 
 ## Limits
 
-- Stage 6 does not connect a trusted Stage-5 history artifact to CLI or UI.
 - Stage 6 does not create or retrain a model.
 - Stage 6 does not recommend industrial setpoint changes.
-- T95, cetane number and the complete product passport remain not assessed.
+- T95 and cetane number in model-demo are synthetic scenario values; the complete
+  industrial product passport remains not assessed.
 - `0.95` uncertainty coverage remains an empirical historical estimate, not an
   industrial safety guarantee.
 

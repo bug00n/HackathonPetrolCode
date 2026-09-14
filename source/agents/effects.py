@@ -53,10 +53,46 @@ def _weighted(recipe: Mapping[str, float], values: Mapping[str, float | None]) -
     return sum(weight * (values[component_id] or 0.0) for component_id, weight in recipe.items())
 
 
+def _weighted_metric(
+    recipe: Mapping[str, float],
+    values: Mapping[str, MetricEstimate | None],
+    metric_name: str,
+) -> tuple[float | None, float | None, str, EstimateBasis, IntervalKind, str]:
+    positive = [component_id for component_id, weight in recipe.items() if weight > 0]
+    present_by_id: dict[str, MetricEstimate] = {}
+    for component_id in positive:
+        estimate = values[component_id]
+        if estimate is None:
+            return (
+                None,
+                None,
+                Unit.UNKNOWN.value,
+                EstimateBasis.FORMULA,
+                IntervalKind.NONE,
+                "missing",
+            )
+        present_by_id[component_id] = estimate
+    present = tuple(present_by_id.values())
+    units = {metric.unit for metric in present}
+    if len(units) != 1:
+        raise ValueError(f"all {metric_name} components must use one unit")
+    value = sum(recipe[key] * (present_by_id[key].value or 0.0) for key in positive)
+    upper = (
+        None
+        if any(present_by_id[key].upper is None for key in positive)
+        else sum(recipe[key] * (present_by_id[key].upper or 0.0) for key in positive)
+    )
+    interval = IntervalKind.SCENARIO_BOUND if upper is not None else IntervalKind.NONE
+    basis = EstimateBasis.FORMULA
+    if any(estimate.basis is EstimateBasis.PROXY for estimate in present):
+        basis = EstimateBasis.PROXY
+    return value, upper, present[0].unit, basis, interval, "DESIGN.md#9"
+
+
 def calculate_blend_metrics(
     candidate: CandidateAction, scenario: ScenarioConfig
 ) -> dict[str, MetricEstimate]:
-    """Calculate sulfur and transparent ranking proxies for one recipe."""
+    """Calculate product properties and transparent ranking proxies for one recipe."""
     if scenario.mode is not OperationMode.MODEL_DEMO:
         raise ValueError("stage-1 blending effects are only valid in model_demo mode")
     if scenario.total_mass_t is None:
@@ -74,6 +110,16 @@ def calculate_blend_metrics(
     sulfur_upper = _weighted(
         recipe, {key: component.sulfur.upper for key, component in components.items()}
     )
+    t95_value, t95_upper, t95_unit, t95_basis, t95_interval, t95_ref = _weighted_metric(
+        recipe, {key: component.t95 for key, component in components.items()}, "t95"
+    )
+    cetane_value, cetane_upper, cetane_unit, cetane_basis, cetane_interval, cetane_ref = (
+        _weighted_metric(
+            recipe,
+            {key: component.cetane_number for key, component in components.items()},
+            "cetane_number",
+        )
+    )
     risk_index = sum(recipe[key] * component.risk_index for key, component in components.items())
     cost_proxy = sum(
         recipe[key] * component.cost_proxy_per_t for key, component in components.items()
@@ -82,7 +128,7 @@ def calculate_blend_metrics(
         abs(recipe[key] - scenario.current_blend_mass_fractions.get(key, 0.0)) for key in recipe
     )
     assumptions = tuple(scenario.assumptions) + (
-        "Sulfur and its scenario upper bound are mixed by mass fraction.",
+        "Sulfur, T95 and cetane number are mixed by mass fraction for model-demo only.",
         "Risk and cost are scenario proxies, not plant safety or currency estimates.",
     )
 
@@ -116,6 +162,22 @@ def calculate_blend_metrics(
             "DESIGN.md#9",
             upper=sulfur_upper,
             interval_kind=sulfur_interval,
+        ),
+        "t95": estimate(
+            t95_value,
+            t95_unit,
+            t95_basis,
+            t95_ref,
+            upper=t95_upper,
+            interval_kind=t95_interval,
+        ),
+        "cetane_number": estimate(
+            cetane_value,
+            cetane_unit,
+            cetane_basis,
+            cetane_ref,
+            upper=cetane_upper,
+            interval_kind=cetane_interval,
         ),
         "risk_index": estimate(
             risk_index,
@@ -152,27 +214,32 @@ def assess_blend_candidate(
         raise ValueError("state and scenario modes must match")
     metrics = calculate_blend_metrics(candidate, scenario)
     sulfur = metrics["sulfur"]
-    quality_issues: tuple[Issue, ...] = ()
+    t95 = metrics["t95"]
+    cetane = metrics["cetane_number"]
     quality_status = AssessmentStatus.OK
-    quality_issues = (
-        Issue(
-            code="UNASSESSED_REQUIRED_PROPERTY",
-            severity=Severity.BLOCKING,
-            signal_id="blend:t95",
-            detail="T95 is required for a blend decision but has no model or measurement.",
-            source_ref=f"scenario:{scenario.id}",
-        ),
-        Issue(
-            code="UNASSESSED_REQUIRED_PROPERTY",
-            severity=Severity.BLOCKING,
-            signal_id="blend:cetane_number",
-            detail=(
-                "Cetane number is required for a blend decision but has no model or measurement."
+    quality_issues: tuple[Issue, ...] = ()
+    if t95.value is None:
+        quality_issues += (
+            Issue(
+                code="UNASSESSED_REQUIRED_PROPERTY",
+                severity=Severity.BLOCKING,
+                signal_id="blend:t95",
+                detail="T95 is required for a blend decision but has no model-demo value.",
+                source_ref=f"scenario:{scenario.id}",
             ),
-            source_ref=f"scenario:{scenario.id}",
-        ),
-    )
-    quality_status = AssessmentStatus.UNAVAILABLE
+        )
+    if cetane.value is None:
+        quality_issues += (
+            Issue(
+                code="UNASSESSED_REQUIRED_PROPERTY",
+                severity=Severity.BLOCKING,
+                signal_id="blend:cetane_number",
+                detail=(
+                    "Cetane number is required for a blend decision but has no model-demo value."
+                ),
+                source_ref=f"scenario:{scenario.id}",
+            ),
+        )
     if sulfur.value is None:
         quality_issues += (
             Issue(
@@ -194,6 +261,9 @@ def assess_blend_candidate(
             ),
         )
 
+    if quality_issues:
+        quality_status = AssessmentStatus.UNAVAILABLE
+
     evaluated_for = state.as_of + timedelta(minutes=candidate.horizon_minutes)
 
     def assessment(
@@ -213,7 +283,12 @@ def assess_blend_candidate(
         )
 
     return (
-        assessment(AssessmentAgent.QUALITY, quality_status, ("sulfur",), quality_issues),
+        assessment(
+            AssessmentAgent.QUALITY,
+            quality_status,
+            ("sulfur", "t95", "cetane_number"),
+            quality_issues,
+        ),
         assessment(AssessmentAgent.RELIABILITY, AssessmentStatus.OK, ("risk_index",)),
         assessment(
             AssessmentAgent.OPTIMIZER,

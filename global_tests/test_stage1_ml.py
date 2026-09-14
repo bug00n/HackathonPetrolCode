@@ -93,10 +93,12 @@ def test_model_demo_quality_is_calculated_from_components(
 
     assessment = predict_quality(state, pd.DataFrame(), None, scenario)
 
-    assert assessment.status.value == "unavailable"
-    assert "UNASSESSED_REQUIRED_PROPERTY" in {issue.code for issue in assessment.issues}
+    assert assessment.status.value == "ok"
+    assert not assessment.issues
     assert assessment.metrics["sulfur"].value == pytest.approx(value)
     assert assessment.metrics["sulfur"].upper == pytest.approx(upper)
+    assert assessment.metrics["t95"].value is not None
+    assert assessment.metrics["cetane_number"].value is not None
     assert assessment.metrics["sulfur"].basis.value == "formula"
 
 
@@ -108,9 +110,7 @@ def test_missing_component_quality_is_unavailable_not_zero() -> None:
     assert assessment.status.value == "unavailable"
     assert assessment.metrics["sulfur"].value is None
     assert assessment.metrics["sulfur"].upper is None
-    assert {"MISSING_REQUIRED_SIGNAL", "UNASSESSED_REQUIRED_PROPERTY"}.issubset(
-        {issue.code for issue in assessment.issues}
-    )
+    assert {issue.code for issue in assessment.issues} == {"MISSING_REQUIRED_SIGNAL"}
 
 
 def test_stage1_refuses_to_emulate_hybrid_mode() -> None:
@@ -195,6 +195,8 @@ def test_blend_effects_match_design_and_keep_state_immutable() -> None:
 
     assert metrics["sulfur"].value == pytest.approx(8.4)
     assert metrics["sulfur"].upper == pytest.approx(9.4)
+    assert metrics["t95"].value == pytest.approx(351.0)
+    assert metrics["cetane_number"].value == pytest.approx(53.4)
     assert metrics["cost_proxy"].value == pytest.approx(0.98)
     assert metrics["change_size"].value == pytest.approx(0.4)
     assert [item.agent.value for item in assessments] == ["quality", "reliability", "optimizer"]

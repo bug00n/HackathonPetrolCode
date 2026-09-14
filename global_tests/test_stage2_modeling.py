@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import platform
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -15,7 +16,9 @@ import sklearn
 import source.ml.train as training
 from source.agents.quality import predict_quality
 from source.config import load_scenario
-from source.contracts import EstimateBasis, ProcessState
+from source.contracts import DatasetManifest, EstimateBasis, ProcessState
+from source.data.prepare import PreparedData, write_prepared_dataset
+from source.main import main
 from source.ml.artifacts import (
     LastValueRegressor,
     ModelBundle,
@@ -465,3 +468,90 @@ def test_training_keeps_source_specific_baseline_for_serving(
     assert "baseline" not in result.bundle.metadata.feature_names
     prediction = result.bundle.predict(frame.loc[:1, list(result.bundle.feature_names)])
     assert np.isfinite(prediction).all()
+
+
+def _prepared_training_data() -> PreparedData:
+    synthetic = _synthetic_dataset()
+    quality = pd.DataFrame(
+        {
+            "observation_id": synthetic.frame["observation_id"],
+            "signal_id": ["ht:2:Mg.Sulfur"] * len(synthetic.frame),
+            "stage": ["ht"] * len(synthetic.frame),
+            "source": ["pak"] * len(synthetic.frame),
+            "measured_at": synthetic.frame["target_at"].astype(str),
+            "available_at": synthetic.frame["target_available_at"].astype(str),
+            "value": synthetic.frame["y"],
+            "unit": ["mg/kg"] * len(synthetic.frame),
+            "validity": ["valid"] * len(synthetic.frame),
+            "source_ref": synthetic.frame["observation_id"],
+        }
+    )
+    manifest = DatasetManifest.model_validate_json(
+        Path("global_tests/fixtures/data/manifest.json").read_text(encoding="utf-8")
+    )
+    return PreparedData(
+        telemetry=pd.DataFrame({"timestamp": synthetic.frame["as_of"].astype(str)}),
+        quality=quality,
+        issues=pd.DataFrame(columns=["source_ref", "code", "detail"]),
+        manifest=manifest,
+        feature_order=("ht:2:Mg.Sulfur",),
+    )
+
+
+def test_train_and_evaluate_cli_commands_wrap_existing_ml_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(training, "RIDGE_ALPHAS", (1.0,))
+    monkeypatch.setattr(
+        training,
+        "HGB_CONFIGS",
+        (
+            {
+                "learning_rate": 0.1,
+                "max_iter": 5,
+                "max_leaf_nodes": 5,
+                "min_samples_leaf": 2,
+                "l2_regularization": 0.0,
+            },
+        ),
+    )
+    data = _prepared_training_data()
+    dataset_path = write_prepared_dataset(data, tmp_path / "processed")
+
+    train_exit = main(
+        [
+            "train",
+            "--dataset",
+            str(dataset_path),
+            "--target-source",
+            "pak",
+            "--output",
+            str(tmp_path / "models"),
+        ]
+    )
+    trained = json.loads(capsys.readouterr().out)
+    artifact_dir = Path(str(trained["artifact_dir"]))
+
+    evaluate_exit = main(
+        [
+            "evaluate",
+            "--dataset",
+            str(dataset_path),
+            "--model",
+            str(artifact_dir),
+            "--split",
+            "test",
+            "--output",
+            str(tmp_path / "reports"),
+        ]
+    )
+    evaluated = json.loads(capsys.readouterr().out)
+
+    assert train_exit == 0
+    assert evaluate_exit == 0
+    assert artifact_dir.is_dir()
+    assert (artifact_dir / "metadata.json").is_file()
+    assert evaluated["model_id"] == trained["model_id"]
+    report_dir = Path(str(evaluated["report_dir"]))
+    assert (report_dir / "metrics.json").is_file()
+    assert (report_dir / "residuals.csv.gz").is_file()

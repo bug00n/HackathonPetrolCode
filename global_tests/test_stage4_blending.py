@@ -65,9 +65,12 @@ def test_mass_balance_uses_point_and_upper_sulfur_by_mass() -> None:
 
     assert result.sulfur.value == pytest.approx(8.4)
     assert result.sulfur.upper == pytest.approx(9.4)
+    assert result.t95.value == pytest.approx(351.0)
+    assert result.t95.upper == pytest.approx(356.0)
+    assert result.cetane_number.value == pytest.approx(53.4)
     assert sulfur_constraint_status(result, 10.0) is ConstraintStatus.PASS
-    assert result.checked_properties == ("sulfur", "component_stock")
-    assert result.unassessed_properties == ("t95", "cetane_number")
+    assert result.checked_properties == ("sulfur", "t95", "cetane_number", "component_stock")
+    assert result.unassessed_properties == ("full_product_passport",)
     assert result.full_specification_status == "not_assessed"
 
 

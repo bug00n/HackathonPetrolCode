@@ -2,6 +2,7 @@
 
 ## Документация
 
+- [Актуальные проблемы](<actual problems.md>) - найденные ошибки, пробелы проверок, ограничения демо и статус исправлений.
 - [План реализации](IMPLEMENTATION_PLAN.md) — этапы, сроки и разделение работы между backend и ML.
 - [Технический дизайн](DESIGN.md) — архитектура, структура файлов, типы данных, взаимодействие компонентов и проверки.
 - [Гайд по проекту](PROJECT_GUIDE.md) — объяснение с нуля: суть ТЗ, роли backend/ML, объекты, этапы и рабочий процесс.
@@ -11,13 +12,14 @@
 - [Stage 4](STAGE4.md) — hybrid chain, model blending и газовые теги как context-only сигналы.
 - [Stage 5](STAGE5.md) — uncertainty, applicability, robustness и policy guardrails без action model.
 - [Stage 6](STAGE6.md) — acceptance pack, reproducible demo checks and final handoff limits.
+- [Stage 7](STAGE7.md) — trusted local history artifact serving through CLI.
 - [Code walkthrough](CODE_WALKTHROUGH.md) — папки, файлы и хронология вызовов почти построчно.
 - [ML system design](DESIGN.md#8-ml-неопределённость-и-модель-последствий) — обучение, метрики, анализ ошибок и жизненный цикл модели; общие контракты и данные описаны в том же документе.
 - [Материалы задания](materials/README.md) — ТЗ, схемы и исходные данные.
 
 ## Текущее состояние проекта
 
-Реализация дошла до Stage 6 и содержит desktop UI. Часть команд и возможностей в
+Реализация дошла до Stage 7 и содержит desktop UI. Часть команд и возможностей в
 дизайн-документе по-прежнему целевые; актуальный исполняемый контракт описан ниже.
 
 Сейчас реализованы:
@@ -37,15 +39,20 @@
   reporting и materiality/cooldown policy helpers без включения action model.
 - stage 6: приемочный контур `accept-stage6`, воспроизводимый прогон трех model-demo
   сценариев, проверка journal-файлов и явная фиксация ограничений финальной демонстрации.
+- stage 7: CLI `run-history` для подготовленного historical dataset и явно доверенного
+  локального model artifact с проверкой metadata перед загрузкой `joblib`.
 
 Полноценной промышленной ML-модели и управления реальными уставками пока нет. Доступен
-локальный desktop UI на Python: он запускает существующие model-demo сценарии, показывает
-проверки и журнал, но не выдаёт промышленную рекомендацию на реальной истории.
+локальный desktop UI на Python: он запускает model-demo сценарии, показывает
+`hold`/`recommend`/`abstain`, проверки и журнал. Исторический forecast с доверенным
+локальным artifact доступен через CLI и отдельный экран UI, но не выдаёт промышленную
+рекомендацию изменения уставок.
 
 Stage 4 показывает связанную цепочку и модельный блендинг. Газовые теги видны как
 технологический контекст, но не становятся action controls: нет подтверждённых единиц,
-диапазонов и модели эффекта. Полная товарная спецификация также не заявлена:
-`T95`, цетановое число и весь паспорт продукта пока `not_assessed`.
+диапазонов и модели эффекта. В model-demo `T95` и цетановое число являются сценарными
+допущениями для демонстрации, а полный промышленный паспорт продукта остаётся
+`not_assessed`.
 
 Stage 5 добавляет осторожность вокруг ML-прогноза: если artifact поддерживает uncertainty,
 quality-agent сначала проверяет область применимости признаков, потом использует point и
@@ -53,8 +60,12 @@ upper sulfur. Missing/OOD/отсутствующий upper не превраща
 backend по-прежнему не рекомендует реальные setpoint-изменения и не управляет газом.
 
 Stage 6 упаковывает финальную приемку: команда `accept-stage6` валидирует конфигурацию,
-прогоняет три model-demo сценария, проверяет ожидаемый `abstain` и наличие journal-файлов.
-History artifact serving в CLI/UI остается отдельной следующей задачей.
+прогоняет три model-demo сценария, проверяет ожидаемые `hold`/`recommend`/`abstain`
+и наличие journal-файлов.
+
+Stage 7 подключает history artifact serving через CLI: `run-history` загружает
+prepared dataset, проверяет metadata доверенного artifact, строит serving features и
+сохраняет обычный journal. Desktop UI имеет отдельный forecast-only экран для этого пути.
 
 ## Проверка
 
@@ -67,7 +78,11 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 python -m source.main validate-stage0
 python -m source.main accept-stage6
+python -m source.main train --dataset data/processed/<dataset_id> --target-source pak
+python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --split test
+python -m source.main run-history --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --trusted-model --as-of 2026-01-15T09:00:00Z
 python -m pytest
+python -m pytest global_tests/test_stage7_history_serving.py
 python -m pytest global_tests/test_stage6_acceptance.py
 python -m pytest global_tests/test_stage5_uncertainty_policy.py
 python -m ruff check .
@@ -89,9 +104,14 @@ python -m source.main run-model-demo blend_missing
 
 Ожидаемые статусы:
 
-- все три demo-сценария -> `abstain`: T95 и цетановое число обязательны для
-  операторского решения, но пока не имеют измерительной или validated-model оценки;
-  серная часть и кандидаты сохраняются в журнале как диагностический расчёт.
+| Сценарий | Статус | Что показывает |
+| --- | --- | --- |
+| `blend_normal` | `hold` | текущая модельная рецептура проходит доступные проверки, лишнее действие не создаётся |
+| `blend_risk` | `recommend` | текущая рецептура нарушает sulfur limit, выбран безопасный synthetic blend |
+| `blend_missing` | `abstain` | при нехватке обязательной серы система отказывается от рискованной рекомендации |
+
+`recommend` в model-demo относится только к синтетическому блендингу. Реальные
+setpoint-рекомендации для history остаются отключены.
 
 Stage 3 не меняет публичные demo-команды. Он делает внутренний выбор строже:
 infeasible-кандидаты не ранжируются, причины отказа сохраняются в журнале, selected
@@ -115,12 +135,12 @@ python -m source.ui --scenario blend_missing
 ```
 
 Интерфейс сохраняет текущие возможности системы: модельный расчёт рецептуры, доступные
-ограничения, экспорт результата, журнал запусков, проверку конфигурации, подготовку данных
-и сборку historical state. T95 и цетановое число показываются как неподтверждённые свойства,
-поэтому UI не выдаёт операторское действие по неполному паспорту. Для проверки без дисплея:
+ограничения, экспорт результата, журнал запусков, проверку конфигурации, подготовку данных,
+сборку historical state и запуск trusted history forecast. Для проверки без дисплея:
 
 ```bash
 python -m source.ui --smoke --scenario blend_risk
+python -m source.ui --history-smoke --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --as-of 2026-01-15T09:00:00Z
 ```
 
 ## Stage 2: подготовка реальных данных

@@ -5,19 +5,29 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence, cast
 
 from source.config import load_runtime_config, load_scenario, load_tag_dictionary
-from source.contracts import DecisionContext, ProcessState, Recommendation, RecommendationStatus
+from source.contracts import (
+    DecisionContext,
+    ProcessState,
+    Recommendation,
+    RecommendationStatus,
+    ScenarioConfig,
+    SourceKind,
+)
 from source.data import build_state, load_prepared_dataset, prepare_dataset, write_prepared_dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STAGE6_SCENARIOS: tuple[str, ...] = ("blend_normal", "blend_risk", "blend_missing")
 STAGE6_EXPECTED_STATUSES: dict[str, str] = {
-    scenario_id: RecommendationStatus.ABSTAIN.value for scenario_id in STAGE6_SCENARIOS
+    "blend_normal": RecommendationStatus.HOLD.value,
+    "blend_risk": RecommendationStatus.RECOMMEND.value,
+    "blend_missing": RecommendationStatus.ABSTAIN.value,
 }
 STAGE6_JOURNAL_FILES: tuple[str, ...] = (
     "result.json",
@@ -28,8 +38,7 @@ STAGE6_JOURNAL_FILES: tuple[str, ...] = (
 STAGE6_LIMITATIONS: tuple[str, ...] = (
     "Stage 6 is an acceptance and demonstration layer, not a new ML or action model.",
     "Real setpoint recommendations remain disabled until a validated action model exists.",
-    "The desktop UI still demonstrates model-demo scenarios; "
-    "history artifact serving is next work.",
+    "Model-demo recommendations are synthetic; history artifact serving remains forecast-only.",
 )
 
 
@@ -139,6 +148,152 @@ def build_state_command(
     return build_state(data, as_of, scenario_config, config)
 
 
+def _git_commit(root: Path) -> str:
+    """Return a best-effort commit id for model metadata."""
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return completed.stdout.strip() or "unknown"
+
+
+def train_command(
+    dataset: str | Path,
+    target_source: str,
+    output: str | Path | None = None,
+    target_signal: str = "ht:2:Mg.Sulfur",
+    config_path: str | Path = "config/runtime.toml",
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Train a reproducible local sulfur forecast artifact from prepared data."""
+    from source.ml.features import build_supervised_dataset
+    from source.ml.train import train_model
+
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    supervised = build_supervised_dataset(
+        data,
+        target_signal_id=target_signal,
+        target_source=SourceKind(target_source),
+        horizon_minutes=config.horizon_minutes,
+    )
+    result = train_model(
+        cast(Any, supervised),
+        models_root=_resolve_path(output if output is not None else config.models_dir, root),
+        training_dataset_id=data.manifest.dataset_id,
+        tag_dictionary_sha256=data.manifest.tag_dictionary_sha256,
+        git_commit=_git_commit(root),
+        source_timezone=config.source_timezone,
+        horizon_minutes=config.horizon_minutes,
+        seed=config.seed,
+    )
+    return {
+        "model_id": result.bundle.metadata.model_id,
+        "artifact_dir": result.artifact_dir.as_posix(),
+        "selected_model": result.metrics.get("selected_model"),
+        "target_signal": result.bundle.metadata.target_signal,
+        "target_source": result.bundle.metadata.target_source,
+    }
+
+
+def evaluate_command(
+    dataset: str | Path,
+    model: str | Path,
+    split: Literal["validation", "test"] = "test",
+    output: str | Path | None = None,
+    config_path: str | Path = "config/runtime.toml",
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Evaluate a trusted local forecast artifact on a temporal split."""
+    from source.ml.artifacts import load_model
+    from source.ml.evaluate import evaluate_model, write_evaluation
+    from source.ml.features import build_supervised_dataset
+
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    bundle = load_model(
+        _resolve_path(model, root),
+        trusted=True,
+        expected_horizon_minutes=config.horizon_minutes,
+        expected_tag_dictionary_sha256=data.manifest.tag_dictionary_sha256,
+    )
+    supervised = build_supervised_dataset(
+        data,
+        target_signal_id=bundle.metadata.target_signal,
+        target_source=SourceKind(bundle.metadata.target_source),
+        horizon_minutes=bundle.metadata.horizon_minutes,
+    )
+    result = evaluate_model(
+        cast(Any, supervised), bundle, split=split, source_timezone=config.source_timezone
+    )
+    output_root = _resolve_path(output if output is not None else config.reports_dir, root)
+    report_dir = write_evaluation(output_root / f"{bundle.metadata.model_id}-{split}", result)
+    return {
+        "model_id": bundle.metadata.model_id,
+        "split": split,
+        "report_dir": report_dir.as_posix(),
+        "metrics": result.report["metrics"],
+    }
+
+
+def _scenario_target_signal(scenario: ScenarioConfig) -> str | None:
+    """Return the single forecast target expected by the current history scenario."""
+    return scenario.required_signals[0] if len(scenario.required_signals) == 1 else None
+
+
+def _scenario_target_unit(scenario: ScenarioConfig) -> str | None:
+    """Return the sulfur unit that the history artifact must serve, when configured."""
+    sulfur_constraints = [item for item in scenario.constraints if item.metric == "sulfur"]
+    return sulfur_constraints[0].unit if sulfur_constraints else None
+
+
+def run_history_command(
+    dataset: str | Path,
+    model: str | Path,
+    as_of: datetime,
+    *,
+    trusted_model: bool = False,
+    scenario: str | Path = "history",
+    config_path: str | Path = "config/runtime.toml",
+    run_dir: str | Path | None = None,
+    root: Path = PROJECT_ROOT,
+) -> Recommendation:
+    """Run the history serving path with an explicitly trusted local model artifact."""
+    from source.ml.artifacts import load_model
+    from source.orchestrator import run_cycle
+
+    config = load_runtime_config(_resolve_path(config_path, root))
+    scenario_path = Path(scenario)
+    if not scenario_path.suffix:
+        scenario_path = Path("config/scenarios") / f"{scenario}.json"
+    scenario_config = load_scenario(_resolve_path(scenario_path, root))
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    model_bundle = load_model(
+        _resolve_path(model, root),
+        trusted=trusted_model,
+        expected_horizon_minutes=config.horizon_minutes,
+        expected_tag_dictionary_sha256=data.manifest.tag_dictionary_sha256,
+        expected_target_signal=_scenario_target_signal(scenario_config),
+        expected_target_unit=_scenario_target_unit(scenario_config),
+    )
+    target_run_dir = _resolve_path(run_dir if run_dir is not None else config.runs_dir, root)
+    return run_cycle(
+        data=data,
+        as_of=as_of,
+        model=model_bundle,
+        scenario=scenario_config,
+        config=config,
+        context=DecisionContext(),
+        run_dir=target_run_dir,
+    )
+
+
 def accept_stage6(
     root: Path = PROJECT_ROOT,
     run_dir: str | Path | None = None,
@@ -239,6 +394,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--as-of", required=True, type=_parse_as_of, help="timezone-aware ISO datetime"
     )
     state.add_argument("--config", default="config/runtime.toml", help="runtime config path")
+    train = subparsers.add_parser("train", help="train a local forecast artifact")
+    train.add_argument("--dataset", required=True, help="prepared dataset directory")
+    train.add_argument(
+        "--target-source",
+        required=True,
+        choices=(SourceKind.PAK.value, SourceKind.LIMS.value),
+        help="quality source used as supervised target",
+    )
+    train.add_argument("--target-signal", default="ht:2:Mg.Sulfur", help="target signal id")
+    train.add_argument("--config", default="config/runtime.toml", help="runtime config path")
+    train.add_argument("--output", default=None, help="model artifact root")
+    evaluate = subparsers.add_parser("evaluate", help="evaluate a local forecast artifact")
+    evaluate.add_argument("--dataset", required=True, help="prepared dataset directory")
+    evaluate.add_argument("--model", required=True, help="local model artifact directory")
+    evaluate.add_argument(
+        "--split", choices=("validation", "test"), default="test", help="temporal split"
+    )
+    evaluate.add_argument("--config", default="config/runtime.toml", help="runtime config path")
+    evaluate.add_argument("--output", default=None, help="report root")
     accept = subparsers.add_parser(
         "accept-stage6", help="run Stage-6 acceptance and demonstration checks"
     )
@@ -247,6 +421,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="runs/stage6",
         help="directory for acceptance journals, relative to project root unless absolute",
     )
+    history = subparsers.add_parser(
+        "run-history", help="run history mode with a trusted local forecast artifact"
+    )
+    history.add_argument("--dataset", required=True, help="prepared dataset directory")
+    history.add_argument("--model", required=True, help="local model artifact directory")
+    history.add_argument(
+        "--trusted-model",
+        action="store_true",
+        help="allow loading the local joblib artifact after path and metadata checks",
+    )
+    history.add_argument(
+        "--as-of", required=True, type=_parse_as_of, help="timezone-aware ISO datetime"
+    )
+    history.add_argument("--scenario", default="history", help="scenario id or JSON path")
+    history.add_argument("--config", default="config/runtime.toml", help="runtime config path")
+    history.add_argument("--run-dir", default=None, help="journal directory override")
     args = parser.parse_args(argv)
     try:
         if args.command == "validate-stage0":
@@ -265,11 +455,43 @@ def main(argv: Sequence[str] | None = None) -> int:
             state_result = build_state_command(args.dataset, args.scenario, args.as_of, args.config)
             print(state_result.model_dump_json(indent=2))
             return 0
+        if args.command == "train":
+            training_result = train_command(
+                args.dataset,
+                args.target_source,
+                args.output,
+                target_signal=args.target_signal,
+                config_path=args.config,
+            )
+            print(json.dumps(training_result, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0
+        if args.command == "evaluate":
+            evaluation_result = evaluate_command(
+                args.dataset,
+                args.model,
+                split=cast(Literal["validation", "test"], args.split),
+                output=args.output,
+                config_path=args.config,
+            )
+            print(json.dumps(evaluation_result, ensure_ascii=False, indent=2, sort_keys=True))
+            return 0
         if args.command == "accept-stage6":
             acceptance_result = accept_stage6(run_dir=args.run_dir)
             print(json.dumps(acceptance_result, ensure_ascii=False, indent=2, sort_keys=True))
             return 0 if acceptance_result["passed"] else 1
-    except (FileNotFoundError, ValueError) as exc:
+        if args.command == "run-history":
+            recommendation = run_history_command(
+                args.dataset,
+                args.model,
+                args.as_of,
+                trusted_model=args.trusted_model,
+                scenario=args.scenario,
+                config_path=args.config,
+                run_dir=args.run_dir,
+            )
+            print(recommendation.model_dump_json(indent=2))
+            return 0
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 1

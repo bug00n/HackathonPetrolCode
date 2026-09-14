@@ -30,6 +30,7 @@ from source.main import (
     PROJECT_ROOT,
     build_state_command,
     prepare_command,
+    run_history_command,
     run_model_demo,
     validate_stage0,
 )
@@ -141,12 +142,17 @@ def _constraint_rows(result: Recommendation) -> tuple[ConstraintRow, ...]:
                 tone,
             )
         )
-    rows.extend(
-        (
-            ConstraintRow("T95", "—", "Требуется модель", "Не оценено", "unknown"),
-            ConstraintRow("Цетановое число", "—", "Требуется модель", "Не оценено", "unknown"),
-        )
-    )
+    metric_labels = (("t95", "T95"), ("cetane_number", "Цетановое число"))
+    for metric_name, label in metric_labels:
+        value, upper = _metric(evaluation, metric_name)
+        if value is None:
+            rows.append(ConstraintRow(label, "—", "Модельное значение", "Не оценено", "unknown"))
+            continue
+        unit = "°C" if metric_name == "t95" else ""
+        actual = f"{value:g} {unit}".strip()
+        if upper is not None and upper != value:
+            actual = f"{actual} / upper {upper:g} {unit}".strip()
+        rows.append(ConstraintRow(label, actual, "Модельное значение", "Оценено", "ok"))
     return tuple(rows)
 
 
@@ -289,6 +295,7 @@ class PetrolCodeApp(tk.Tk):
         for key, label in (
             ("overview", "Обзор"),
             ("recommendation", "Рекомендации"),
+            ("history", "История"),
             ("journal", "Журнал"),
         ):
             button = tk.Button(
@@ -333,6 +340,8 @@ class PetrolCodeApp(tk.Tk):
             self._render_overview()
         elif page == "recommendation":
             self._render_recommendation()
+        elif page == "history":
+            self._render_history()
         else:
             self._render_journal()
 
@@ -926,6 +935,103 @@ class PetrolCodeApp(tk.Tk):
             detail.insert("1.0", "Журнал пуст. Выполните модельный расчёт на экране «Обзор».")
             detail.configure(state="disabled")
 
+    def _render_history(self) -> None:
+        page = self._page_container()
+        tk.Label(
+            page,
+            text="Исторический прогноз",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 28, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            page,
+            text="Trusted local artifact serving; реальные уставки остаются выключены",
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 11),
+        ).pack(anchor="w", pady=(2, 18))
+        panel = self._surface(page)
+        panel.pack(fill="x")
+        fields = tk.Frame(panel, bg=SURFACE)
+        fields.pack(fill="x", padx=24, pady=20)
+        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
+        models = sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json"))
+        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
+        model_var = tk.StringVar(value=str(models[-1].parent) if models else "")
+        as_of_var = tk.StringVar(value="2026-01-15T09:00:00Z")
+        trusted_var = tk.BooleanVar(value=True)
+
+        for label, variable in (
+            ("Prepared dataset", dataset_var),
+            ("Model artifact", model_var),
+            ("As of", as_of_var),
+        ):
+            tk.Label(fields, text=label, bg=SURFACE, fg=TEXT, font=("Segoe UI", 10, "bold")).pack(
+                anchor="w"
+            )
+            tk.Entry(fields, textvariable=variable, bg="#FAFBFB", fg=TEXT, bd=1).pack(
+                fill="x", pady=(4, 12), ipady=7
+            )
+        tk.Checkbutton(
+            fields,
+            text="Доверяю локальному joblib artifact",
+            variable=trusted_var,
+            bg=SURFACE,
+            fg=TEXT,
+            activebackground=SURFACE,
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 12))
+        output = tk.Text(fields, height=14, bg="#FAFBFB", fg=TEXT, bd=1, wrap="word")
+        output.pack(fill="both", expand=True)
+        self._primary_button(
+            fields,
+            "Запустить history forecast",
+            lambda: self._run_history_from_ui(
+                dataset_var, model_var, as_of_var, trusted_var, output
+            ),
+        ).pack(anchor="e", pady=(14, 0))
+
+    def _run_history_from_ui(
+        self,
+        dataset_var: tk.StringVar,
+        model_var: tk.StringVar,
+        as_of_var: tk.StringVar,
+        trusted_var: tk.BooleanVar,
+        output: tk.Text,
+    ) -> None:
+        self.status_var.set("Исторический прогноз…")
+        output.delete("1.0", "end")
+        output.insert("1.0", "Выполняется расчёт…")
+
+        def work() -> None:
+            try:
+                timestamp = datetime.fromisoformat(as_of_var.get().replace("Z", "+00:00"))
+                result = run_history_command(
+                    dataset_var.get(),
+                    model_var.get(),
+                    timestamp,
+                    trusted_model=trusted_var.get(),
+                )
+                payload = {
+                    "status": result.status.value,
+                    "model_id": result.model_id,
+                    "reason_codes": result.reason_codes,
+                    "explanation": result.explanation,
+                    "run_id": result.run_id,
+                }
+                text = json.dumps(payload, ensure_ascii=False, indent=2)
+            except Exception as exc:
+                text = f"Ошибка: {exc}"
+            self.after(0, lambda: self._history_done(output, text))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _history_done(self, output: tk.Text, text: str) -> None:
+        self.status_var.set("Исторический прогноз завершён")
+        output.delete("1.0", "end")
+        output.insert("1.0", text)
+
     def _accordion(self, parent: tk.Misc, title: str, builder: Any) -> tk.Frame:
         shell = tk.Frame(parent, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1)
         content = tk.Frame(shell, bg=SURFACE)
@@ -1165,6 +1271,31 @@ def smoke_snapshot(scenario_id: str) -> dict[str, Any]:
     }
 
 
+def history_smoke_snapshot(
+    dataset: str | Path,
+    model: str | Path,
+    as_of: str,
+    *,
+    trusted_model: bool = True,
+    run_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Headless history forecast path used by tests and demo machines."""
+    timestamp = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+    result = run_history_command(
+        dataset,
+        model,
+        timestamp,
+        trusted_model=trusted_model,
+        run_dir=run_dir,
+    )
+    return {
+        "status": result.status.value,
+        "model_id": result.model_id,
+        "reason_codes": list(result.reason_codes),
+        "run_id": result.run_id,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="НЕФТЕКОД desktop interface")
     parser.add_argument("--scenario", choices=tuple(SCENARIO_LABELS.values()), default="blend_risk")
@@ -1175,7 +1306,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="initial screen",
     )
     parser.add_argument("--smoke", action="store_true", help="run calculation without opening Tk")
+    parser.add_argument("--history-smoke", action="store_true", help="run history without Tk")
+    parser.add_argument("--dataset", default=None, help="prepared dataset for --history-smoke")
+    parser.add_argument("--model", default=None, help="model artifact for --history-smoke")
+    parser.add_argument("--as-of", default="2026-01-15T09:00:00Z", help="history as_of")
+    parser.add_argument("--run-dir", default=None, help="history smoke journal directory")
     args = parser.parse_args(argv)
+    if args.history_smoke:
+        if args.dataset is None or args.model is None:
+            parser.error("--history-smoke requires --dataset and --model")
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        print(
+            json.dumps(
+                history_smoke_snapshot(args.dataset, args.model, args.as_of, run_dir=args.run_dir),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
     if args.smoke:
         if hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(encoding="utf-8")
@@ -1194,6 +1343,7 @@ __all__ = [
     "ConstraintRow",
     "DashboardView",
     "PetrolCodeApp",
+    "history_smoke_snapshot",
     "journal_entries",
     "main",
     "recommendation_to_view",
