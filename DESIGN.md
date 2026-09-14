@@ -686,6 +686,7 @@ Backend → ML: подготовленные таблицы, manifest, отчё�
 | 7 | Safety-first alarm, joint applicability и усиленный action capability gate |
 | 8 | Read-only диагностика временного drift, режимов, ПАК--ЛИМС и устойчивости признаков |
 | 9 | Эпизодный multi-horizon shadow-прогноз schema 1.2 и отложенный LIMS-контроль |
+| 10 | Matched-episode P8/F19 action study с UI-дисклеймером и `supports_actions=false` |
 
 Незавершённая возможность обозначается через capabilities и понятный отказ, не скрывается условной константой.
 
