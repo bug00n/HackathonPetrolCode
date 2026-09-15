@@ -12,6 +12,7 @@ from source.contracts import SourceKind
 from source.ml.features import SupervisedDataset
 from source.ml.v2 import (
     EpisodeSafetyPredictor,
+    _upper_limit_metrics,
     build_episode_dataset,
     episode_sample_weights,
     event_metrics,
@@ -52,6 +53,31 @@ def test_event_metrics_count_one_long_episode_once() -> None:
     assert metrics["event_false_negative_rate"] == pytest.approx(0.5)
 
 
+def test_event_metrics_requires_alarm_before_first_crossing() -> None:
+    frame = pd.DataFrame(
+        {
+            "as_of": pd.to_datetime(
+                ["2025-01-01 00:00", "2025-01-01 00:50", "2025-01-01 01:00"], utc=True
+            ),
+            "target_available_at": pd.to_datetime(["2025-01-01 01:00"] * 3, utc=True),
+            "baseline": [9.0, 9.0, 11.0],
+            "crossing_60m": [True, True, True],
+            "event_id": [1.0, 1.0, 1.0],
+            "event_start_at": pd.to_datetime(["2025-01-01 01:00"] * 3, utc=True),
+        }
+    )
+
+    # Only the post-crossing deterministic alarm is present: it must not count
+    # as a 10–60 minute early warning.
+    late_only = event_metrics(frame, np.asarray([0.1, 0.1, 0.1]), 0.5)
+    assert late_only["detected_events"] == 0
+    assert late_only["event_false_negative_rate"] == pytest.approx(1.0)
+
+    early = event_metrics(frame, np.asarray([0.1, 0.9, 0.1]), 0.5)
+    assert early["detected_events"] == 1
+    assert early["event_false_negative_rate"] == pytest.approx(0.0)
+
+
 def test_event_threshold_respects_false_alarm_budget() -> None:
     frame = _event_frame()
     probability = np.asarray([0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.1])
@@ -61,6 +87,16 @@ def test_event_threshold_respects_false_alarm_budget() -> None:
     assert metrics["row_false_positive_rate"] <= 1 / 3
     assert metrics["event_false_positive_rate"] <= 1 / 3
     assert policy.threshold > 0.4
+
+
+def test_upper_limit_metrics_measure_missed_limit_crossings() -> None:
+    metrics = _upper_limit_metrics(
+        np.asarray([9.0, 11.0, 12.0, 8.0]), np.asarray([10.5, 10.8, 9.9, 11.0])
+    )
+
+    assert metrics["upper_limit_misses"] == 1
+    assert metrics["upper_limit_miss_rate"] == pytest.approx(0.5)
+    assert metrics["upper_limit_false_alarm_rate"] == pytest.approx(1.0)
 
 
 def test_rolling_month_fold_purges_labels_published_after_boundary() -> None:
@@ -100,13 +136,17 @@ def test_current_violation_always_triggers_event_alarm() -> None:
         {horizon: Risk() for horizon in (10, 20, 30, 60)},
         {horizon: Calibrator() for horizon in (10, 20, 30, 60)},  # type: ignore[arg-type]
         SimpleNamespace(threshold=0.5),
-        SimpleNamespace(),
+        SimpleNamespace(assess=lambda _: SimpleNamespace(available=True, reason_code=None)),
     )
 
     assert predictor.predict_alarm(pd.DataFrame({"baseline": [9.0, 11.0]})).tolist() == [
         False,
         True,
     ]
+    rows = predictor.predict_v2(pd.DataFrame({"baseline": [9.0, 11.0]}))
+    assert rows[0]["event_alarm"] is False
+    assert rows[1]["event_alarm"] is True
+    assert rows[1]["reason_codes"] == ("CURRENT_SULFUR_LIMIT",)
 
 
 def test_episode_dataset_builds_future_labels_and_causal_features() -> None:
@@ -159,3 +199,51 @@ def test_episode_dataset_builds_future_labels_and_causal_features() -> None:
     assert not result.frame.loc[5, "crossing_10m"]
     assert "pak_range_60m" in result.feature_names
     assert "pak_minutes_since_crossing_10" in result.feature_names
+
+
+def test_crossing_labels_include_intermediate_ten_minute_steps() -> None:
+    times = pd.date_range("2024-01-01", periods=13, freq="10min", tz="UTC")
+    values = [9.0, 9.0, 9.0, 9.0, 11.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0]
+    quality = pd.DataFrame(
+        {
+            "observation_id": [f"pak-{index}" for index in range(len(times))],
+            "signal_id": ["ht:2:Mg.Sulfur"] * len(times),
+            "source": ["pak"] * len(times),
+            "validity": ["valid"] * len(times),
+            "unit": ["mg/kg"] * len(times),
+            "measured_at": times,
+            "available_at": times,
+            "value": values,
+        }
+    )
+    base_frame = pd.DataFrame(
+        {
+            "observation_id": ["query"],
+            "as_of": [times[0]],
+            "target_at": [times[6]],
+            "target_available_at": [times[6]],
+            "target_source": ["pak"],
+            "target_signal": ["ht:2:Mg.Sulfur"],
+            "target_unit": ["mg/kg"],
+            "y": [values[6]],
+            "baseline": [values[0]],
+            "ht:2:Mg.Sulfur__pak_last": [values[0]],
+        }
+    )
+    base = SupervisedDataset(
+        base_frame,
+        ("ht:2:Mg.Sulfur__pak_last",),
+        "ht:2:Mg.Sulfur",
+        "mg/kg",
+        SourceKind.PAK,
+        SourceKind.PAK,
+        "ht:2:Mg.Sulfur__pak_last",
+        {},
+        {},
+    )
+
+    result = build_episode_dataset(SimpleNamespace(quality=quality), base)  # type: ignore[arg-type]
+
+    assert result.frame.loc[0, "y_60m"] == pytest.approx(9.0)
+    assert result.frame.loc[0, "crossing_60m"]
+    assert result.frame.loc[0, "event_id"] == 1

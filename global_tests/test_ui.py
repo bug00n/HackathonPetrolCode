@@ -12,7 +12,12 @@ import pytest
 from source.config import load_runtime_config, load_scenario
 from source.contracts import DecisionContext, RecommendationStatus
 from source.orchestrator import run_cycle
-from source.ui import journal_entries, recommendation_to_view
+from source.ui import (
+    format_action_shadow_payload,
+    format_v2_forecast_payload,
+    journal_entries,
+    recommendation_to_view,
+)
 
 
 def _view(scenario_id: str, run_dir: Path):
@@ -73,6 +78,50 @@ def test_ui_keeps_missing_sulfur_unavailable(tmp_path: Path) -> None:
 
     assert view.selected_upper is None
     assert view.action_title == "Требуется ручная проверка"
+
+
+def test_action_shadow_view_separates_domain_validation_and_safety() -> None:
+    text = format_action_shadow_payload(
+        {
+            "control_id": "ht:P8",
+            "proposed_delta": 0.001,
+            "state": {"baseline_sulfur": 9.5},
+            "predicted_sulfur": {"60": 9.4, "120": 9.3, "180": 9.2},
+            "sulfur_change": {"60": -0.1, "120": -0.2, "180": -0.3},
+            "sulfur_upper": {"60": 10.2, "120": 10.1, "180": 9.9},
+            "within_observed_domain": True,
+            "model_validated": False,
+            "safety_passes": False,
+            "reason_codes": ("ACTION_EFFECT_VALIDATION_FAILED",),
+        }
+    )
+
+    assert "Изменение к hold" in text
+    assert "Историческая область: да" in text
+    assert "Validation модели: не пройдена" in text
+    assert "Верхняя граница серы: не проходит" in text
+
+
+def test_v2_shadow_view_shows_horizons_and_never_advises() -> None:
+    text = format_v2_forecast_payload(
+        {
+            "as_of": "2025-06-01T12:00:00+00:00",
+            "production_status": "shadow_only",
+            "forecast": {
+                "horizon_probabilities": {"10": 0.1, "20": 0.2, "30": 0.3, "60": 0.4},
+                "event_alarm": True,
+                "applicable": False,
+                "point_60m": 9.4,
+                "upper_60m": 10.4,
+                "reason_codes": ("OOD",),
+            },
+        }
+    )
+
+    assert "Эпизодный прогноз серы" in text
+    assert "60 мин | 40.0%" in text
+    assert "не изменяет уставки" in text
+    assert "shadow_only" in text
 
 
 def test_journal_lists_only_complete_results_newest_first(tmp_path: Path) -> None:

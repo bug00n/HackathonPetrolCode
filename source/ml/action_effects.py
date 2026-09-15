@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import shutil
+import tempfile
 from dataclasses import dataclass
 from math import isfinite
+from pathlib import Path
 from typing import Any, Mapping, cast
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.neighbors import NearestNeighbors
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -22,16 +29,25 @@ from source.ml.controls import ActionEffectEvidence, JointControlDomain
 from source.ml.safety import JointApplicabilityModel, fit_joint_applicability
 
 HISTORICAL_ACTION_CONTROLS = ("ht:P8", "ht:F19")
-HISTORICAL_CONTEXT_SIGNALS = ("ht:F26",)
+HISTORICAL_CONTEXT_SIGNALS = ("ht:T11", "ht:F26")
 ACTION_HORIZONS = (60, 120, 180)
-ACTION_STATE_FEATURES = (
+LEGACY_ACTION_STATE_FEATURES = (
     "baseline_sulfur",
     "sulfur_slope_60m",
     "ht:P8",
     "ht:F19",
     "ht:F26",
 )
+ACTION_STATE_FEATURES = (
+    "baseline_sulfur",
+    "sulfur_slope_60m",
+    "ht:P8",
+    "ht:F19",
+    "ht:T11",
+    "ht:F26",
+)
 ACTION_MODEL_FEATURES = (*ACTION_STATE_FEATURES, "delta_ht:P8", "delta_ht:F19")
+LEGACY_ACTION_MODEL_FEATURES = (*LEGACY_ACTION_STATE_FEATURES, "delta_ht:P8", "delta_ht:F19")
 
 
 @dataclass(frozen=True)
@@ -76,6 +92,9 @@ class HistoricalActionEstimate:
     effect_by_horizon: dict[int, float]
     applicable: bool
     reason_codes: tuple[str, ...]
+    within_observed_domain: bool = False
+    model_validated: bool = False
+    safety_passes: bool = False
 
     def as_ui_payload(self) -> dict[str, object]:
         return {
@@ -93,6 +112,9 @@ class HistoricalActionEstimate:
                 str(horizon): self.sulfur_upper_by_horizon[horizon] for horizon in ACTION_HORIZONS
             },
             "applicable": self.applicable,
+            "within_observed_domain": self.within_observed_domain,
+            "model_validated": self.model_validated,
+            "safety_passes": self.safety_passes,
             "advisory": False,
             "reason_codes": self.reason_codes,
         }
@@ -110,6 +132,10 @@ class HistoricalActionEffectModel:
     report: Mapping[str, Any]
     supports_actions: bool = False
 
+    def __post_init__(self) -> None:
+        if self.supports_actions:
+            raise ValueError("historical action-effect artifacts are research-only")
+
     def estimate(
         self,
         state: Mapping[str, float],
@@ -122,20 +148,29 @@ class HistoricalActionEffectModel:
             raise ValueError("historical action model supports only ht:P8 or ht:F19")
         if not np.isfinite(proposed_delta):
             raise ValueError("proposed action delta must be finite")
-        missing = set(ACTION_STATE_FEATURES).difference(state)
+        configured_state_features = tuple(
+            str(name) for name in self.report.get("state_features", LEGACY_ACTION_STATE_FEATURES)
+        )
+        configured_model_features = tuple(
+            str(name) for name in self.report.get("model_features", LEGACY_ACTION_MODEL_FEATURES)
+        )
+        missing = set(configured_state_features).difference(state)
         if missing:
             raise ValueError(f"historical action state is missing: {sorted(missing)}")
         action = {"delta_ht:P8": 0.0, "delta_ht:F19": 0.0}
         action[f"delta_{control_id}"] = float(proposed_delta)
-        row = pd.DataFrame([{**state, **action}], columns=ACTION_MODEL_FEATURES)
+        row = pd.DataFrame([{**state, **action}], columns=configured_model_features)
         reasons: list[str] = []
-        if not bool(self.report.get("evidence_gate_passed", False)):
+        model_validated = bool(self.report.get("evidence_gate_passed", False))
+        if not model_validated:
             reasons.append("ACTION_EFFECT_VALIDATION_FAILED")
         lower, upper = self.observed_delta_bounds[control_id]
-        if not lower <= proposed_delta <= upper:
+        delta_in_range = lower <= proposed_delta <= upper
+        if not delta_in_range:
             reasons.append("ACTION_DELTA_OUT_OF_OBSERVED_RANGE")
-        applicability = self.applicability.assess(row.loc[:, list(ACTION_STATE_FEATURES)])
-        if not applicability.available:
+        applicability = self.applicability.assess(row.loc[:, list(configured_state_features)])
+        state_in_domain = bool(applicability.available)
+        if not state_in_domain:
             reasons.append(applicability.reason_code or "OUT_OF_DOMAIN")
         hold = row.copy()
         hold.loc[:, ["delta_ht:P8", "delta_ht:F19"]] = 0.0
@@ -153,6 +188,7 @@ class HistoricalActionEffectModel:
             effect[horizon] = point - hold_point
             if sulfur_upper[horizon] > sulfur_limit:
                 reasons.append(f"SULFUR_UPPER_LIMIT_{horizon}M")
+        safety_passes = all(value <= sulfur_limit for value in sulfur_upper.values())
         return HistoricalActionEstimate(
             control_id,
             proposed_delta,
@@ -161,7 +197,96 @@ class HistoricalActionEffectModel:
             effect,
             not reasons,
             tuple(dict.fromkeys(reasons)),
+            delta_in_range and state_in_domain,
+            model_validated,
+            safety_passes,
         )
+
+
+def _artifact_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def save_historical_action_model(
+    directory: Path, model: HistoricalActionEffectModel, *, training_dataset_id: str
+) -> Path:
+    """Persist the shadow model for local research UI; it never enables actions."""
+    directory = Path(directory)
+    if directory.exists():
+        raise FileExistsError(f"action model directory already exists: {directory}")
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix=f".{directory.name}.", dir=directory.parent))
+    try:
+        model_path = temporary / "model.joblib"
+        joblib.dump(model, model_path, compress=3)
+        metadata = {
+            "schema_version": "1.0",
+            "artifact_kind": "historical_action_effect_shadow",
+            "bundle_kind": "ActionModelBundle",
+            "training_dataset_id": training_dataset_id,
+            "model_sha256": _artifact_sha256(model_path),
+            "supports_actions": False,
+            "controls": list(model.report.get("controls", HISTORICAL_ACTION_CONTROLS)),
+            "outcomes": [f"sulfur_{horizon}m" for horizon in ACTION_HORIZONS],
+            "horizons_minutes": list(ACTION_HORIZONS),
+            "state_features": list(
+                model.report.get("state_features", LEGACY_ACTION_STATE_FEATURES)
+            ),
+            "model_features": list(
+                model.report.get("model_features", LEGACY_ACTION_MODEL_FEATURES)
+            ),
+            "observed_delta_bounds": {
+                control: list(bounds) for control, bounds in model.observed_delta_bounds.items()
+            },
+            "joint_domain": {
+                "method": "joint_pca_mahalanobis",
+                "max_distance_squared": getattr(model.applicability, "max_distance_squared", None),
+            },
+            "validation_evidence": dict(model.report.get("gate", {})),
+            "engineering_limits": None,
+        }
+        (temporary / "metadata.json").write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        (temporary / "metrics.json").write_text(
+            json.dumps(dict(model.report), ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(directory)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return directory
+
+
+def load_historical_action_model(
+    directory: Path, *, trusted: bool = False, expected_dataset_id: str | None = None
+) -> HistoricalActionEffectModel:
+    """Load a checksum-verified local shadow artifact from a trusted directory."""
+    if not trusted:
+        raise ValueError("action artifacts may be loaded only from an explicitly trusted path")
+    directory = Path(directory)
+    metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
+    model_path = directory / "model.joblib"
+    if metadata.get("artifact_kind") != "historical_action_effect_shadow":
+        raise ValueError("artifact is not a historical action-effect model")
+    if (
+        expected_dataset_id is not None
+        and metadata.get("training_dataset_id") != expected_dataset_id
+    ):
+        raise ValueError("action artifact was trained on a different prepared dataset")
+    if metadata.get("supports_actions") is not False:
+        raise ValueError("action artifact must not enable actions")
+    if metadata.get("model_sha256") != _artifact_sha256(model_path):
+        raise ValueError("action artifact checksum mismatch")
+    model = joblib.load(model_path)
+    if not isinstance(model, HistoricalActionEffectModel) or model.supports_actions:
+        raise ValueError("action artifact has incompatible capability")
+    return model
 
 
 def _pak_sulfur(data: PreparedData) -> pd.DataFrame:
@@ -379,21 +504,67 @@ def fit_historical_action_model(
         frame.loc[train, list(ACTION_STATE_FEATURES)],
         required_features=ACTION_STATE_FEATURES,
     )
-    evidence_gate_passed = all(
-        values["mae"] <= 0.90 * values["hold_mae"] and values["upper_coverage"] >= 0.95
-        for values in validation_metrics.values()
+    per_control_pairs = {
+        signal: int(frame.loc[frame["is_action_episode"], "control_id"].eq(signal).sum())
+        for signal in HISTORICAL_ACTION_CONTROLS
+    }
+    statistical_mae_gate = all(
+        values["mae"] <= 0.90 * values["hold_mae"] for values in validation_metrics.values()
+    )
+    coverage_gate = all(values["upper_coverage"] >= 0.95 for values in validation_metrics.values())
+    audit_coverage_gate = all(values["upper_coverage"] >= 0.95 for values in audit_metrics.values())
+    episode_count_gate = all(count >= 100 for count in per_control_pairs.values())
+    # These are deliberately false until engineering limits and temporal sign stability
+    # are confirmed outside this observational benchmark.
+    sign_stability_gate = False
+    engineering_bounds_gate = False
+    evidence_gate_passed = (
+        episode_count_gate
+        and statistical_mae_gate
+        and coverage_gate
+        and audit_coverage_gate
+        and sign_stability_gate
+        and engineering_bounds_gate
+    )
+    gate_reasons: list[str] = []
+    if not episode_count_gate:
+        gate_reasons.append("INSUFFICIENT_PER_CONTROL_EPISODES")
+    if not statistical_mae_gate:
+        gate_reasons.append("ACTION_MODEL_GAIN_BELOW_10_PERCENT")
+    if not coverage_gate:
+        gate_reasons.append("ACTION_INTERVAL_COVERAGE_INSUFFICIENT")
+    if not audit_coverage_gate:
+        gate_reasons.append("ACTION_AUDIT_INTERVAL_COVERAGE_INSUFFICIENT")
+    gate_reasons.extend(
+        (
+            "ACTION_EFFECT_SIGN_UNSTABLE",
+            "CONTROL_LIMITS_UNCONFIRMED",
+            "SHADOW_REPLAY_MISSING",
+            "TECHNOLOGIST_PILOT_MISSING",
+        )
     )
     report = {
         "basis": "matched_historical_episodes_not_causal_guarantee",
         "controls": list(HISTORICAL_ACTION_CONTROLS),
         "context_only": list(HISTORICAL_CONTEXT_SIGNALS),
         "thresholds": dataset.thresholds,
+        "state_features": list(ACTION_STATE_FEATURES),
+        "model_features": list(ACTION_MODEL_FEATURES),
         "episode_rows": int(len(frame)),
         "independent_pairs": int(frame["pair_id"].nunique()),
-        "per_control_pairs": {
-            signal: int(frame.loc[frame["is_action_episode"], "control_id"].eq(signal).sum())
-            for signal in HISTORICAL_ACTION_CONTROLS
+        "per_control_pairs": per_control_pairs,
+        "match_distance_limit": dataset.match_distance_limit,
+        "gate": {
+            "minimum_100_each_control": episode_count_gate,
+            "mae_10_percent_better_than_hold": statistical_mae_gate,
+            "upper_coverage_at_least_95_percent": coverage_gate,
+            "audit_upper_coverage_at_least_95_percent": audit_coverage_gate,
+            "effect_sign_stable_in_three_folds": sign_stability_gate,
+            "engineering_bounds_confirmed": engineering_bounds_gate,
+            "shadow_replay_passed": False,
+            "technologist_pilot_approved": False,
         },
+        "gate_failure_reasons": tuple(dict.fromkeys(gate_reasons)),
         "validation_2025": validation_metrics,
         "audit_2026": audit_metrics,
         "evidence_gate_passed": evidence_gate_passed,
@@ -409,6 +580,132 @@ def fit_historical_action_model(
         dataset.observed_delta_bounds,
         report,
     )
+
+
+def evaluate_temporal_residualization(
+    dataset: HistoricalActionDataset,
+    *,
+    train_end: str = "2025-01-01",
+    validation_end: str = "2026-01-01",
+) -> dict[str, Any]:
+    """Evaluate an action/outcome residual model with forward-only cross-fitting.
+
+    This is evidence about conditional historical associations.  It is deliberately
+    separate from ``HistoricalActionEffectModel`` because residualization alone does
+    not establish a causal action effect.
+    """
+    frame = dataset.frame.sort_values("timestamp", kind="stable").reset_index(drop=True)
+    timestamp = pd.to_datetime(frame["timestamp"], utc=True)
+    train = frame.loc[timestamp < pd.Timestamp(train_end, tz="UTC")].reset_index(drop=True)
+    validation = frame.loc[
+        (timestamp >= pd.Timestamp(train_end, tz="UTC"))
+        & (timestamp < pd.Timestamp(validation_end, tz="UTC"))
+    ].reset_index(drop=True)
+    if len(train) < 40 or validation.empty:
+        raise ValueError("residualization needs non-empty temporal train and validation periods")
+    states = list(ACTION_STATE_FEATURES)
+    actions = ["delta_ht:P8", "delta_ht:F19"]
+
+    def pipeline() -> Pipeline:
+        return Pipeline(
+            (
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),
+                ("model", Ridge(alpha=10.0)),
+            )
+        )
+
+    splitter = TimeSeriesSplit(n_splits=3)
+    oof_action = np.full((len(train), len(actions)), np.nan)
+    oof_outcomes = {horizon: np.full(len(train), np.nan) for horizon in ACTION_HORIZONS}
+    fold_residuals: dict[int, list[tuple[np.ndarray, np.ndarray]]] = {
+        horizon: [] for horizon in ACTION_HORIZONS
+    }
+    for fold_train, fold_valid in splitter.split(train):
+        action_model = pipeline().fit(
+            train.iloc[fold_train][states], train.iloc[fold_train][actions]
+        )
+        oof_action[fold_valid] = action_model.predict(train.iloc[fold_valid][states])
+        for horizon in ACTION_HORIZONS:
+            target = f"sulfur_{horizon}m"
+            outcome_model = pipeline().fit(
+                train.iloc[fold_train][states], train.iloc[fold_train][target]
+            )
+            outcome_prediction = outcome_model.predict(train.iloc[fold_valid][states])
+            oof_outcomes[horizon][fold_valid] = outcome_prediction
+            fold_residuals[horizon].append(
+                (
+                    train.iloc[fold_valid][actions].to_numpy(dtype=float) - oof_action[fold_valid],
+                    train.iloc[fold_valid][target].to_numpy(dtype=float) - outcome_prediction,
+                )
+            )
+    valid_oof = np.isfinite(oof_action).all(axis=1)
+    action_residual = train.loc[valid_oof, actions].to_numpy(dtype=float) - oof_action[valid_oof]
+    report: dict[str, Any] = {
+        "basis": "temporal_cross_fitted_residualization_not_causal_guarantee",
+        "train_period": f"before {train_end}",
+        "validation_period": f"{train_end}/{validation_end}",
+        "cross_fit_folds": 3,
+        "oof_rows": int(valid_oof.sum()),
+        "horizons": {},
+        "supports_actions": False,
+        "promotion_eligible": False,
+    }
+    final_action_model = pipeline().fit(train[states], train[actions])
+    validation_action_residual = validation[actions].to_numpy(
+        dtype=float
+    ) - final_action_model.predict(validation[states])
+    for horizon in ACTION_HORIZONS:
+        target = f"sulfur_{horizon}m"
+        target_oof = train.loc[valid_oof, target].to_numpy(dtype=float)
+        outcome_oof = oof_outcomes[horizon][valid_oof]
+        outcome_residual = target_oof - outcome_oof
+        effect_model = pipeline().fit(action_residual, outcome_residual)
+        final_outcome_model = pipeline().fit(train[states], train[target])
+        outcome_prediction = final_outcome_model.predict(validation[states])
+        effect_prediction = effect_model.predict(validation_action_residual)
+        validation_prediction = outcome_prediction + effect_prediction
+        actual = validation[target].to_numpy(dtype=float)
+        hold = validation["baseline_sulfur"].to_numpy(dtype=float)
+        control_effects: dict[str, float] = {}
+        signs: dict[str, int] = {}
+        for position, control in enumerate(HISTORICAL_ACTION_CONTROLS):
+            scale = float(np.nanquantile(np.abs(action_residual[:, position]), 0.75))
+            probe = np.zeros((1, len(actions)))
+            probe[0, position] = scale
+            effect = float(
+                effect_model.predict(probe)[0] - effect_model.predict(np.zeros_like(probe))[0]
+            )
+            control_effects[control] = effect
+            signs[control] = int(np.sign(effect))
+        fold_signs: list[dict[str, int]] = []
+        for fold_action_residual, fold_outcome_residual in fold_residuals[horizon]:
+            fold_model = pipeline().fit(fold_action_residual, fold_outcome_residual)
+            fold_result: dict[str, int] = {}
+            for position, control in enumerate(HISTORICAL_ACTION_CONTROLS):
+                scale = float(np.nanquantile(np.abs(fold_action_residual[:, position]), 0.75))
+                probe = np.zeros((1, len(actions)))
+                probe[0, position] = scale
+                fold_result[control] = int(
+                    np.sign(
+                        fold_model.predict(probe)[0] - fold_model.predict(np.zeros_like(probe))[0]
+                    )
+                )
+            fold_signs.append(fold_result)
+        sign_stable = {
+            control: len({fold[control] for fold in fold_signs}) == 1
+            and fold_signs[0][control] != 0
+            for control in HISTORICAL_ACTION_CONTROLS
+        }
+        report["horizons"][str(horizon)] = {
+            "mae": float(mean_absolute_error(actual, validation_prediction)),
+            "hold_mae": float(mean_absolute_error(actual, hold)),
+            "effect_for_train_q75_residual_action": control_effects,
+            "effect_sign": signs,
+            "effect_sign_by_fold": fold_signs,
+            "effect_sign_stable": sign_stable,
+        }
+    return report
 
 
 @dataclass(frozen=True)
@@ -583,6 +880,9 @@ __all__ = [
     "LinearActionEffectModel",
     "build_historical_action_dataset",
     "evaluate_linear_action",
+    "evaluate_temporal_residualization",
     "fit_historical_action_model",
     "rank_linear_actions",
+    "save_historical_action_model",
+    "load_historical_action_model",
 ]

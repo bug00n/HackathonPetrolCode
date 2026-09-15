@@ -640,8 +640,19 @@ def fit_lims_correction(
     upper = GradientBoostingRegressor(
         loss="quantile", alpha=0.95, n_estimators=100, max_depth=2, random_state=seed
     ).fit(train.loc[:, list(names)].fillna(train.loc[:, list(names)].median()), y_train)
-    x_test = test.loc[:, list(names)]
     median = train.loc[:, list(names)].median()
+
+    validation_features = validation.loc[:, list(names)]
+    validation_corrected = validation["pak_point"].to_numpy(dtype=float) + point.predict(
+        validation_features
+    )
+    validation_upper = validation["pak_point"].to_numpy(dtype=float) + upper.predict(
+        validation_features.fillna(median)
+    )
+    validation_actual = validation["y"].to_numpy(dtype=float)
+    validation_pak = validation["pak_point"].to_numpy(dtype=float)
+
+    x_test = test.loc[:, list(names)]
     corrected = test["pak_point"].to_numpy(dtype=float) + point.predict(x_test)
     upper_prediction = test["pak_point"].to_numpy(dtype=float) + upper.predict(
         x_test.fillna(median)
@@ -656,6 +667,13 @@ def fit_lims_correction(
         "selected_model": selected_name,
         "published_lims_feature_count": len(lims_feature_names),
         "validation_mae": validation_mae,
+        "validation_pak_point_mae": float(np.mean(np.abs(validation_actual - validation_pak))),
+        "validation_corrected_mae": float(
+            np.mean(np.abs(validation_actual - validation_corrected))
+        ),
+        "validation_upper_coverage": float(
+            np.mean(validation_actual <= np.maximum(validation_corrected, validation_upper))
+        ),
         "test_rows": int(len(test)),
         "pak_point_mae": float(np.mean(np.abs(actual - test["pak_point"].to_numpy(dtype=float)))),
         "corrected_mae": float(np.mean(np.abs(actual - corrected))),
@@ -663,9 +681,10 @@ def fit_lims_correction(
         "test_used_for_selection": False,
     }
     report["promotion_eligible"] = (
-        report["corrected_mae"] <= 0.95 * report["pak_point_mae"]
-        and report["upper_coverage"] >= 0.95
+        report["validation_corrected_mae"] <= 0.95 * report["validation_pak_point_mae"]
+        and report["validation_upper_coverage"] >= 0.95
     )
+    report["promotion_basis"] = "validation_only; test_is_audit"
     return LimsCorrectionResult(selected_name, point, upper, report)
 
 
@@ -709,6 +728,21 @@ def save_safety_model(
                 "supports_uncertainty": True,
                 "supports_exceedance_probability": True,
             },
+            "alarm_threshold": fitted.report["alarm_threshold"],
+            "false_alarm_budget": fitted.report["false_alarm_budget"],
+            "calibration": {
+                "method": "platt",
+                "period": "first_validation_half",
+                "threshold_selection": "minimum_fnr_subject_to_fpr_budget",
+            },
+            "metrics": {
+                "pak": {
+                    "validation": fitted.report["validation_policy"],
+                    "test": fitted.report["test"],
+                    "transition_recall": fitted.report["test_transition_recall"],
+                },
+                "lims": "separate_target_not_promoted",
+            },
             "processing": {
                 **point_upper_model.metadata.processing,
                 "safety_policy": {
@@ -737,6 +771,12 @@ def save_safety_model(
                 "purpose": "60-minute sulfur point, upper and exceedance-risk forecast",
                 "target_source": point_upper_model.metadata.target_source,
                 "action_comparison": "forbidden",
+            },
+            "ood": {
+                "method": "joint_pca_mahalanobis",
+                "coverage": 0.99,
+                "max_distance_squared": fitted.predictor.applicability.max_distance_squared,
+                "out_of_domain_behavior": "unavailable",
             },
             "reports": tuple(point_upper_model.metadata.reports) + ("metrics.json",),
         }

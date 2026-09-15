@@ -5,6 +5,7 @@
 - [План реализации](IMPLEMENTATION_PLAN.md) — этапы, сроки и разделение работы между backend и ML.
 - [Технический дизайн](DESIGN.md) — архитектура, структура файлов, типы данных, взаимодействие компонентов и проверки.
 - [Уточнения Q&A 11.09](QA_CLARIFICATIONS.md) — подтверждённые ответы, открытые вопросы и последствия для backend/ML.
+- [Разбор схем АВТ 14.09](SCHEME_ANALYSIS_2026_09_14.md) — привязка `avt:*` к К-1/К-2/К-10, полезные ML-группы и границы доказательств.
 - [Гайд по проекту](PROJECT_GUIDE.md) — объяснение с нуля: суть ТЗ, роли backend/ML, объекты, этапы и рабочий процесс.
 - [Stage 1](STAGE1.md) — первый сквозной backend-цикл, demo-сценарии, журнал и ограничения этапа.
 - [Stage 2](STAGE2.md) — как оригинальные материалы превращаются в prepared dataset и `ProcessState`.
@@ -22,7 +23,7 @@
 
 ## Текущее состояние проекта
 
-Реализация дошла до Stage 9 и содержит desktop UI, воспроизводимое обучение,
+Реализация дошла до Stage 10 и содержит desktop UI, воспроизводимое обучение,
 историческую оценку, replay и приёмочную демонстрацию. Промышленная action model не
 заявлена; актуальный исполняемый контракт описан ниже.
 
@@ -35,6 +36,9 @@ python -m source.main diagnose-ml --dataset data/processed/aacc7c1ab3d9
 Stage 9 добавляет schema-1.2 эпизодный multi-horizon прогноз только в shadow-режиме.
 Ответы Q&A 11.09 не подтверждают физический смысл/единицы `P8/T11/F19`, поэтому эти
 колонки не считаются разрешёнными действиями и требуют отдельной PAK-only ablation.
+Схемы АВТ от 14.09 локализуют короткие `avt:*` на К-1/К-2/К-10, но не относятся
+к 24-2000 и потому не снимают это ограничение. Они задают компактные группы для
+будущей train-only ablation upstream-признаков; текущий feature list не изменён.
 
 Сейчас реализованы:
 
@@ -58,8 +62,9 @@ Stage 9 добавляет schema-1.2 эпизодный multi-horizon прог�
   неполном паспорте компонента.
 
 Полноценной промышленной ML-модели и управления реальными уставками пока нет. Доступен
-локальный desktop UI на Python: он запускает существующие model-demo сценарии, показывает
-проверки и журнал, но не выдаёт промышленную рекомендацию на реальной истории.
+локальный desktop UI на Python: он запускает model-demo, показывает проверки и журнал, а
+также открывает исследовательский сценарий P8/F19 по сохранённому historical artifact.
+Этот экран показывает оценку эффекта и её ограничения, но не выдаёт рекомендацию уставки.
 
 Stage 4 показывает связанную цепочку и модельный блендинг. Газовые теги видны как
 технологический контекст, но не становятся action controls: нет подтверждённых единиц,
@@ -137,7 +142,10 @@ python -m source.ui --scenario blend_missing
 
 Интерфейс сохраняет текущие возможности системы: модельный расчёт рецептуры, доступные
 ограничения, экспорт результата, журнал запусков, проверку конфигурации, подготовку данных
-и сборку historical state. UI показывает рассчитанные верхние границы серы/T95, нижнюю
+и сборку historical state. В блоке «Данные» кнопка «Прогноз серы» выполняет replay
+доверенного локального forecast-artifact в выбранный момент истории; кнопка «Исследовать P8/F19» открывает
+исторический сценарий с point/upper серы на 60/120/180 минут; он требует заранее созданный
+локальный `action-shadow-*` artifact. UI показывает рассчитанные верхние границы серы/T95, нижнюю
 границу цетанового числа и долю присадки; модельный характер расчёта остаётся видимым.
 Для проверки без дисплея:
 
@@ -168,7 +176,9 @@ python -m source.main build-state --dataset data/processed/<dataset_id> --scenar
 
 ## Stage 6: обучение, оценка и приёмка
 
-Обучение запускается только из чистого Git worktree; test не участвует в выборе модели:
+Production-freeze запускается только из чистого Git worktree; test не участвует в выборе
+модели. Для хакатонного исследования можно явно создать воспроизводимо помеченный
+`working-tree` shadow-artifact:
 
 ```bash
 python -m source.main train --dataset data/processed/<dataset_id> --with-uncertainty
@@ -179,12 +189,45 @@ python -m source.main train --dataset data/processed/<dataset_id> --with-uncerta
 # Эпизодный прогноз 10/20/30/60 минут; создаёт только shadow-артефакт schema 1.2.
 python -m source.main train-v2-shadow --dataset data/processed/<dataset_id>
 
+# То же на текущих незакоммиченных изменениях; только shadow, не production-freeze.
+python -m source.main train-v2-shadow --dataset data/processed/<dataset_id> \
+  --allow-dirty-shadow
+
+# Проверить один исторический timestamp по schema-1.2 shadow-артефакту.
+python -m source.main replay-v2-shadow \
+  --dataset data/processed/<dataset_id> \
+  --model artifacts/models/sulfur-v2-shadow-<hash> \
+  --at 2025-06-01T12:00:00+03:00
+
 # Оценить исторический модельный эффект P8/F19; рекомендации не включает.
 python -m source.main evaluate-action-shadow --dataset data/processed/<dataset_id>
+
+# Рассчитать один сценарий из сохранённого action-shadow artifact.
+python -m source.main action-shadow-estimate --dataset data/processed/<dataset_id> \
+  --model artifacts/models/action-shadow-<dataset_id>-v2 --control ht:P8 --delta 0.001 \
+  --at 2025-06-01T12:00:00+03:00
+
+# Проверить отдельную отложенную коррекцию ПАК→ЛИМС.
+python -m source.main evaluate-lims-correction --dataset data/processed/<dataset_id> \
+  --pak-model artifacts/models/<pak_model_id>
+
+# Проверить temporal residualization для P8/F19.
+python -m source.main evaluate-action-residualization \
+  --dataset data/processed/<dataset_id>
 ```
+
+Обычное обучение требует чистого worktree, чтобы `git_commit` в metadata точно описывал
+код. Флаг `--allow-dirty-shadow` не ослабляет этот production-контроль: в metadata
+пишется метка `working-tree:<HEAD>:<status-hash>`, а `production_status` остаётся
+`shadow_only`. `replay-v2-shadow` доступен после обоих вариантов и остаётся read-only.
 
 Контракт и ограничения ML v2 описаны в [STAGE9.md](STAGE9.md). Test 2026 служит
 только audit-набором; production требует нового shadow-периода.
+
+В UI на вкладке «Инструменты данных» доступны отдельные «Прогноз серы» (legacy
+replay) и «Эпизодный прогноз v2» (schema 1.2 shadow). Последний показывает
+multi-horizon риск, upper-bound и причины неприменимости, но не является советом и
+не подключён к изменению уставок.
 
 Сравнить frozen point model с persistence baseline на одинаковых timestamp:
 

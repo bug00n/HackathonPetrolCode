@@ -1,7 +1,7 @@
-"""Tkinter desktop interface for the currently implemented recommendation system.
+"""Tkinter desktop interface for model-demo and read-only research artifacts.
 
-The UI deliberately exposes model-demo calculations as model scenarios.  It
-does not imply that real setpoint or product-quality action models are available.
+The UI never implies that real setpoint or product-quality action models are
+available: historical effects and schema-1.2 forecasts are explicitly shadow-only.
 """
 
 from __future__ import annotations
@@ -28,8 +28,12 @@ from source.contracts import (
 )
 from source.main import (
     PROJECT_ROOT,
+    action_shadow_estimate_command,
     build_state_command,
+    evaluate_lims_correction_command,
     prepare_command,
+    replay_command,
+    replay_v2_shadow_command,
     run_model_demo,
     validate_stage0,
 )
@@ -250,6 +254,92 @@ def _format_value(value: float | None, unit: str = "мг/кг") -> str:
         return "—"
     rendered = f"{value:.2f}".rstrip("0").rstrip(".").replace(".", ",")
     return f"{rendered} {unit}"
+
+
+def format_action_shadow_payload(payload: dict[str, object]) -> str:
+    """Render a research action scenario as sulfur changes rather than raw JSON."""
+    state = payload.get("state", {})
+    baseline = state.get("baseline_sulfur") if isinstance(state, dict) else None
+    control = str(payload.get("control_id", "—"))
+    delta = payload.get("proposed_delta")
+    point = payload.get("predicted_sulfur", {})
+    upper = payload.get("sulfur_upper", {})
+    effect = payload.get("sulfur_change", {})
+    rows = [
+        "Модельный эффект по историческим эпизодам",
+        "Не является советом по изменению уставки.",
+        "",
+        f"Текущая сера ПАК: {_format_value(baseline if isinstance(baseline, float) else None)}",
+        f"Сценарий: {control} на {delta}",
+        "",
+        "Горизонт | Сера | Изменение к hold | Верхняя граница",
+    ]
+    for horizon in (60, 120, 180):
+        key = str(horizon)
+        predicted = point.get(key) if isinstance(point, dict) else None
+        conservative = upper.get(key) if isinstance(upper, dict) else None
+        change = effect.get(key) if isinstance(effect, dict) else None
+        predicted_text = _format_value(predicted if isinstance(predicted, float) else None)
+        change_text = _format_value(change if isinstance(change, float) else None)
+        upper_text = _format_value(conservative if isinstance(conservative, float) else None)
+        rows.append(f"{horizon:>3} мин | {predicted_text} | {change_text} | {upper_text}")
+    rows.extend(
+        (
+            "",
+            "Историческая область: " + ("да" if payload.get("within_observed_domain") else "нет"),
+            "Validation модели: "
+            + ("пройдена" if payload.get("model_validated") else "не пройдена"),
+            "Верхняя граница серы: "
+            + ("проходит" if payload.get("safety_passes") else "не проходит"),
+        )
+    )
+    reasons = payload.get("reason_codes")
+    if isinstance(reasons, (list, tuple)) and reasons:
+        rows.append("Причины: " + ", ".join(str(reason) for reason in reasons))
+    return "\n".join(rows)
+
+
+def format_v2_forecast_payload(payload: dict[str, object]) -> str:
+    """Render the schema-1.2 shadow forecast in an operator-readable form."""
+    forecast = payload.get("forecast")
+    if not isinstance(forecast, dict):
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    probabilities = forecast.get("horizon_probabilities", {})
+    rows = [
+        "Эпизодный прогноз серы (PAK, shadow)",
+        "Не является командой управления и не изменяет уставки.",
+        f"Состояние на: {payload.get('as_of', '—')}",
+        f"Тревога: {'да' if forecast.get('event_alarm') else 'нет'}",
+        f"Применимость: {'да' if forecast.get('applicable') else 'нет'}",
+        "",
+        "Горизонт | P(пересечение 10 мг/кг)",
+    ]
+    if isinstance(probabilities, dict):
+        for horizon in (10, 20, 30, 60):
+            value = probabilities.get(str(horizon))
+            rendered = f"{float(value) * 100:.1f}%" if isinstance(value, (int, float)) else "—"
+            rows.append(f"{horizon:>3} мин | {rendered}")
+    rows.extend(
+        (
+            "",
+            "Точка через 60 мин: "
+            + _format_value(
+                forecast.get("point_60m")
+                if isinstance(forecast.get("point_60m"), (int, float))
+                else None
+            ),
+            "Верхняя граница через 60 мин: "
+            + _format_value(
+                forecast.get("upper_60m")
+                if isinstance(forecast.get("upper_60m"), (int, float))
+                else None
+            ),
+            "Причины: "
+            + (", ".join(str(reason) for reason in forecast.get("reason_codes", ())) or "—"),
+            f"Статус артефакта: {payload.get('production_status', '—')}",
+        )
+    )
+    return "\n".join(rows)
 
 
 class PetrolCodeApp(tk.Tk):
@@ -1074,6 +1164,18 @@ class PetrolCodeApp(tk.Tk):
         self._secondary_button(row, "Собрать historical state", self.open_state_dialog).pack(
             side="left"
         )
+        self._secondary_button(row, "Прогноз серы", self.open_history_forecast_dialog).pack(
+            side="left", padx=(10, 0)
+        )
+        self._secondary_button(row, "Эпизодный прогноз v2", self.open_v2_forecast_dialog).pack(
+            side="left", padx=(10, 0)
+        )
+        self._secondary_button(row, "Контроль ПАК–ЛИМС", self.open_lims_correction_dialog).pack(
+            side="left", padx=(10, 0)
+        )
+        self._secondary_button(row, "Исследовать P8/F19", self.open_action_shadow_dialog).pack(
+            side="left", padx=(10, 0)
+        )
 
     def _view(self) -> DashboardView | None:
         if self._result is None or self._scenario is None:
@@ -1208,6 +1310,280 @@ class PetrolCodeApp(tk.Tk):
 
         self._primary_button(fields, "Собрать состояние", build).pack(anchor="e", pady=(12, 0))
 
+    def open_action_shadow_dialog(self) -> None:
+        """Show a historical P8/F19 scenario without presenting it as a recommendation."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Модельный эффект по историческим эпизодам")
+        dialog.geometry("760x620")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        fields = tk.Frame(dialog, bg=BG)
+        fields.pack(fill="both", expand=True, padx=26, pady=22)
+        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
+        artifacts = sorted(
+            (PROJECT_ROOT / "artifacts/models").glob("action-shadow-*/metadata.json"),
+            key=lambda path: path.stat().st_mtime,
+        )
+        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
+        model_var = tk.StringVar(value=str(artifacts[-1].parent) if artifacts else "")
+        control_var = tk.StringVar(value="ht:P8")
+        delta_var = tk.StringVar(value="0.001")
+        at_var = tk.StringVar(value="2025-06-01T12:00:00+03:00")
+        for label, variable in (
+            ("Prepared dataset", dataset_var),
+            ("Action shadow artifact", model_var),
+            ("Время состояния (ISO с timezone)", at_var),
+            ("Изменение тега в его исходной единице", delta_var),
+        ):
+            tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
+            tk.Entry(fields, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1).pack(
+                fill="x", pady=(4, 10), ipady=6
+            )
+        tk.Label(fields, text="Тег", bg=BG, fg=TEXT).pack(anchor="w")
+        ttk.Combobox(
+            fields,
+            textvariable=control_var,
+            values=("ht:P8", "ht:F19"),
+            state="readonly",
+            style="Petrol.TCombobox",
+        ).pack(fill="x", pady=(4, 10))
+        tk.Label(
+            fields,
+            text=(
+                "Расчёт показывает модельный эффект в истории. Он не является советом "
+                "по изменению уставки и не включает управление оборудованием."
+            ),
+            bg=BG,
+            fg=MUTED,
+            wraplength=700,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+        output = tk.Text(fields, height=14, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
+        output.pack(fill="both", expand=True)
+
+        def render(text: str) -> None:
+            output.delete("1.0", "end")
+            output.insert("1.0", text)
+
+        def calculate() -> None:
+            try:
+                at = datetime.fromisoformat(at_var.get().replace("Z", "+00:00"))
+                if at.tzinfo is None:
+                    raise ValueError("время должно содержать timezone")
+                result = action_shadow_estimate_command(
+                    dataset_var.get(),
+                    model_var.get(),
+                    control_var.get(),
+                    float(delta_var.get()),
+                    at,
+                )
+                text = format_action_shadow_payload(result)
+            except Exception as exc:
+                text = f"Ошибка: {exc}"
+            self.after(0, lambda: render(text))
+
+        self._primary_button(
+            fields,
+            "Рассчитать исследовательский сценарий",
+            lambda: threading.Thread(target=calculate, daemon=True).start(),
+        ).pack(anchor="e", pady=(12, 0))
+
+    def open_history_forecast_dialog(self) -> None:
+        """Replay a trusted local sulfur artifact at one historical timestamp."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Исторический прогноз серы")
+        dialog.geometry("760x570")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        fields = tk.Frame(dialog, bg=BG)
+        fields.pack(fill="both", expand=True, padx=26, pady=22)
+        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
+        artifacts = sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json"))
+        forecast_artifacts = [
+            path for path in artifacts if not path.parent.name.startswith("action-shadow-")
+        ]
+        forecast_artifacts.sort(key=lambda path: path.stat().st_mtime)
+        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
+        model_var = tk.StringVar(
+            value=str(forecast_artifacts[-1].parent) if forecast_artifacts else ""
+        )
+        at_var = tk.StringVar(value="2025-06-01T12:00:00+03:00")
+        for label, variable in (
+            ("Prepared dataset", dataset_var),
+            ("Forecast artifact", model_var),
+            ("Время состояния (ISO с timezone)", at_var),
+        ):
+            tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
+            tk.Entry(fields, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1).pack(
+                fill="x", pady=(4, 12), ipady=6
+            )
+        tk.Label(
+            fields,
+            text=(
+                "Прогноз использует только доступные к выбранному времени данные. "
+                "Он предупреждает о риске качества, но не изменяет уставки."
+            ),
+            bg=BG,
+            fg=MUTED,
+            wraplength=700,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+        output = tk.Text(fields, height=13, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
+        output.pack(fill="both", expand=True)
+
+        def render(text: str) -> None:
+            output.delete("1.0", "end")
+            output.insert("1.0", text)
+
+        def calculate() -> None:
+            try:
+                at = datetime.fromisoformat(at_var.get().replace("Z", "+00:00"))
+                if at.tzinfo is None:
+                    raise ValueError("время должно содержать timezone")
+                result = replay_command(dataset_var.get(), model_var.get(), "history", at)
+                text = result.model_dump_json(indent=2)
+            except Exception as exc:
+                text = f"Ошибка: {exc}"
+            self.after(0, lambda: render(text))
+
+        self._primary_button(
+            fields,
+            "Рассчитать прогноз",
+            lambda: threading.Thread(target=calculate, daemon=True).start(),
+        ).pack(anchor="e", pady=(12, 0))
+
+    def open_v2_forecast_dialog(self) -> None:
+        """Serve the multi-horizon schema-1.2 artifact as a shadow forecast."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Эпизодный прогноз серы v2")
+        dialog.geometry("760x570")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        fields = tk.Frame(dialog, bg=BG)
+        fields.pack(fill="both", expand=True, padx=26, pady=22)
+        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
+        v2_artifacts: list[Path] = []
+        for metadata_path in sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json")):
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            capabilities = metadata.get("capabilities")
+            if (
+                metadata.get("schema_version") == "1.2"
+                and isinstance(capabilities, dict)
+                and capabilities.get("supports_multi_horizon")
+            ):
+                v2_artifacts.append(metadata_path)
+        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
+        v2_artifacts.sort(key=lambda path: path.stat().st_mtime)
+        model_var = tk.StringVar(value=str(v2_artifacts[-1].parent) if v2_artifacts else "")
+        at_var = tk.StringVar(value="2025-06-01T12:00:00+03:00")
+        for label, variable in (
+            ("Prepared dataset", dataset_var),
+            ("Schema-1.2 shadow artifact", model_var),
+            ("Время состояния (ISO с timezone)", at_var),
+        ):
+            tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
+            tk.Entry(fields, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1).pack(
+                fill="x", pady=(4, 12), ipady=6
+            )
+        tk.Label(
+            fields,
+            text=(
+                "Показывает вероятность начала эпизода и верхнюю границу серы на нескольких "
+                "горизонтах. Артефакт работает только в shadow-режиме: это предупреждение, "
+                "а не совет и не изменение уставок."
+            ),
+            bg=BG,
+            fg=MUTED,
+            wraplength=700,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+        output = tk.Text(fields, height=13, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
+        output.pack(fill="both", expand=True)
+
+        def render(text: str) -> None:
+            output.delete("1.0", "end")
+            output.insert("1.0", text)
+
+        def calculate() -> None:
+            try:
+                at = datetime.fromisoformat(at_var.get().replace("Z", "+00:00"))
+                if at.tzinfo is None:
+                    raise ValueError("время должно содержать timezone")
+                result = replay_v2_shadow_command(dataset_var.get(), model_var.get(), at)
+                text = format_v2_forecast_payload(result)
+            except Exception as exc:
+                text = f"Ошибка: {exc}"
+            self.after(0, lambda: render(text))
+
+        self._primary_button(
+            fields,
+            "Рассчитать episode forecast",
+            lambda: threading.Thread(target=calculate, daemon=True).start(),
+        ).pack(anchor="e", pady=(12, 0))
+
+    def open_lims_correction_dialog(self) -> None:
+        """Evaluate the separately labelled delayed LIMS correction evidence."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Контроль ПАК–ЛИМС")
+        dialog.geometry("760x500")
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        fields = tk.Frame(dialog, bg=BG)
+        fields.pack(fill="both", expand=True, padx=26, pady=22)
+        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
+        artifacts = sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json"))
+        forecast_artifacts = [
+            path for path in artifacts if not path.parent.name.startswith("action-shadow-")
+        ]
+        forecast_artifacts.sort(key=lambda path: path.stat().st_mtime)
+        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
+        model_var = tk.StringVar(
+            value=str(forecast_artifacts[-1].parent) if forecast_artifacts else ""
+        )
+        for label, variable in (
+            ("Prepared dataset", dataset_var),
+            ("PAK forecast artifact", model_var),
+        ):
+            tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
+            tk.Entry(fields, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1).pack(
+                fill="x", pady=(4, 12), ipady=6
+            )
+        tk.Label(
+            fields,
+            text=(
+                "ЛИМС публикуется с задержкой и используется отдельно от оперативного ПАК. "
+                "Результат показывает качество коррекции; только прошедшая gate-коррекция "
+                "может стать кандидатом для shadow-периода."
+            ),
+            bg=BG,
+            fg=MUTED,
+            wraplength=700,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+        output = tk.Text(fields, height=14, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
+        output.pack(fill="both", expand=True)
+
+        def render(text: str) -> None:
+            output.delete("1.0", "end")
+            output.insert("1.0", text)
+
+        def calculate() -> None:
+            try:
+                result = evaluate_lims_correction_command(dataset_var.get(), model_var.get())
+                text = json.dumps(result, ensure_ascii=False, indent=2)
+            except Exception as exc:
+                text = f"Ошибка: {exc}"
+            self.after(0, lambda: render(text))
+
+        self._primary_button(
+            fields,
+            "Оценить LIMS-коррекцию",
+            lambda: threading.Thread(target=calculate, daemon=True).start(),
+        ).pack(anchor="e", pady=(12, 0))
+
     def _show_stage_placeholder(self, _: str | None = None) -> None:
         messagebox.showinfo(
             "Функция следующего этапа",
@@ -1261,6 +1637,8 @@ __all__ = [
     "ConstraintRow",
     "DashboardView",
     "PetrolCodeApp",
+    "format_action_shadow_payload",
+    "format_v2_forecast_payload",
     "journal_entries",
     "main",
     "recommendation_to_view",
