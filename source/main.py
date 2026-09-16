@@ -30,7 +30,9 @@ if TYPE_CHECKING:
     from source.ml.features import SupervisedDataset
 
 SplitName = Literal["train", "validation", "test"]
-TRAINING_TELEMETRY_SIGNALS = ("ht:P8", "ht:T11", "ht:F19")
+# Curated, dictionary-confirmed 24-2000 context.  P8/F19 remain historical
+# action candidates; no signal is enabled as a real setpoint control.
+TRAINING_TELEMETRY_SIGNALS = ("ht:P8", "ht:F19", "ht:T11")
 MODEL_DEMO_SCENARIOS = (
     "blend_normal",
     "blend_risk",
@@ -409,7 +411,7 @@ def replay_v2_shadow_command(
         expected_target_unit="mg/kg",
     )
     definition = bundle.metadata.processing.get("feature_definition", {})
-    raw_signals = definition.get("telemetry_signals", ("ht:P8", "ht:T11", "ht:F19"))
+    raw_signals = definition.get("telemetry_signals", TRAINING_TELEMETRY_SIGNALS)
     if not isinstance(raw_signals, (list, tuple)):
         raise ValueError("v2 artifact has invalid telemetry_signals definition")
     cutoff = pd.Timestamp(as_of)

@@ -46,6 +46,9 @@ RAW_UNIT_MAP: dict[str, Unit] = {
     "тыс.м3/ч": Unit.THOUSAND_M3_H,
     "м3/ч": Unit.M3_H,
     "т/ч": Unit.T_H,
+    "Nm3/h": Unit.NM3_H,
+    "Нм3/ч": Unit.NM3_H,
+    "нм3/ч": Unit.NM3_H,
     "%": Unit.PERCENT,
 }
 
@@ -190,7 +193,7 @@ def _deduplicate_quality(
 
 def prepare_dataset(materials_dir: Path, config: RuntimeConfig) -> PreparedData:
     """Build normalized in-memory tables and a reproducibility manifest."""
-    from source.config import config_fingerprint, load_tag_dictionary
+    from source.config import config_fingerprint, load_tag_dictionary, load_telemetry_rules
     from source.data.ingest import read_lims, read_pak, read_telemetry_csv
 
     materials_dir = materials_dir.resolve()
@@ -198,19 +201,29 @@ def prepare_dataset(materials_dir: Path, config: RuntimeConfig) -> PreparedData:
     pak_path = materials_dir / "Выгрузка ПАК 01.01.2023 - н.в_.xlsx"
     lims_path = materials_dir / "ЛИМСы 01.01.2023 - н.в_ (2).xlsx"
     tag_path = config.tag_dictionary_path.resolve()
-    for path in (archive, pak_path, lims_path, tag_path):
+    rules_path = config.telemetry_rules_path.resolve()
+    for path in (archive, pak_path, lims_path, tag_path, rules_path):
         if not path.is_file():
             raise FileNotFoundError(path)
 
     tags = load_tag_dictionary(tag_path)
+    telemetry_rules = load_telemetry_rules(rules_path)
     issues: list[Issue] = []
     with tempfile.TemporaryDirectory(prefix="neftekod-stage0-") as temp_dir:
         telemetry_dir = _extract_telemetry(archive, Path(temp_dir))
         avt = read_telemetry_csv(
-            telemetry_dir / "avt_tags.csv", "avt", tags, config.source_timezone
+            telemetry_dir / "avt_tags.csv",
+            "avt",
+            tags,
+            config.source_timezone,
+            telemetry_rules=telemetry_rules,
         )
         ht = read_telemetry_csv(
-            telemetry_dir / "242000_tags.csv", "ht", tags, config.source_timezone
+            telemetry_dir / "242000_tags.csv",
+            "ht",
+            tags,
+            config.source_timezone,
+            telemetry_rules=telemetry_rules,
         )
         issues.extend(avt.issues)
         issues.extend(ht.issues)
@@ -232,13 +245,15 @@ def prepare_dataset(materials_dir: Path, config: RuntimeConfig) -> PreparedData:
 
     sources = tuple(
         _source_artifact(path, materials_dir.parent)
-        for path in (archive, pak_path, lims_path, tag_path)
+        for path in (archive, pak_path, lims_path, tag_path, rules_path)
     )
     config_hash = hashlib.sha256(config_fingerprint(config).encode()).hexdigest()
     tag_hash = _sha256(tag_path)
+    telemetry_rules_hash = _sha256(rules_path)
     identity_parts = sorted(item.sha256 for item in sources) + [
         config_hash,
         tag_hash,
+        telemetry_rules_hash,
         PREPARATION_VERSION,
     ]
     dataset_id = hashlib.sha256("\n".join(identity_parts).encode()).hexdigest()[:12]
@@ -266,6 +281,7 @@ def prepare_dataset(materials_dir: Path, config: RuntimeConfig) -> PreparedData:
         sources=sources,
         config_sha256=config_hash,
         tag_dictionary_sha256=tag_hash,
+        telemetry_rules_sha256=telemetry_rules_hash,
         row_counts={
             "telemetry": len(telemetry),
             "quality": len(quality),

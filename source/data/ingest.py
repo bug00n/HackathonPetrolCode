@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from math import isfinite
@@ -71,6 +72,7 @@ def read_telemetry_csv(
     tags: dict[str, TagMeta],
     source_timezone: str = "Europe/Moscow",
     nrows: int | None = None,
+    telemetry_rules: Mapping[str, Mapping[str, object]] | None = None,
 ) -> TelemetryRead:
     """Normalize one telemetry CSV to UTC and canonical signal columns."""
     path = Path(path)
@@ -117,6 +119,31 @@ def read_telemetry_csv(
                 _issue("INVALID_VALUE", "telemetry value is not finite numeric data", source_ref)
             )
         valid[column] = numeric.mask(bad_value)
+
+    # Apply only explicit, signal-scoped sentinel rules.  The raw value stays
+    # in the source archive; the prepared frame records it as unavailable and
+    # emits one auditable issue instead of treating an analyzer code as sulfur.
+    for signal_id, rule in (telemetry_rules or {}).items():
+        if signal_id not in valid.columns:
+            continue
+        exact_values = rule.get("exact_values", ())
+        if not isinstance(exact_values, (list, tuple, set)):
+            continue
+        numeric = pd.to_numeric(valid[signal_id], errors="coerce")
+        mask = numeric.isin([float(value) for value in exact_values])
+        if not mask.any():
+            continue
+        valid.loc[mask, signal_id] = pd.NA
+        issue_code = str(rule.get("issue_code", "CONFIRMED_SENTINEL"))
+        detail = str(rule.get("detail", "explicit telemetry sentinel was masked"))
+        issues.append(
+            _issue(
+                issue_code,
+                f"{detail} rows_masked={int(mask.sum())}",
+                f"{path.as_posix()}#column={signal_id}",
+                signal_id,
+            )
+        )
 
     valid = _collapse_telemetry_duplicates(valid, path, issues)
     valid = valid.sort_values("timestamp", kind="stable").reset_index(drop=True)

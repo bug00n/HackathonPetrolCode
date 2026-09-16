@@ -5,8 +5,10 @@ from __future__ import annotations
 from importlib import import_module
 
 _EXPORT_MODULES = {
+    "ACTION_CONTROL_UNITS": "source.ml.action_effects",
     "ActionModelBundle": "source.ml.action_effects",
     "EXPERT_VAK_CORRECTIONS": "source.ml.formulas",
+    "FORMULA_SOURCE_VERSION": "source.ml.formulas",
     "GAS_CONTEXT_SIGNAL_IDS": "source.ml.blending",
     "DEFAULT_POLICY": "source.ml.policy",
     "ApplicabilityResult": "source.ml.uncertainty",
@@ -22,6 +24,7 @@ _EXPORT_MODULES = {
     "HistoricalActionDataset": "source.ml.action_effects",
     "HistoricalActionEffectModel": "source.ml.action_effects",
     "HistoricalActionEstimate": "source.ml.action_effects",
+    "HISTORICAL_ACTION_CONTROLS": "source.ml.action_effects",
     "HybridComponentForecast": "source.ml.blending",
     "ModelBundle": "source.ml.artifacts",
     "SafetyFitResult": "source.ml.safety",
@@ -82,8 +85,10 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
+    "ACTION_CONTROL_UNITS",
     "ActionModelBundle",
     "EXPERT_VAK_CORRECTIONS",
+    "FORMULA_SOURCE_VERSION",
     "GAS_CONTEXT_SIGNAL_IDS",
     "DEFAULT_POLICY",
     "ApplicabilityResult",
@@ -99,6 +104,7 @@ __all__ = [
     "HistoricalActionDataset",
     "HistoricalActionEffectModel",
     "HistoricalActionEstimate",
+    "HISTORICAL_ACTION_CONTROLS",
     "HybridComponentForecast",
     "ModelBundle",
     "SafetyFitResult",

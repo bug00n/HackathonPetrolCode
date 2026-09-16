@@ -18,6 +18,7 @@ from source.contracts import (
     MetricEstimate,
     OperationMode,
     ProcessState,
+    ProductGrade,
     ScenarioConfig,
     Severity,
     Unit,
@@ -127,6 +128,26 @@ def calculate_blend_metrics(
         },
         normalize=True,
     )
+
+    def density_bound(field: str) -> float | None:
+        if additive_fraction:
+            return None
+        total_volume = 0.0
+        for key, weight in recipe.items():
+            if weight <= 0:
+                continue
+            estimate = components[key].density
+            if estimate is None:
+                return None
+            value = getattr(estimate, field)
+            if value is None or value <= 0:
+                return None
+            total_volume += weight / value
+        return 1.0 / total_volume if total_volume > 0 else None
+
+    density_value = density_bound("value")
+    density_lower = density_bound("upper")
+    density_upper = density_bound("lower")
     cetane_gain = _additive_gain(scenario.cetane_additive, additive_fraction)
     if cetane_value is not None:
         cetane_value += cetane_gain
@@ -182,6 +203,7 @@ def calculate_blend_metrics(
         )
 
     sulfur_interval = IntervalKind.SCENARIO_BOUND if sulfur_upper is not None else IntervalKind.NONE
+    operating_target = scenario.operating_sulfur_target
     return {
         "sulfur": estimate(
             sulfur_value,
@@ -209,6 +231,25 @@ def calculate_blend_metrics(
             lower=cetane_lower,
             interval_kind=(
                 IntervalKind.SCENARIO_BOUND if cetane_lower is not None else IntervalKind.NONE
+            ),
+        ),
+        "sulfur_operating_target": estimate(
+            operating_target,
+            Unit.MG_KG.value,
+            EstimateBasis.FORMULA,
+            "ScenarioConfig.sulfur_margin_mgkg",
+        ),
+        "density": estimate(
+            density_value,
+            Unit.DENSITY.value,
+            EstimateBasis.FORMULA,
+            "mass/volume density blend",
+            lower=density_lower,
+            upper=density_upper,
+            interval_kind=(
+                IntervalKind.SCENARIO_BOUND
+                if density_lower is not None or density_upper is not None
+                else IntervalKind.NONE
             ),
         ),
         "additive_mass_fraction": estimate(
@@ -276,7 +317,9 @@ def assess_blend_candidate(
                 source_ref=f"scenario:{scenario.id}",
             ),
         )
-    if cetane.value is None or cetane.lower is None:
+    if scenario.product_grade is not ProductGrade.HDS_DIESEL and (
+        cetane.value is None or cetane.lower is None
+    ):
         quality_issues += (
             Issue(
                 code="UNASSESSED_REQUIRED_PROPERTY",
@@ -286,7 +329,7 @@ def assess_blend_candidate(
                 source_ref=f"scenario:{scenario.id}",
             ),
         )
-    if quality_issues:
+    if any(issue.severity is Severity.BLOCKING for issue in quality_issues):
         quality_status = AssessmentStatus.UNAVAILABLE
     elif scenario.require_upper_bound and sulfur.upper is None:
         quality_issues += (
@@ -321,7 +364,7 @@ def assess_blend_candidate(
         assessment(
             AssessmentAgent.QUALITY,
             quality_status,
-            ("sulfur", "t95", "cetane_number"),
+            ("sulfur", "sulfur_operating_target", "t95", "cetane_number", "density"),
             quality_issues,
         ),
         assessment(AssessmentAgent.RELIABILITY, AssessmentStatus.OK, ("risk_index",)),

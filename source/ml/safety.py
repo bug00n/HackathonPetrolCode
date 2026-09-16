@@ -121,7 +121,13 @@ class CompositeSafetyPredictor:
         return self.risk_calibrator.predict(raw)
 
     def predict_alarm(self, features: pd.DataFrame) -> np.ndarray:
-        return self.predict_exceedance_probability(features) >= self.alarm_policy.threshold
+        risk_alarm = self.predict_exceedance_probability(features) >= self.alarm_policy.threshold
+        baseline = (
+            pd.to_numeric(features["baseline"], errors="coerce").to_numpy(dtype=float)
+            if "baseline" in features
+            else np.full(len(features), np.nan)
+        )
+        return (baseline > SULFUR_LIMIT) | risk_alarm
 
     def check_applicability(self, features: pd.DataFrame) -> ApplicabilityResult:
         return self.applicability.assess(features)
@@ -192,6 +198,12 @@ def published_lims_features(
             .div(60)
             .to_numpy(dtype=float)
         )
+        # A publication timestamp is necessary but not sufficient: malformed
+        # rows with a future sampling time must also be hidden from an as_of
+        # feature vector.
+        future = merged[f"lims_measured_at_{position}"] > merged["as_of"]
+        result[f"lims_published_lag_{position}"][future.to_numpy()] = np.nan
+        result[f"lims_age_minutes_{position}"][future.to_numpy()] = np.nan
     return pd.DataFrame(result)
 
 

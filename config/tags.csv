@@ -72,32 +72,32 @@ avt:T61,avt:T61,avt,Температура НЦО в К-10,,unknown,none,confirm
 avt:T66,avt:T66,avt,Переток в К-9,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
 avt:T71,avt:T71,avt,Фр.290-350°С из К-2,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
 avt:W70,avt:W70,avt,Массовый расход фр.290-350°С с установки,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F1,ht:F1,ht,Расход бензина c установки,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F14,ht:F14,ht,"Блок стабилизации. Температура верха колонны К-201 /бензин,УВГ,Н2S",,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F15,ht:F15,ht,Полисеп. Расход квенча в реактор Р-202,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F17,ht:F17,ht,Расход гидроочищенного ДТ в цех №8 c установки,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F19,ht:F19,ht,Полисеп. Реактор Р-202. Давление на входе,,unknown,none,confirmed,true,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F2,ht:F2,ht,Газовая схема. Расход на линии от ЦК-201,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F22,ht:F22,ht,Блок стабилизации. Расход газа поддува на входе в К-201Температура в сепараторе С-205,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F25,ht:F25,ht,"APC. Показания виртуального анализатора ""Температура вспышки ГОДТ""",,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F26,ht:F26,ht,Расход сырья на установку (объемный),,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:F9,ht:F9,ht,Блок стабилизации. Расход газа поддува на входе в К-201. Массовый расход (АС КУБ),,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:P13,ht:P13,ht,Трубопровод на выходе из реактора Р-202: Качество продукции по S,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:P24,ht:P24,ht,Расход свежего ВСГ с КЦА на установку,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:P3,ht:P3,ht,Полисеп. Сепаратор С-201. Давление на входе,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:P8,ht:P8,ht,Полисеп. Реактор Р-202. Температура гсс на входе,,unknown,none,confirmed,true,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:Q20,ht:Q20,ht,Блок стабилизации. Расход бензина в колонну К-201,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:Q21,ht:Q21,ht,Блок стабилизации. Расход газа поддува на входе в К-201,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:T11,ht:T11,ht,Расход сырья на установку (массовый),,unknown,none,confirmed,true,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:T12,ht:T12,ht,Расход бензина c установки,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:T16,ht:T16,ht,Блок стабилизации. Колонна К-201. Температура стабильного гидрогенизата низ,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:T18,ht:T18,ht,Блок стабилизации. Колонна К-201. Давление на выходе,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:T23,ht:T23,ht,Расход гидроочищенного ДТ в цех №8 c установки,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:T5,ht:T5,ht,Полисеп. Реактор Р-201. Температура ГСС на выходе,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:T6,ht:T6,ht,"Поточный анализатор серы в дизельном топливе между коллекторами нагнетания и приёма Н-202/1,2",,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:W10,ht:W10,ht,Реактор Р-202. Перепад давления.,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:W4,ht:W4,ht,Блок стабилизации. Массовый расход бензина в колонну К-206,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
-ht:W7,ht:W7,ht,Блок стабилизации. Поточный анализатор содержания серы в гидроочищенном ДТ,,unknown,none,confirmed,false,materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026
+ht:F1,ht:F1,ht,Выход бензина с установки,m3/ч,m3/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:F14,ht:F14,ht,Расход квенча в реактор Р-202,т/ч,t/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:F15,ht:F15,ht,Объемный расход сырья на установку,m3/ч,m3/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:F17,ht:F17,ht,Массовый выход гидроочищенного дизельного топлива,т/ч,t/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:F19,ht:F19,ht,Расход бензина в колонну К-201,т/ч,t/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:F2,ht:F2,ht,Расход газа от ЦК-201,Nm3/h,Nm3/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:F22,ht:F22,ht,Объемный расход продувочного газа,Nm3/h,Nm3/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:F25,ht:F25,ht,Расход свежего водородсодержащего газа,Nm3/h,Nm3/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:F26,ht:F26,ht,Объемный выход гидроочищенного дизельного топлива,m3/ч,m3/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:F9,ht:F9,ht,Массовый расход сырья на установку,т/ч,t/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:P13,ht:P13,ht,Давление на входе в реактор Р-202,МПа,MPa,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:P24,ht:P24,ht,Давление на выходе из колонны К-201,МПа,MPa,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:P3,ht:P3,ht,Давление на входе в сепаратор С-201,МПа,MPa,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:P8,ht:P8,ht,Перепад давления в реакторе Р-202,МПа,MPa,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:Q20,ht:Q20,ht,Сера в дизельном топливе между насосами Н-202/1 и Н-202/2,ppm,ppm,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:Q21,ht:Q21,ht,Сера на выходе гидроочистки,ppm,ppm,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000;QA_2026-09-15
+ht:T11,ht:T11,ht,Температура продукта на выходе реактора Р-202,°С,degC,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:T12,ht:T12,ht,Температура верха колонны К-201,°С,degC,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:T16,ht:T16,ht,Температура в сепараторе С-205,°С,degC,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:T18,ht:T18,ht,Виртуальная температура вспышки,°С,degC,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:T23,ht:T23,ht,Температура низа колонны К-201,°С,degC,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:T5,ht:T5,ht,Температура газа на выходе реактора Р-201,°С,degC,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:T6,ht:T6,ht,Температура газа на входе реактора Р-202,°С,degC,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:W10,ht:W10,ht,Перепад давления в реакторе Р-202,МПа,MPa,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:W4,ht:W4,ht,Массовый расход бензина в К-206,т/ч,t/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
+ht:W7,ht:W7,ht,Массовый расход продувочного газа,т/ч,t/h,none,confirmed,false,materials/теги АВТ_24-2000.xlsx#24-2000
 avt:1:50%.T,ЛИМС:АВТ.1:50%.T,avt,50%.T,кг/м3,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=5:6;DESIGN.md#16-подтверждения-экспертов-от-10092026
 avt:1:90%.T,ЛИМС:АВТ.1:90%.T,avt,90%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=3:4
 avt:1:95%.T,ЛИМС:АВТ.1:95%.T,avt,95%.T,°С,degC,none,confirmed,false,materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#columns=19:20

@@ -4,12 +4,12 @@
 
 ```bash
 python -m source.main evaluate-action-shadow \
-  --dataset data/processed/aacc7c1ab3d9
+  --dataset data/processed/a2fe8577752a
 ```
 
 Модуль выделяет изолированные заметные изменения только `ht:P8` и `ht:F19`,
 сопоставляет их с ближайшими спокойными состояниями того же календарного года и
-строит Ridge/q95-прогноз серы на 60/120/180 минут. `ht:T11` (расход) и `ht:F26`
+строит Ridge/q95-прогноз серы на 60/120/180 минут. `ht:T11` (температура продукта) и `ht:F26`
 используются только как контекст состояния и никогда не становятся изменяемыми
 кандидатами.
 
@@ -23,8 +23,8 @@ UI-контракт возвращает обычное изменение се�
 
 ```bash
 python -m source.main action-shadow-estimate \
-  --dataset data/processed/aacc7c1ab3d9 \
-  --model artifacts/models/action-shadow-aacc7c1ab3d9-v2 \
+  --dataset data/processed/a2fe8577752a \
+  --model artifacts/models/action-shadow-a2fe8577752a-v2 \
   --control ht:P8 --delta 0.001 \
   --at 2025-06-01T12:00:00+03:00
 ```
@@ -32,12 +32,13 @@ python -m source.main action-shadow-estimate \
 Выдача раздельно показывает `within_observed_domain`, `model_validated` и
 `safety_passes`. Поэтому точка может находиться в исторической области, но всё
 равно иметь `ACTION_EFFECT_VALIDATION_FAILED` или нарушать верхнюю границу серы.
-Экран UI «Исследовать P8/F19» вызывает этот же путь и не ранжирует действия.
+Экран UI «Исторический эффект P8/F19 (не совет)» вызывает этот же путь и не ранжирует действия.
 
-На dataset `aacc7c1ab3d9` найдено 1 212 matched-пар: 546 для `P8`, 666 для
+На dataset `a2fe8577752a` найдено 1 212 matched-пар: 546 для `P8`, 666 для
 `F19`. Validation-2025 не прошёл evidence gate: модель хуже hold на всех трёх
-горизонтах, хотя calibration coverage выше 95%. Audit-2026 также хуже hold; q95
-coverage равна 95.70% / 93.71% / 93.71% для 60/120/180 минут.
+горизонтах, хотя q95 coverage равна 98.22% / 98.62% / 98.22% для 60/120/180
+минут. Audit-2026 также хуже hold; q95 coverage равна 92.05% / 94.04% /
+93.71% для 60/120/180 минут.
 
 Поэтому модуль реализован как честный исследовательский экран, но текущая модель
 возвращает `ACTION_EFFECT_VALIDATION_FAILED` и не может выдавать совет. Следующий
@@ -55,7 +56,7 @@ Temporal benchmark запускается отдельно:
 
 ```bash
 python -m source.main evaluate-action-residualization \
-  --dataset data/processed/aacc7c1ab3d9
+  --dataset data/processed/a2fe8577752a
 ```
 
 Он сначала оценивает ожидаемое действие и ожидаемую серу по состоянию до изменения,

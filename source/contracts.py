@@ -70,6 +70,7 @@ class Unit(StrEnum):
     THOUSAND_M3_H = "1000*m3/h"
     M3_H = "m3/h"
     T_H = "t/h"
+    NM3_H = "Nm3/h"
     PERCENT = "%"
     DIMENSIONLESS = "1"
     PROXY = "proxy_unit"
@@ -81,6 +82,24 @@ class OperationMode(StrEnum):
     HISTORY = "history"
     MODEL_DEMO = "model_demo"
     HYBRID = "hybrid"
+
+
+class ProductGrade(StrEnum):
+    """Confirmed diesel quality profiles from the 2026-09-15 Q&A."""
+
+    HDS_DIESEL = "hds_diesel"
+    SUMMER_DIESEL = "summer_diesel"
+    WINTER_DIESEL = "winter_diesel"
+
+
+def product_grade_limits(grade: ProductGrade | str) -> dict[str, float | None]:
+    """Return the Q&A-confirmed density/cetane profile for a diesel grade."""
+    selected = ProductGrade(grade)
+    if selected is ProductGrade.HDS_DIESEL:
+        return {"density_lower": 820.0, "density_upper": 845.0, "cetane_lower": None}
+    if selected is ProductGrade.SUMMER_DIESEL:
+        return {"density_lower": 820.0, "density_upper": 845.0, "cetane_lower": 51.0}
+    return {"density_lower": 800.0, "density_upper": 845.0, "cetane_lower": 49.0}
 
 
 class CandidateKind(StrEnum):
@@ -403,6 +422,7 @@ class ConstraintSpec(ContractModel):
 class BlendComponent(ContractModel):
     id: str
     sulfur: MetricEstimate
+    density: MetricEstimate | None = None
     t95: MetricEstimate | None = None
     cetane_number: MetricEstimate | None = None
     available_mass_t: NonNegativeFloat
@@ -415,6 +435,8 @@ class BlendComponent(ContractModel):
         """Reject component passports with incompatible physical units."""
         if self.sulfur.unit != Unit.MG_KG.value:
             raise ValueError("component sulfur must use mg/kg")
+        if self.density is not None and self.density.unit != Unit.DENSITY.value:
+            raise ValueError("component density must use kg/m3")
         if self.t95 is not None and self.t95.unit != Unit.CELSIUS.value:
             raise ValueError("component T95 must use degC")
         if self.cetane_number is not None and self.cetane_number.unit != Unit.CETANE.value:
@@ -461,6 +483,8 @@ class CetaneAdditiveSpec(ContractModel):
 class ScenarioConfig(ContractModel):
     id: str
     mode: OperationMode
+    product_grade: ProductGrade = ProductGrade.SUMMER_DIESEL
+    sulfur_margin_mgkg: Annotated[FiniteFloat, Field(ge=1.0, le=2.0)] = 2.0
     required_signals: tuple[str, ...] = ()
     controls: tuple[ControlSpec, ...] = ()
     constraints: tuple[ConstraintSpec, ...] = ()
@@ -474,6 +498,11 @@ class ScenarioConfig(ContractModel):
     require_upper_bound: bool = True
     action_cooldown_minutes: Annotated[int, Field(ge=0)] = 60
     assumptions: tuple[str, ...] = ()
+
+    @property
+    def operating_sulfur_target(self) -> float:
+        """Operational target below the hard 10 mg/kg product limit."""
+        return 10.0 - float(self.sulfur_margin_mgkg)
 
     @model_validator(mode="after")
     def validate_blend(self) -> "ScenarioConfig":
@@ -501,14 +530,17 @@ class ScenarioConfig(ContractModel):
                 for constraint in self.constraints
                 if constraint.required
             }
-            missing = {"sulfur", "t95", "cetane_number"}.difference(required)
+            required_metrics = {"sulfur", "t95"}
+            if self.product_grade is not ProductGrade.HDS_DIESEL:
+                required_metrics.add("cetane_number")
+            missing = required_metrics.difference(required)
             if missing:
                 raise ValueError(f"model-demo blend lacks required constraints: {sorted(missing)}")
             if not required["sulfur"].use_upper_estimate:
                 raise ValueError("model-demo sulfur constraint must use the upper estimate")
             if not required["t95"].use_upper_estimate:
                 raise ValueError("model-demo T95 constraint must use the upper estimate")
-            if not required["cetane_number"].use_lower_estimate:
+            if "cetane_number" in required and not required["cetane_number"].use_lower_estimate:
                 raise ValueError("model-demo cetane constraint must use the lower estimate")
         return self
 
@@ -533,6 +565,7 @@ class RuntimeConfig(ContractModel):
     data_dir: Path = Path("data/processed")
     materials_dir: Path = Path("materials")
     tag_dictionary_path: Path = Path("config/tags.csv")
+    telemetry_rules_path: Path = Path("config/telemetry_rules.json")
     models_dir: Path = Path("artifacts/models")
     reports_dir: Path = Path("reports")
     runs_dir: Path = Path("runs")
@@ -576,6 +609,7 @@ class DatasetManifest(ContractModel):
     sources: tuple[SourceArtifact, ...]
     config_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     tag_dictionary_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    telemetry_rules_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     row_counts: dict[str, Annotated[int, Field(ge=0)]]
     time_ranges: dict[str, tuple[AwareDatetime, AwareDatetime] | None]
 
@@ -606,6 +640,8 @@ __all__ = [
     "MetricEstimate",
     "Observation",
     "OperationMode",
+    "ProductGrade",
+    "product_grade_limits",
     "ProcessState",
     "Recommendation",
     "RECOMMENDATION_SCHEMA_VERSION",

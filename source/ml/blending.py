@@ -13,13 +13,14 @@ from source.contracts import (
     EstimateBasis,
     IntervalKind,
     MetricEstimate,
+    ProductGrade,
     Stage,
     TagMeta,
     Unit,
 )
 
 FRACTION_TOLERANCE = 1e-9
-GAS_CONTEXT_SIGNAL_IDS = ("ht:F9", "ht:F22", "ht:Q21")
+GAS_CONTEXT_SIGNAL_IDS = ("ht:F2", "ht:F22", "ht:F25")
 GAS_CONTEXT_REASON = (
     "context_only: gas signals are observed process context, not enabled action controls"
 )
@@ -63,6 +64,7 @@ class BlendResult:
     unassessed_properties: tuple[str, ...]
     full_specification_status: Literal["assessed", "not_assessed"]
     assumptions: tuple[str, ...]
+    density: MetricEstimate | None = None
 
     @property
     def stock_feasible(self) -> bool:
@@ -207,6 +209,28 @@ def calculate_mass_blend(
     t95_upper = weighted("t95", "upper", normalize=True)
     cetane_value = weighted("cetane_number", "value", normalize=True)
     cetane_lower = weighted("cetane_number", "lower", normalize=True)
+
+    def density_bound(field: Literal["value", "lower", "upper"]) -> float | None:
+        """Mix mass fractions by reciprocal density (mass/volume)."""
+        if additive_mass_fraction:
+            # No additive density passport is present, so refusing a density
+            # number is safer than silently treating it as a base component.
+            return None
+        volume_per_mass = 0.0
+        for key in positive_ids:
+            estimate = component_map[key].density
+            if estimate is None:
+                return None
+            value = getattr(estimate, field)
+            if value is None or value <= 0:
+                return None
+            volume_per_mass += mass_fractions[key] / value
+        return 1.0 / volume_per_mass if volume_per_mass > 0 else None
+
+    density_value = density_bound("value")
+    # Reciprocal bounds reverse the component extrema.
+    density_lower = density_bound("upper")
+    density_upper = density_bound("lower")
     cetane_gain = _additive_gain(additive, additive_mass_fraction)
     if cetane_value is not None:
         cetane_value += cetane_gain
@@ -279,12 +303,34 @@ def calculate_mass_blend(
         for name, value in (("t95", t95.upper), ("cetane_number", cetane.lower))
         if value is None
     )
+    density = (
+        MetricEstimate(
+            value=density_value,
+            lower=density_lower,
+            upper=density_upper,
+            unit=Unit.DENSITY.value,
+            basis=EstimateBasis.FORMULA,
+            interval_kind=(
+                IntervalKind.SCENARIO_BOUND
+                if density_lower is not None or density_upper is not None
+                else IntervalKind.NONE
+            ),
+            interval_level=None,
+            reference="mass/volume density blend",
+            assumptions=("Density is mixed through reciprocal volumes.",),
+        )
+        if density_value is not None or density_lower is not None or density_upper is not None
+        else None
+    )
+    checked_properties = ["sulfur", "t95", "cetane_number", "component_stock"]
+    if density is not None:
+        checked_properties.insert(1, "density")
     return BlendResult(
         sulfur=sulfur,
         t95=t95,
         cetane_number=cetane,
         stock_shortfalls_t=shortfalls,
-        checked_properties=("sulfur", "t95", "cetane_number", "component_stock"),
+        checked_properties=tuple(checked_properties),
         unassessed_properties=missing,
         full_specification_status="not_assessed" if missing else "assessed",
         assumptions=assumptions,
@@ -357,11 +403,25 @@ def rank_feasible_blends(
     cetane_lower_limit: float = 51.0,
     additive_mass_fraction: float = 0.0,
     additive: CetaneAdditiveSpec | None = None,
+    product_grade: ProductGrade | str | None = None,
+    density_lower_limit: float | None = None,
+    density_upper_limit: float | None = None,
 ) -> tuple[BlendOption, ...]:
     """Filter the complete scenario passport and rank remaining recipes."""
     component_map = {component.id: component for component in components}
     if set(current_fractions) != set(component_map):
         raise ValueError("current fractions must contain every component")
+    if product_grade is not None:
+        grade = ProductGrade(product_grade)
+        if grade is ProductGrade.HDS_DIESEL:
+            cetane_lower_limit = float("-inf")
+            density_lower_limit, density_upper_limit = 820.0, 845.0
+        elif grade is ProductGrade.SUMMER_DIESEL:
+            cetane_lower_limit = 51.0
+            density_lower_limit, density_upper_limit = 820.0, 845.0
+        else:
+            cetane_lower_limit = 49.0
+            density_lower_limit, density_upper_limit = 800.0, 845.0
     options: list[BlendOption] = []
     for recipe in recipes:
         final_recipe = {
@@ -383,6 +443,18 @@ def rank_feasible_blends(
             or result.cetane_number.lower < cetane_lower_limit
         ):
             continue
+        if density_lower_limit is not None or density_upper_limit is not None:
+            density = result.density
+            if density is None or density.value is None:
+                continue
+            if density_lower_limit is not None and (
+                density.lower is None or density.lower < density_lower_limit
+            ):
+                continue
+            if density_upper_limit is not None and (
+                density.upper is None or density.upper > density_upper_limit
+            ):
+                continue
         recipe_id = "blend:" + ",".join(
             f"{key}={final_recipe[key]:.3f}" for key in sorted(final_recipe)
         )

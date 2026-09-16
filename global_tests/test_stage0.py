@@ -50,14 +50,12 @@ def test_all_versioned_configs_load() -> None:
 
 
 def test_tag_dictionary_uses_confirmed_expert_clarifications() -> None:
-    """Verify expert-confirmed mappings, conversion and controllable signals."""
+    """Verify expert-confirmed mappings and fail-closed action metadata."""
     tags = load_tag_dictionary("config/tags.csv")
     assert len(tags) == 170
-    assert {tag.signal_id for tag in tags.values() if tag.controllable} == {
-        "ht:F19",
-        "ht:P8",
-        "ht:T11",
-    }
+    # Historical action-effect research is observational; no tag is yet
+    # authorized as a production control (supports_actions remains false).
+    assert {tag.signal_id for tag in tags.values() if tag.controllable} == set()
     pak_sulfur = tags["24-2000:Mg.Sulfur"]
     assert pak_sulfur.mapping_status is MappingStatus.CONFIRMED
     assert pak_sulfur.signal_id == "ht:2:Mg.Sulfur"

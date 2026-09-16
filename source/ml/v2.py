@@ -35,7 +35,10 @@ WINDOWS = (30, 60, 180)
 REGIME_LABELS = ("below_8", "8_to_10", "above_10")
 ABLATED_TELEMETRY_GROUPS = {
     "pak_only": (),
-    "ht_context": ("ht:P8", "ht:T11", "ht:F19"),
+    # Corrected 24-2000 dictionary: only the three process signals explicitly
+    # approved for the episode study are retained.  All other HT tags stay
+    # out of the v2 feature matrix to avoid unstable correlations and leakage.
+    "ht_context": ("ht:P8", "ht:F19", "ht:T11"),
     "k2_state": ("avt:F65", "avt:T20", "avt:T33", "avt:P21", "avt:P22", "avt:P23", "avt:P67"),
     "k2_circulation": (
         "avt:F14",
@@ -849,11 +852,26 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
         policy, metrics = select_event_threshold(frame_2024, probabilities)
         point = pd.to_numeric(frame_2024["baseline"], errors="coerce").to_numpy(dtype=float) + delta
         actual = frame_2024["y_60m"].to_numpy(dtype=float)
+        selection_monthly = _monthly_report(frame_2024, probabilities, policy.threshold)
+        selection_month_values = [
+            values
+            for values in selection_monthly.values()
+            if values["event_false_negative_rate"] is not None
+        ]
         family_reports[family] = {
             "policy": policy,
             "metrics": metrics,
             "mae": float(np.mean(np.abs(actual - point))),
             "brier": float(brier_score_loss(frame_2024["crossing_60m"], probabilities)),
+            "monthly": selection_monthly,
+            "worst_month_event_fnr": max(
+                float(values["event_false_negative_rate"]) for values in selection_month_values
+            )
+            if selection_month_values
+            else None,
+            "event_fnr_bootstrap_95": _bootstrap_event_fnr(
+                frame_2024, probabilities, policy.threshold, seed
+            ),
         }
     eligible_families = tuple(
         family
@@ -924,6 +942,12 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
         {horizon: calibrators[horizon].predict(policy_raw[horizon]) for horizon in HORIZONS}
     )
     policy, policy_metrics = select_event_threshold(policy_frame, calibrated[60])
+    threshold_monthly = _monthly_report(policy_frame, calibrated[60], policy.threshold)
+    threshold_month_values = [
+        values
+        for values in threshold_monthly.values()
+        if values["event_false_negative_rate"] is not None
+    ]
 
     frame = dataset.frame
     as_of = pd.to_datetime(frame["as_of"], utc=True)
@@ -1022,6 +1046,15 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
         "calibration_period": "2025-01-01/2025-07-01",
         "threshold_period": "2025-07-01/2026-01-01",
         "threshold_metrics": policy_metrics,
+        "threshold_monthly": threshold_monthly,
+        "threshold_worst_month_event_fnr": max(
+            float(values["event_false_negative_rate"]) for values in threshold_month_values
+        )
+        if threshold_month_values
+        else None,
+        "threshold_event_fnr_bootstrap_95": _bootstrap_event_fnr(
+            policy_frame, calibrated[60], policy.threshold, seed
+        ),
         "alarm_threshold": policy.threshold,
         "upper_delta_shift": upper_delta_shift,
         "audit_2026": audit_metrics,
@@ -1058,8 +1091,8 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
         "shadow_minimum": "100 independent episodes or 3 complete months",
         "pak_only_ablation_completed": False,
         "promotion_blockers": [
-            "new shadow period is required",
-            "PAK-only ablation is required for disputed P8/T11/F19 semantics",
+            "new shadow period is required before production promotion",
+            "action effects remain observational and supports_actions=false",
         ],
         "promotion_eligible": False,
         "supports_actions": False,
@@ -1085,7 +1118,9 @@ def save_episode_safety_model(
         "target": "delta_60m and any crossing within horizon",
         "episode_weighting": "inverse episode length and equal month mass",
         "upper_calibration": "nonnegative 0.95 residual shift on 2025-01/2025-07",
-        "telemetry_signals": ["ht:P8", "ht:T11", "ht:F19"],
+        "telemetry_signals": ["ht:P8", "ht:F19", "ht:T11"],
+        "telemetry_semantics_version": "organizer-qa-2026-09-15",
+        "lims_availability_rule": "available_at <= as_of; measured_at is never shifted",
     }
     metadata = {
         "model_id": directory.name,
@@ -1111,8 +1146,10 @@ def save_episode_safety_model(
             "alarm_threshold": fitted.report["alarm_threshold"],
             "upper_delta_shift": fitted.report["upper_delta_shift"],
             "production_status": "shadow_only",
-            "telemetry_semantics_status": "disputed_by_qa_2026_09_11",
-            "pak_only_ablation_required": True,
+            "telemetry_semantics_status": "confirmed_by_qa_2026_09_15",
+            "telemetry_cleaning": "config/telemetry_rules.json:ht:Q21==307->missing",
+            "telemetry_rules_sha256": getattr(data.manifest, "telemetry_rules_sha256", None),
+            "pak_only_ablation_required": False,
         },
         "time_boundaries": {
             "train_end_local": "2026-01-01",

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "signal_id": "ht:Q21",
+      "exact_values": [307.0],
+      "action": "missing",
+      "issue_code": "CONFIRMED_SENTINEL",
+      "evidence_ref": "QA_2026-09-15:Q21",
+      "detail": "Q21=307 ppm is a confirmed analyzer outlier and is not a measurement."
+    }
+  ]
+}
