@@ -387,6 +387,50 @@ def train_v2_shadow_command(
     }
 
 
+def train_v2_experimental_command(
+    dataset: str | Path,
+    output: str | Path | None = None,
+    *,
+    allow_dirty_experimental: bool = False,
+    config_path: str | Path = "config/runtime.toml",
+    relaxed_false_alarm_budget: float = 0.22,
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Train the richer research ensemble without changing the production artifact."""
+    from source.ml.experimental import save_experimental_episode_model
+
+    config = load_runtime_config(_resolve_path(config_path, root))
+    revision = _shadow_git_revision(root, allow_dirty=allow_dirty_experimental)
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    supervised = _supervised_dataset(data, SourceKind.PAK)
+    models_root = _resolve_path(output if output is not None else config.models_dir, root)
+    recipe = (
+        f"{data.manifest.dataset_id}:episode-experimental-ensemble:1.2:"
+        f"{relaxed_false_alarm_budget}:{revision}"
+    )
+    model_id = f"sulfur-v2-experimental-{hashlib.sha256(recipe.encode()).hexdigest()[:12]}"
+    path = models_root / model_id
+    bundle, fitted = save_experimental_episode_model(
+        path,
+        data,
+        supervised,
+        git_commit=revision,
+        seed=config.seed,
+        relaxed_false_alarm_budget=relaxed_false_alarm_budget,
+    )
+    return {
+        "dataset_id": data.manifest.dataset_id,
+        "model_id": bundle.metadata.model_id,
+        "model_path": path.as_posix(),
+        "schema_version": bundle.metadata.schema_version,
+        "production_status": "experimental_shadow_only",
+        "selected_family": fitted.report["selected_family"],
+        "threshold_strict": fitted.report["threshold_strict"],
+        "threshold_relaxed": fitted.report["threshold_relaxed"],
+        "audit_2026": fitted.report["audit_2026"],
+    }
+
+
 def replay_v2_shadow_command(
     dataset: str | Path,
     model_path: str | Path,
@@ -468,6 +512,93 @@ def replay_v2_shadow_command(
         "schema_version": bundle.metadata.schema_version,
         "as_of": pd.Timestamp(row.iloc[0]["as_of"]).isoformat(),
         "production_status": "shadow_only",
+        "git_revision_label": bundle.metadata.git_commit,
+        "supports_actions": False,
+        "forecast": forecast,
+    }
+
+
+def replay_v2_experimental_command(
+    dataset: str | Path,
+    model_path: str | Path,
+    as_of: datetime,
+    *,
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Serve one experimental ensemble forecast; it remains non-production."""
+    from source.ml.artifacts import load_model
+    from source.ml.experimental import build_experimental_episode_dataset
+    from source.ml.features import SupervisedDataset, _feature_matrix
+
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    bundle = load_model(
+        _resolve_path(model_path, root),
+        trusted=True,
+        expected_schema_version="1.2",
+        expected_horizon_minutes=60,
+        expected_tag_dictionary_sha256=data.manifest.tag_dictionary_sha256,
+        expected_target_signal="ht:2:Mg.Sulfur",
+        expected_target_source="pak",
+        expected_target_unit="mg/kg",
+    )
+    definition = bundle.metadata.processing.get("feature_definition", {})
+    raw_signals = definition.get("telemetry_signals", TRAINING_TELEMETRY_SIGNALS)
+    if not isinstance(raw_signals, (list, tuple)):
+        raise ValueError("experimental artifact has invalid telemetry_signals definition")
+    cutoff = pd.Timestamp(as_of)
+    if cutoff.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    cutoff = cutoff.tz_convert("UTC")
+    signals = tuple(str(signal) for signal in raw_signals)
+    feature_matrix = _feature_matrix(
+        data,
+        pd.DatetimeIndex([cutoff]),
+        signals,
+        "ht:2:Mg.Sulfur",
+        SourceKind.PAK,
+        "mg/kg",
+    )
+    if feature_matrix.empty or pd.isna(feature_matrix.iloc[0][bundle.metadata.baseline_feature]):
+        raise ValueError("no PAK state is available at or before as_of")
+    base_frame = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "observation_id": ["serving-experimental"],
+                    "as_of": [cutoff],
+                    "target_at": [pd.NaT],
+                    "target_available_at": [pd.NaT],
+                    "target_source": ["pak"],
+                    "target_signal": ["ht:2:Mg.Sulfur"],
+                    "target_unit": ["mg/kg"],
+                    "y": [float("nan")],
+                    "baseline": [float(feature_matrix.iloc[0][bundle.metadata.baseline_feature])],
+                }
+            ),
+            feature_matrix.reset_index(drop=True),
+        ],
+        axis="columns",
+    )
+    base = SupervisedDataset(
+        frame=base_frame,
+        feature_names=tuple(feature_matrix.columns),
+        target_signal_id="ht:2:Mg.Sulfur",
+        target_unit="mg/kg",
+        target_source=SourceKind.PAK,
+        feature_source=SourceKind.PAK,
+        baseline_feature=bundle.metadata.baseline_feature,
+        feature_definition=dict(definition),
+        excluded_counts={},
+    )
+    episode = build_experimental_episode_dataset(data, base)
+    features = episode.frame.loc[:, list(bundle.feature_names)]
+    row = episode.frame.iloc[[0]]
+    forecast = bundle.predict_v2(features)[0]
+    return {
+        "model_id": bundle.metadata.model_id,
+        "schema_version": bundle.metadata.schema_version,
+        "as_of": pd.Timestamp(row.iloc[0]["as_of"]).isoformat(),
+        "production_status": "experimental_shadow_only",
         "git_revision_label": bundle.metadata.git_commit,
         "supports_actions": False,
         "forecast": forecast,
@@ -784,12 +915,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="allow a non-clean worktree; artifact remains shadow_only and cannot be frozen",
     )
+    experimental = subparsers.add_parser(
+        "train-v2-experimental",
+        help="train the richer HGB+LightGBM ensemble (research-only)",
+    )
+    experimental.add_argument("--dataset", required=True, help="prepared dataset directory")
+    experimental.add_argument("--output", default=None, help="model artifacts root")
+    experimental.add_argument("--config", default="config/runtime.toml", help="runtime config path")
+    experimental.add_argument(
+        "--false-alarm-budget",
+        type=float,
+        default=0.22,
+        help="research-only relaxed budget; production remains 0.20",
+    )
+    experimental.add_argument(
+        "--allow-dirty-experimental",
+        action="store_true",
+        help="allow a non-clean worktree; artifact remains experimental_shadow_only",
+    )
     v2_replay = subparsers.add_parser(
         "replay-v2-shadow", help="serve one schema-1.2 PAK episode forecast"
     )
     v2_replay.add_argument("--dataset", required=True, help="prepared dataset directory")
     v2_replay.add_argument("--model", required=True, help="schema-1.2 shadow artifact")
     v2_replay.add_argument("--at", required=True, type=_parse_as_of, help="timezone-aware ISO time")
+    experimental_replay = subparsers.add_parser(
+        "replay-v2-experimental", help="serve one experimental ensemble forecast"
+    )
+    experimental_replay.add_argument("--dataset", required=True, help="prepared dataset directory")
+    experimental_replay.add_argument(
+        "--model", required=True, help="experimental schema-1.2 artifact"
+    )
+    experimental_replay.add_argument(
+        "--at", required=True, type=_parse_as_of, help="timezone-aware ISO time"
+    )
     action_shadow = subparsers.add_parser(
         "evaluate-action-shadow", help="evaluate matched P8/F19 sulfur effects"
     )
@@ -901,9 +1060,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(v2_result, ensure_ascii=False, indent=2))
             return 0
+        if args.command == "train-v2-experimental":
+            experimental_result = train_v2_experimental_command(
+                args.dataset,
+                args.output,
+                allow_dirty_experimental=args.allow_dirty_experimental,
+                config_path=args.config,
+                relaxed_false_alarm_budget=args.false_alarm_budget,
+            )
+            print(json.dumps(experimental_result, ensure_ascii=False, indent=2))
+            return 0
         if args.command == "replay-v2-shadow":
             v2_replay_result = replay_v2_shadow_command(args.dataset, args.model, args.at)
             print(json.dumps(v2_replay_result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "replay-v2-experimental":
+            experimental_replay_result = replay_v2_experimental_command(
+                args.dataset, args.model, args.at
+            )
+            print(json.dumps(experimental_replay_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "evaluate-action-shadow":
             action_result = train_action_shadow_command(

@@ -33,6 +33,7 @@ from source.main import (
     evaluate_lims_correction_command,
     prepare_command,
     replay_command,
+    replay_v2_experimental_command,
     replay_v2_shadow_command,
     run_model_demo,
     validate_stage0,
@@ -1530,7 +1531,16 @@ class PetrolCodeApp(tk.Tk):
                 at = datetime.fromisoformat(at_var.get().replace("Z", "+00:00"))
                 if at.tzinfo is None:
                     raise ValueError("время должно содержать timezone")
-                result = replay_v2_shadow_command(dataset_var.get(), model_var.get(), at)
+                metadata_path = Path(model_var.get()) / "metadata.json"
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                is_experimental = bool(
+                    metadata.get("processing", {}).get("experimental_variant", False)
+                )
+                result = (
+                    replay_v2_experimental_command(dataset_var.get(), model_var.get(), at)
+                    if is_experimental
+                    else replay_v2_shadow_command(dataset_var.get(), model_var.get(), at)
+                )
                 text = format_v2_forecast_payload(result)
             except Exception as exc:
                 text = f"Ошибка: {exc}"

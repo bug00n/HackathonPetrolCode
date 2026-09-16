@@ -200,6 +200,18 @@ python -m source.main replay-v2-shadow \
   --model artifacts/models/sulfur-v2-shadow-<hash> \
   --at 2025-06-01T12:00:00+03:00
 
+# Экспериментальная complex-версия: ensemble HGB+LightGBM и нелинейные признаки.
+# Бюджет 22% — только исследовательский, реальные controls остаются выключены.
+python -m source.main train-v2-experimental \
+  --dataset data/processed/<dataset_id> \
+  --false-alarm-budget 0.22
+
+# Replay экспериментального ensemble-артефакта.
+python -m source.main replay-v2-experimental \
+  --dataset data/processed/<dataset_id> \
+  --model artifacts/models/sulfur-v2-experimental-<hash> \
+  --at 2025-06-01T12:00:00+03:00
+
 # Оценить исторический модельный эффект P8/F19; рекомендации не включает.
 python -m source.main evaluate-action-shadow --dataset data/processed/<dataset_id>
 
@@ -224,6 +236,10 @@ python -m source.main evaluate-action-residualization \
 
 Контракт и ограничения ML v2 описаны в [STAGE9.md](STAGE9.md). Test 2026 служит
 только audit-набором; production требует нового shadow-периода.
+
+Отдельная complex-ветка и её ограничения описаны в
+[EXPERIMENTAL_COMPLEX.md](EXPERIMENTAL_COMPLEX.md). Она предназначена для
+сравнения моделей, а не для ослабления safety-контуров.
 
 В UI на вкладке «Инструменты данных» доступны отдельные «Прогноз серы» (legacy
 replay) и «Эпизодный прогноз v2» (schema 1.2 shadow). Последний показывает
