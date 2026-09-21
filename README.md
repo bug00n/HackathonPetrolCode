@@ -2,7 +2,7 @@
 
 Локальное приложение поддержки технологических решений: модельные рецептуры дизельного топлива, исторический прогноз серы и объяснимые проверки ограничений.
 
-[Скачать Windows-версию](https://github.com/bug00n/HackathonPetrolCode/releases/latest/download/Neftekod-Windows-x64.zip) · [Все файлы релиза](https://github.com/bug00n/HackathonPetrolCode/releases/latest) · [Сценарий защиты](release/DEMO_SCRIPT.md)
+[Скачать Windows-версию](https://github.com/bug00n/HackathonPetrolCode/releases/latest/download/Neftekod-Windows-x64.zip) · [Все файлы релиза](https://github.com/bug00n/HackathonPetrolCode/releases/latest) · [Сценарий защиты](docs/DEMO_SCRIPT.md)
 
 ## Запуск за три шага
 
@@ -30,11 +30,9 @@ Python, установка библиотек, обучение моделей �
 
 ## Материалы для жюри
 
-- [Презентация — 12 слайдов](release/jury/Neftekod_Presentation.pptx).
-- [Технический документ — 7 страниц](release/jury/Neftekod_Jury.docx).
-- [Пятиминутный сценарий показа и ответы на вопросы](release/DEMO_SCRIPT.md).
-- [Технический отчёт прямо на GitHub](release/JURY_REPORT.md).
-- [Результаты проверок и исправления](release/RELEASE_STATUS.md).
+- [Презентация — 12 слайдов](https://github.com/bug00n/HackathonPetrolCode/releases/latest/download/Neftekod_Presentation.pptx).
+- [Технический документ — 7 страниц](https://github.com/bug00n/HackathonPetrolCode/releases/latest/download/Neftekod_Jury.docx).
+- [Пятиминутный сценарий показа и ответы на вопросы](docs/DEMO_SCRIPT.md).
 
 Документы также находятся внутри готового ZIP. PPTX и DOCX можно скачать отдельно со страницы релиза.
 
@@ -42,7 +40,7 @@ Python, установка библиотек, обучение моделей �
 
 Это **демонстрационный прототип, не система промышленного управления**. Реальные уставки отключены (`supports_actions=false`). Рецептуры и стоимостные показатели модельные; Hybrid проверяет только серу, v2 работает в shadow-режиме.
 
-На отложенных данных ПАК 2026 года: **31 819** сопоставимых целей, MAE **0,6842 мг/кг**, равен persistence baseline. Превосходство модели и промышленная экономия не заявляются. [Подробности оценки](release/evidence/forecast-test/metrics.json).
+На отложенных данных ПАК 2026 года: **31 819** сопоставимых целей, MAE **0,6842 мг/кг**, равен persistence baseline. Превосходство модели и промышленная экономия не заявляются. [Подробности оценки](docs/evidence/forecast-test/metrics.json).
 
 ## Если не запускается
 
@@ -51,13 +49,13 @@ Python, установка библиотек, обучение моделей �
 - При программной ошибке проверьте `startup-error.log` рядом с EXE.
 - Сверить архив можно по SHA-256 на странице релиза; внутри есть `SHA256SUMS.txt` для отдельных файлов.
 
-[Полная инструкция](release/README_FIRST.md).
+Полная инструкция запуска приведена выше; сообщения ошибок сохраняются рядом с EXE.
 
 ## Для разработчика
 
-В `main` находится сдаваемая версия, в `dev` — разработка; конкретная поставка закреплена тегом релиза. В Git хранятся исходники, конфигурации, тесты и документы. Готовый EXE, подготовленные данные и модели поставляются через Releases.
+В `main` находится сдаваемая версия без дневников разработки. Планы этапов, старые ревью и журнал проблем сохранены в [ветке dev](https://github.com/bug00n/HackathonPetrolCode/tree/dev); конкретная поставка закреплена тегом релиза. В Git хранятся исходники, конфигурации, тесты и технические материалы. EXE, презентация, Word-документ, подготовленные данные и модели поставляются через Releases. Уведомления сторонних компонентов сохранены в [third_party/licenses](third_party/licenses).
 
-[Запуск исходников, тесты и сборка](docs/DEVELOPMENT.md) · [Карта документации](docs/README.md) · [Архитектура и контракты](DESIGN.md)
+[Запуск исходников, тесты и сборка](docs/DEVELOPMENT.md) · [Архитектура и контракты](DESIGN.md) · [Уточнения организаторов](docs/technical/QA_CLARIFICATIONS.md)
 
 Быстрый модельный запуск после получения исходников, из корня проекта:
 

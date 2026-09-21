@@ -17,7 +17,7 @@ from source.main import (  # noqa: E402
 )
 from source.ui_data import discover_ui_context, ui_hybrid_snapshot, ui_stage_snapshot  # noqa: E402
 
-output = ROOT / "release/evidence"
+output = ROOT / "docs/evidence"
 output.mkdir(parents=True, exist_ok=True)
 context = discover_ui_context(ROOT)
 dataset = context.latest_dataset

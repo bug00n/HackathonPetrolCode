@@ -1,7 +1,8 @@
 param(
     [string]$Output = (Join-Path (Split-Path -Parent $PSScriptRoot) "..\output\neftekod-release"),
     [switch]$Archive,
-    [string]$BinaryDirectory
+    [string]$BinaryDirectory,
+    [Parameter(Mandatory=$true)][string]$JuryDirectory
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,7 +17,7 @@ $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
 $required = @(
     "README.md", "requirements.txt", "requirements.lock.txt",
     "pyproject.toml", "source", "config", "global_tests", "materials",
-    "release", "scripts", "docs"
+    "scripts", "docs", "third_party"
 )
 $required += @(Get-ChildItem -LiteralPath $root -Filter "*.md" -File |
     Where-Object { $_.Name -notin @("README.md", "AGENTS.md") } |
@@ -31,6 +32,14 @@ foreach ($relative in $paths) {
     $source = Join-Path $root $relative
     if (-not (Test-Path -LiteralPath $source)) {
         throw "Required release input is missing: $relative"
+    }
+}
+
+$juryRoot = (Resolve-Path -LiteralPath $JuryDirectory).Path
+$juryFiles = @("Neftekod_Presentation.pptx", "Neftekod_Jury.docx")
+foreach ($name in $juryFiles) {
+    if (-not (Test-Path -LiteralPath (Join-Path $juryRoot $name) -PathType Leaf)) {
+        throw "Missing jury document: $name"
     }
 }
 
@@ -57,15 +66,15 @@ function Copy-ReleaseItem {
 New-Item -ItemType Directory -Path $destination -Force | Out-Null
 foreach ($relative in $required) {
     $source = Join-Path $root $relative
-    $target = Join-Path $destination $(if ($relative -eq "release\README_FIRST.md") { "README_FIRST.md" } elseif ($relative -eq "release\DEMO_CATALOG.json") { "DEMO_CATALOG.json" } elseif ($relative -eq "release\RELEASE_BRIEF.md") { "RELEASE_BRIEF.md" } else { $relative })
+    $target = Join-Path $destination $relative
     Copy-ReleaseItem $source $target
 }
 foreach ($relative in $selected) {
     $target = Join-Path $destination $relative
     Copy-ReleaseItem (Join-Path $root $relative) $target
 }
-foreach ($name in @("README_FIRST.md", "DEMO_CATALOG.json", "RELEASE_BRIEF.md")) {
-    Copy-Item -LiteralPath (Join-Path $destination "release\$name") -Destination (Join-Path $destination $name)
+foreach ($name in $juryFiles) {
+    Copy-ReleaseItem (Join-Path $juryRoot $name) (Join-Path $destination "docs\jury\$name")
 }
 if ($BinaryDirectory) {
     $binaryRoot = (Resolve-Path -LiteralPath $BinaryDirectory).Path
