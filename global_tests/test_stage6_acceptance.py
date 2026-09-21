@@ -13,6 +13,7 @@ from source.acceptance import (
     JOURNAL_FILES,
     load_episode_specs,
     run_acceptance_suite,
+    sha256_file,
     verify_model_freeze,
 )
 from source.config import load_runtime_config, load_scenario
@@ -26,7 +27,6 @@ from source.contracts import (
     Stage,
     Validity,
 )
-from source.ml.artifacts import sha256_file
 from source.orchestrator import run_cycle
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,9 +38,17 @@ def test_episode_catalog_is_explicit_and_complete() -> None:
     assert [episode.id for episode in episodes] == [
         "stable_blend",
         "sulfur_risk",
+        "t95_risk",
+        "cetane_risk",
         "missing_component_quality",
     ]
-    assert all(episode.expected_status == "abstain" for episode in episodes)
+    assert [episode.expected_status for episode in episodes] == [
+        "hold",
+        "recommend",
+        "recommend",
+        "recommend",
+        "abstain",
+    ]
 
 
 def test_acceptance_suite_reproduces_decisions_and_exports_full_journals(
@@ -53,12 +61,15 @@ def test_acceptance_suite_reproduces_decisions_and_exports_full_journals(
         output_dir=output,
     )
 
-    assert report["episode_count"] == 3
+    assert report["episode_count"] == 5
     assert report["max_cycle_seconds"] < 5
     risk = next(item for item in report["episodes"] if item["episode_id"] == "sulfur_risk")
-    assert risk["baseline_upper_mg_kg"] == pytest.approx(14.2)
-    assert risk["sulfur_only_counterfactual"]["upper_mg_kg"] == pytest.approx(9.4)
-    assert risk["sulfur_only_counterfactual"]["operator_recommendation"] is False
+    assert risk["baseline_quality"]["sulfur_upper"] == pytest.approx(14.058)
+    assert risk["selected_quality"] == pytest.approx(
+        {"sulfur_upper": 9.306, "t95_upper": 354.0, "cetane_lower": 52.6}
+    )
+    assert risk["selected_additive_fraction"] == pytest.approx(0.01)
+    assert risk["operator_recommendation"] is True
     with zipfile.ZipFile(output / "journals.zip") as archive:
         names = set(archive.namelist())
         assert "manifest.json" in names
@@ -137,7 +148,7 @@ def test_model_freeze_verifies_hashes_and_rejects_tampering(tmp_path: Path) -> N
 def test_failed_acceptance_does_not_publish_partial_directory(tmp_path: Path) -> None:
     bad_catalog = tmp_path / "episodes.json"
     payload = json.loads((PROJECT_ROOT / "config/demo_episodes.json").read_text(encoding="utf-8"))
-    payload["episodes"][0]["expected_status"] = "hold"
+    payload["episodes"][0]["expected_status"] = "abstain"
     bad_catalog.write_text(json.dumps(payload), encoding="utf-8")
     output = tmp_path / "failed"
 

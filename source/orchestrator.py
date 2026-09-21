@@ -39,26 +39,39 @@ def _model_demo_state(as_of: datetime, scenario: ScenarioConfig) -> ProcessState
     issues: list[Issue] = []
     signals: dict[str, SignalSnapshot] = {}
     for component in scenario.blend_components:
-        if component.sulfur.value is not None and (
-            not scenario.require_upper_bound or component.sulfur.upper is not None
-        ):
-            continue
-        signal_id = f"blend:{component.id}:sulfur"
-        issue = Issue(
-            code="MISSING_REQUIRED_SIGNAL",
-            severity=Severity.BLOCKING,
-            signal_id=signal_id,
-            detail=f"component {component.id} has no complete sulfur estimate",
-            source_ref=component.sulfur.reference,
+        properties = (
+            ("sulfur", component.sulfur, "upper", "MISSING_REQUIRED_SIGNAL"),
+            ("t95", component.t95, "upper", "UNASSESSED_REQUIRED_PROPERTY"),
+            (
+                "cetane_number",
+                component.cetane_number,
+                "lower",
+                "UNASSESSED_REQUIRED_PROPERTY",
+            ),
         )
-        issues.append(issue)
-        signals[signal_id] = SignalSnapshot(
-            selected=None,
-            alternatives=(),
-            age_seconds=None,
-            fresh=False,
-            issues=(issue,),
-        )
+        for name, estimate, bound, reason_code in properties:
+            if (
+                estimate is not None
+                and estimate.value is not None
+                and getattr(estimate, bound) is not None
+            ):
+                continue
+            signal_id = f"blend:{component.id}:{name}"
+            issue = Issue(
+                code=reason_code,
+                severity=Severity.BLOCKING,
+                signal_id=signal_id,
+                detail=f"component {component.id} has no complete {name} estimate",
+                source_ref=f"scenario:{scenario.id}",
+            )
+            issues.append(issue)
+            signals[signal_id] = SignalSnapshot(
+                selected=None,
+                alternatives=(),
+                age_seconds=None,
+                fresh=False,
+                issues=(issue,),
+            )
     payload = {
         "schema_version": "1.0",
         "as_of": as_of.isoformat(),

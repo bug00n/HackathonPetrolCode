@@ -4,29 +4,52 @@
     {
       "id": "stable_blend",
       "scenario": "blend_normal",
-      "expected_status": "abstain",
-      "expected_reason_codes": ["UNASSESSED_REQUIRED_PROPERTY"],
-      "expected_baseline_upper": 9.4,
-      "expected_sulfur_only_upper": 9.4,
-      "expected_sulfur_only_blend": null
+      "expected_status": "hold",
+      "expected_reason_codes": ["NO_MATERIAL_IMPROVEMENT"],
+      "expected_baseline_quality": {"sulfur_upper": 9.306, "t95_upper": 354.0, "cetane_lower": 52.6},
+      "expected_selected_quality": {"sulfur_upper": 9.306, "t95_upper": 354.0, "cetane_lower": 52.6},
+      "expected_recipe": {"A": 0.891, "B": 0.099},
+      "expected_additive_fraction": 0.01
     },
     {
       "id": "sulfur_risk",
       "scenario": "blend_risk",
-      "expected_status": "abstain",
-      "expected_reason_codes": ["UNASSESSED_REQUIRED_PROPERTY", "QUALITY_LIMIT"],
-      "expected_baseline_upper": 14.2,
-      "expected_sulfur_only_upper": 9.4,
-      "expected_sulfur_only_blend": {"A": 0.9, "B": 0.1}
+      "expected_status": "recommend",
+      "expected_reason_codes": ["QUALITY_LIMIT"],
+      "expected_baseline_quality": {"sulfur_upper": 14.058, "t95_upper": 358.0, "cetane_lower": 51.8},
+      "expected_selected_quality": {"sulfur_upper": 9.306, "t95_upper": 354.0, "cetane_lower": 52.6},
+      "expected_recipe": {"A": 0.891, "B": 0.099},
+      "expected_additive_fraction": 0.01
+    },
+    {
+      "id": "t95_risk",
+      "scenario": "blend_t95_risk",
+      "expected_status": "recommend",
+      "expected_reason_codes": ["QUALITY_LIMIT"],
+      "expected_baseline_quality": {"sulfur_upper": 7.425, "t95_upper": 367.0, "cetane_lower": 51.0},
+      "expected_selected_quality": {"sulfur_upper": 6.9795, "t95_upper": 359.5, "cetane_lower": 51.6},
+      "expected_recipe": {"A": 0.6435, "B": 0.3465},
+      "expected_additive_fraction": 0.01
+    },
+    {
+      "id": "cetane_risk",
+      "scenario": "blend_cetane_risk",
+      "expected_status": "recommend",
+      "expected_reason_codes": ["QUALITY_LIMIT"],
+      "expected_baseline_quality": {"sulfur_upper": 8.019, "t95_upper": 349.0, "cetane_lower": 50.6},
+      "expected_selected_quality": {"sulfur_upper": 6.6, "t95_upper": 344.0, "cetane_lower": 51.1},
+      "expected_recipe": {"A": 0.8, "B": 0.2},
+      "expected_additive_fraction": 0.0
     },
     {
       "id": "missing_component_quality",
       "scenario": "blend_missing",
       "expected_status": "abstain",
       "expected_reason_codes": ["MISSING_REQUIRED_SIGNAL"],
-      "expected_baseline_upper": null,
-      "expected_sulfur_only_upper": null,
-      "expected_sulfur_only_blend": null
+      "expected_baseline_quality": {"sulfur_upper": null, "t95_upper": 358.0, "cetane_lower": 51.8},
+      "expected_selected_quality": null,
+      "expected_recipe": null,
+      "expected_additive_fraction": null
     }
   ]
 }

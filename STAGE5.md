@@ -107,8 +107,8 @@ hold candidate + best feasible candidate
 - Нет разрешенных промышленных setpoint-рекомендаций.
 - Нет гарантии safety coverage: `0.95` является эмпирической исторической оценкой, а не промышленной гарантией.
 - Applicability bounds являются marginal q0.001/q0.999 по train-признакам, а не полноценной многомерной OOD-моделью.
-- `T95` и цетановое число в model-demo являются сценарными synthetic values; полный
-  промышленный паспорт товарного дизеля остаётся `not_assessed`.
+- T95/CN доступны в отдельном синтетическом model-demo; исторически валидированных
+  моделей их последствий и промышленного паспорта по-прежнему нет.
 
 ## Как проверять
 
@@ -126,11 +126,13 @@ Demo-команды должны сохранить прежние статус�
 ```bash
 python -m source.main run-model-demo blend_normal
 python -m source.main run-model-demo blend_risk
+python -m source.main run-model-demo blend_t95_risk
+python -m source.main run-model-demo blend_cetane_risk
 python -m source.main run-model-demo blend_missing
 ```
 
 Ожидаемо:
 
 - `blend_normal` -> `hold`;
-- `blend_risk` -> `recommend`;
+- `blend_risk`, `blend_t95_risk`, `blend_cetane_risk` -> `recommend`;
 - `blend_missing` -> `abstain`.

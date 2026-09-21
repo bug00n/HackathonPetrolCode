@@ -6,6 +6,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tarfile
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -146,6 +147,26 @@ def _source_artifact(path: Path, root: Path) -> SourceArtifact:
 
 def _extract_telemetry(archive: Path, destination: Path) -> Path:
     """Validate archive members before extraction to a temporary directory."""
+    try:
+        with tarfile.open(archive) as stream:
+            members = {
+                member.name.replace("\\", "/").lstrip("./").rstrip("/")
+                for member in stream.getmembers()
+            }
+            if members != _ARCHIVE_MEMBERS | {"data"}:
+                raise ValueError(f"unexpected archive members: {sorted(members)}")
+            destination_root = destination.resolve()
+            for member in stream.getmembers():
+                target = (destination / member.name).resolve()
+                try:
+                    target.relative_to(destination_root)
+                except ValueError as exc:
+                    raise ValueError(f"unsafe archive member: {member.name}") from exc
+            stream.extractall(destination)
+            return destination / "data"
+    except tarfile.TarError:
+        pass
+
     listing = subprocess.run(
         ["tar", "-tf", str(archive)], check=True, capture_output=True, text=True
     ).stdout.splitlines()

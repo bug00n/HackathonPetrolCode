@@ -1,0 +1,4 @@
+{
+  "state": {"schema_version": "1.0", "state_id": "fixture-state-cetane-risk", "as_of": "2026-01-15T09:00:00Z", "dataset_id": "modeldemo001", "mode": "model_demo", "signals": {}, "issues": []},
+  "expected": {"status": "recommend", "selected_blend_mass_fractions": {"A": 0.8, "B": 0.2}, "selected_additive_mass_fraction": 0.0}
+}

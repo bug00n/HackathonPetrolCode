@@ -5,18 +5,28 @@ from __future__ import annotations
 from source.contracts import CandidateEvaluation, RecommendationStatus, ScenarioConfig
 
 
-def _sulfur_text(evaluation: CandidateEvaluation | None) -> str:
+def _quality_text(evaluation: CandidateEvaluation | None) -> str:
     if evaluation is None:
-        return "сера не рассчитана"
+        return "паспорт качества не рассчитан"
+    metrics = {}
     for assessment in evaluation.assessments:
-        sulfur = assessment.metrics.get("sulfur")
-        if sulfur is not None:
-            if sulfur.value is None:
-                return "сера не рассчитана"
-            if sulfur.upper is None:
-                return f"сера {sulfur.value:.3g} {sulfur.unit}, верхняя оценка недоступна"
-            return f"сера {sulfur.value:.3g} {sulfur.unit}, верхняя оценка {sulfur.upper:.3g}"
-    return "сера не рассчитана"
+        metrics.update(assessment.metrics)
+    sulfur = metrics.get("sulfur")
+    t95 = metrics.get("t95")
+    cetane = metrics.get("cetane_number")
+    return ", ".join(
+        (
+            "сера недоступна"
+            if sulfur is None or sulfur.upper is None
+            else f"сера upper {sulfur.upper:.3g} {sulfur.unit}",
+            "T95 недоступен"
+            if t95 is None or t95.upper is None
+            else f"T95 upper {t95.upper:.3g} {t95.unit}",
+            "цетановое число недоступно"
+            if cetane is None or cetane.lower is None
+            else f"цетановое lower {cetane.lower:.3g}",
+        )
+    )
 
 
 def _checks_text(evaluation: CandidateEvaluation | None) -> str:
@@ -56,15 +66,15 @@ def build_explanation(
     if status is RecommendationStatus.HOLD:
         suffix = f" Причины выбора: {', '.join(reason_codes)}." if reason_codes else ""
         return (
-            f"Рекомендуется сохранить режим: {_sulfur_text(selected)}. "
+            f"Рекомендуется сохранить режим: {_quality_text(selected)}. "
             f"Проверки: {_checks_text(selected)}.{suffix}"
         )
     action = selected.candidate.id if selected else "unknown"
     return (
         f"Рекомендуется вариант {action}: текущий режим не проходит ограничения "
-        f"({_sulfur_text(baseline)}; проверки: {_checks_text(baseline)}), "
+        f"({_quality_text(baseline)}; проверки: {_checks_text(baseline)}), "
         f"выбранный вариант проходит "
-        f"({_sulfur_text(selected)}; проверки: {_checks_text(selected)})."
+        f"({_quality_text(selected)}; проверки: {_checks_text(selected)})."
     )
 
 

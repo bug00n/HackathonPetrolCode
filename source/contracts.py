@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION: Literal["1.0"] = "1.0"
+RECOMMENDATION_SCHEMA_VERSION: Literal["1.1"] = "1.1"
 FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 NonNegativeFloat = Annotated[FiniteFloat, Field(ge=0)]
 PositiveInt = Annotated[int, Field(gt=0)]
@@ -205,23 +206,29 @@ class CandidateAction(ContractModel):
     kind: CandidateKind
     setpoints: dict[str, FiniteFloat] = Field(default_factory=dict)
     blend_mass_fractions: dict[str, NonNegativeFloat] = Field(default_factory=dict)
+    additive_mass_fraction: Annotated[FiniteFloat, Field(ge=0, le=0.03)] = 0.0
     horizon_minutes: PositiveInt
     is_model_scenario: bool = False
 
     @model_validator(mode="after")
     def validate_payload(self) -> "CandidateAction":
         """Check that the candidate payload matches its declared action kind."""
-        if self.kind is CandidateKind.HOLD and (self.setpoints or self.blend_mass_fractions):
+        if self.kind is CandidateKind.HOLD and (
+            self.setpoints or self.blend_mass_fractions or self.additive_mass_fraction
+        ):
             raise ValueError("hold candidate cannot contain changes")
         if self.kind is CandidateKind.SETPOINTS and (
-            not self.setpoints or self.blend_mass_fractions
+            not self.setpoints or self.blend_mass_fractions or self.additive_mass_fraction
         ):
             raise ValueError("setpoints candidate needs only setpoints")
         if self.kind is CandidateKind.BLEND:
             if self.setpoints or not self.blend_mass_fractions:
                 raise ValueError("blend candidate needs only a complete recipe")
-            if abs(sum(self.blend_mass_fractions.values()) - 1.0) > 1e-9:
-                raise ValueError("blend mass fractions must sum to one")
+            if (
+                abs(sum(self.blend_mass_fractions.values()) + self.additive_mass_fraction - 1.0)
+                > 1e-9
+            ):
+                raise ValueError("blend and additive mass fractions must sum to one")
         return self
 
 
@@ -297,7 +304,7 @@ class CandidateEvaluation(ContractModel):
 
 
 class Recommendation(ContractModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["1.0", "1.1"] = RECOMMENDATION_SCHEMA_VERSION
     run_id: str
     state_id: str
     as_of: AwareDatetime
@@ -315,6 +322,13 @@ class Recommendation(ContractModel):
     @model_validator(mode="after")
     def validate_result(self) -> "Recommendation":
         """Ensure the selected result matches the recommendation status."""
+        evaluations = tuple(
+            item for item in (self.baseline, self.selected, *self.alternatives) if item is not None
+        )
+        if self.schema_version == "1.0" and any(
+            item.candidate.additive_mass_fraction for item in evaluations
+        ):
+            raise ValueError("non-zero additive dose requires recommendation schema 1.1")
         if self.status is RecommendationStatus.ABSTAIN:
             if self.selected is not None or not self.reason_codes:
                 raise ValueError("abstain needs selected=None and at least one reason")
@@ -367,6 +381,7 @@ class ConstraintSpec(ContractModel):
     upper: FiniteFloat | None
     unit: str
     use_upper_estimate: bool
+    use_lower_estimate: bool = False
     required: bool
     basis: ConstraintBasis
     evidence_ref: str
@@ -374,6 +389,8 @@ class ConstraintSpec(ContractModel):
     @model_validator(mode="after")
     def validate_bounds(self) -> "ConstraintSpec":
         """Require evidence and at least one valid lower or upper bound."""
+        if self.use_upper_estimate and self.use_lower_estimate:
+            raise ValueError("constraint cannot use both lower and upper estimates")
         if self.lower is None and self.upper is None:
             raise ValueError("constraint needs at least one bound")
         if self.lower is not None and self.upper is not None and self.lower > self.upper:
@@ -393,6 +410,53 @@ class BlendComponent(ContractModel):
     risk_index: Annotated[FiniteFloat, Field(ge=0, le=1)]
     source_state_id: str | None
 
+    @model_validator(mode="after")
+    def validate_quality_units(self) -> "BlendComponent":
+        """Reject component passports with incompatible physical units."""
+        if self.sulfur.unit != Unit.MG_KG.value:
+            raise ValueError("component sulfur must use mg/kg")
+        if self.t95 is not None and self.t95.unit != Unit.CELSIUS.value:
+            raise ValueError("component T95 must use degC")
+        if self.cetane_number is not None and self.cetane_number.unit != Unit.CETANE.value:
+            raise ValueError("component cetane number must use cetane_number")
+        return self
+
+
+class AdditiveResponsePoint(ContractModel):
+    mass_fraction: Annotated[FiniteFloat, Field(ge=0, le=0.03)]
+    cetane_gain: NonNegativeFloat
+
+
+class CetaneAdditiveSpec(ContractModel):
+    id: str
+    max_mass_fraction: Annotated[FiniteFloat, Field(gt=0, le=0.03)]
+    fraction_step: Annotated[FiniteFloat, Field(gt=0, le=0.03)]
+    available_mass_t: NonNegativeFloat
+    cost_proxy_per_t: NonNegativeFloat
+    response_curve: Annotated[tuple[AdditiveResponsePoint, ...], Field(min_length=2)]
+    evidence_ref: str
+    assumptions: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_curve(self) -> "CetaneAdditiveSpec":
+        """Require a complete monotone scenario curve over the allowed dosage."""
+        doses = [point.mass_fraction for point in self.response_curve]
+        gains = [point.cetane_gain for point in self.response_curve]
+        if doses[0] != 0 or gains[0] != 0:
+            raise ValueError("additive response curve must start at zero")
+        if any(right <= left for left, right in zip(doses, doses[1:], strict=False)):
+            raise ValueError("additive response doses must be strictly increasing")
+        if any(right < left for left, right in zip(gains, gains[1:], strict=False)):
+            raise ValueError("additive cetane gain must be nondecreasing")
+        if doses[-1] < self.max_mass_fraction:
+            raise ValueError("additive response curve must cover max_mass_fraction")
+        steps = round(self.max_mass_fraction / self.fraction_step)
+        if abs(steps * self.fraction_step - self.max_mass_fraction) > 1e-9:
+            raise ValueError("additive fraction_step must divide max_mass_fraction")
+        if not self.evidence_ref:
+            raise ValueError("additive model needs evidence_ref")
+        return self
+
 
 class ScenarioConfig(ContractModel):
     id: str
@@ -401,13 +465,52 @@ class ScenarioConfig(ContractModel):
     controls: tuple[ControlSpec, ...] = ()
     constraints: tuple[ConstraintSpec, ...] = ()
     blend_components: tuple[BlendComponent, ...] = ()
+    cetane_additive: CetaneAdditiveSpec | None = None
     total_mass_t: NonNegativeFloat | None
     current_blend_mass_fractions: dict[str, NonNegativeFloat] = Field(default_factory=dict)
+    current_additive_mass_fraction: Annotated[FiniteFloat, Field(ge=0, le=0.03)] = 0.0
     active_criteria: tuple[str, ...] = ()
     materiality_thresholds: dict[str, NonNegativeFloat] = Field(default_factory=dict)
     require_upper_bound: bool = True
     action_cooldown_minutes: Annotated[int, Field(ge=0)] = 60
     assumptions: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_blend(self) -> "ScenarioConfig":
+        """Keep the current product recipe and additive model internally consistent."""
+        if not self.blend_components:
+            return self
+        component_ids = {component.id for component in self.blend_components}
+        if len(component_ids) != len(self.blend_components):
+            raise ValueError("blend component ids must be unique")
+        if set(self.current_blend_mass_fractions) != component_ids:
+            raise ValueError("current blend must contain every component exactly once")
+        total = (
+            sum(self.current_blend_mass_fractions.values()) + self.current_additive_mass_fraction
+        )
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError("current blend and additive mass fractions must sum to one")
+        if self.current_additive_mass_fraction:
+            if self.cetane_additive is None:
+                raise ValueError("current additive dose needs a cetane additive model")
+            if self.current_additive_mass_fraction > self.cetane_additive.max_mass_fraction:
+                raise ValueError("current additive dose exceeds the configured maximum")
+        if self.mode is OperationMode.MODEL_DEMO:
+            required = {
+                constraint.metric: constraint
+                for constraint in self.constraints
+                if constraint.required
+            }
+            missing = {"sulfur", "t95", "cetane_number"}.difference(required)
+            if missing:
+                raise ValueError(f"model-demo blend lacks required constraints: {sorted(missing)}")
+            if not required["sulfur"].use_upper_estimate:
+                raise ValueError("model-demo sulfur constraint must use the upper estimate")
+            if not required["t95"].use_upper_estimate:
+                raise ValueError("model-demo T95 constraint must use the upper estimate")
+            if not required["cetane_number"].use_lower_estimate:
+                raise ValueError("model-demo cetane constraint must use the lower estimate")
+        return self
 
 
 class DecisionContext(ContractModel):
@@ -482,6 +585,7 @@ __all__ = [
     "AgentAssessment",
     "AssessmentAgent",
     "AssessmentStatus",
+    "AdditiveResponsePoint",
     "BlendComponent",
     "CandidateAction",
     "CandidateEvaluation",
@@ -491,6 +595,7 @@ __all__ = [
     "ConstraintSpec",
     "ConstraintStatus",
     "ControlSpec",
+    "CetaneAdditiveSpec",
     "Conversion",
     "DatasetManifest",
     "DecisionContext",
@@ -503,6 +608,7 @@ __all__ = [
     "OperationMode",
     "ProcessState",
     "Recommendation",
+    "RECOMMENDATION_SCHEMA_VERSION",
     "RecommendationStatus",
     "RunFailure",
     "RuntimeConfig",

@@ -27,7 +27,7 @@ def test_candidate_grid_fails_instead_of_silently_truncating() -> None:
 
     with pytest.raises(
         ValueError,
-        match=r"requires 21 candidates including hold, but max_candidates=20",
+        match=r"requires 84 candidates including hold, but max_candidates=20",
     ):
         optimizer.generate_candidates(state, scenario, config)
 

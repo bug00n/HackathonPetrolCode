@@ -51,6 +51,7 @@ coverage.xml
 .pytest_cache/
 .pytest_tmp/
 .test_tmp/
+.test_tmp_seq_*/
 cover/
 
 # Translations

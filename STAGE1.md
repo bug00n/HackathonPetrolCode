@@ -1,8 +1,8 @@
 # Stage 1: первый сквозной backend-цикл
 
-> Актуальный статус: model-demo теперь содержит сценарные `T95` и цетановое число,
-> поэтому демонстрирует три исхода: `hold`, `recommend` и `abstain`. Эти значения
-> синтетические и не являются промышленным паспортом продукта.
+> Актуальный статус: это историческое описание основы цикла. Финальная версия добавила
+> модельные T95/CN и присадку: допустимые сценарии дают `hold`/`recommend`, а неполный
+> паспорт по-прежнему даёт fail-closed `abstain`.
 
 Этот этап нужен, чтобы превратить подготовленные данные и DTO из stage 0 в
 проверяемый цикл принятия решения. ML-модель ещё не обязательна: backend
@@ -16,7 +16,7 @@
 - `source/agents/*` содержит логические роли качества, надёжности и оптимизации.
   Сейчас они считают прозрачные demo-метрики, не обученную модель.
 - `source/constraints.py` является единственным местом проверки жёстких
-  ограничений: сера, доступность верхней оценки и запас компонентов.
+  ограничений: S/T95/CN, необходимые границы, доля присадки и запасы.
 - `source/journal.py` пишет `metadata.json`, `input.json`, `features.json`,
   `trace.jsonl`, `candidates.jsonl` и `result.json`.
 - CLI получил команду `run-model-demo`.
@@ -54,6 +54,8 @@ run_cycle -> generate_candidates -> evaluate_candidates -> check_constraints -> 
 python -m source.main validate-stage0
 python -m source.main run-model-demo blend_normal
 python -m source.main run-model-demo blend_risk
+python -m source.main run-model-demo blend_t95_risk
+python -m source.main run-model-demo blend_cetane_risk
 python -m source.main run-model-demo blend_missing
 ```
 
@@ -72,7 +74,7 @@ python -m pytest
 Ожидаемые статусы:
 
 - `blend_normal` -> `hold`;
-- `blend_risk` -> `recommend`;
+- `blend_risk`, `blend_t95_risk`, `blend_cetane_risk` -> `recommend`;
 - `blend_missing` -> `abstain`.
 
 ## Ограничения этапа

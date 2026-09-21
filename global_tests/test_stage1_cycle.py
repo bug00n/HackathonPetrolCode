@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from source.config import load_runtime_config, load_scenario
-from source.contracts import DecisionContext, RecommendationStatus
+from source.contracts import DecisionContext, RecommendationStatus, ScenarioConfig
 from source.orchestrator import run_cycle
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -42,6 +42,18 @@ def _run_scenario(runtime_config, scenario, tmp_path: Path):
     )
 
 
+def _run_scenario(runtime_config, scenario: ScenarioConfig, tmp_path: Path):
+    return run_cycle(
+        data=None,
+        as_of=datetime(2026, 1, 15, 9, tzinfo=UTC),
+        model=None,
+        scenario=scenario,
+        config=runtime_config,
+        context=DecisionContext(),
+        run_dir=tmp_path,
+    )
+
+
 def _metric(evaluation, name: str):
     for assessment in evaluation.assessments:
         if name in assessment.metrics:
@@ -49,50 +61,37 @@ def _metric(evaluation, name: str):
     raise AssertionError(f"metric {name} not found")
 
 
-def test_stage1_holds_complete_normal_blend(
+def test_complete_product_passport_allows_stable_hold(
     runtime_config,
     tmp_path: Path,
 ) -> None:
-    """Complete model-demo product properties allow a hold decision."""
+    """A stable recipe passes sulfur, T95 and cetane conservative bounds."""
     result = _run_demo(runtime_config, "blend_normal", tmp_path)
 
     assert result.status is RecommendationStatus.HOLD
     assert result.selected is not None
-    assert result.selected.candidate.id == "hold"
-    assert "NO_MATERIAL_IMPROVEMENT" in result.reason_codes
+    assert [check.status.value for check in result.selected.checks[:3]] == ["pass"] * 3
 
 
-def test_stage1_recommends_model_recipe_for_risk_blend(
+def test_complete_product_passport_allows_risk_recommendation(
     runtime_config,
     tmp_path: Path,
 ) -> None:
-    """A risky model-demo blend can recommend a synthetic safer recipe."""
+    """The selected recipe must pass all three product-quality constraints."""
     result = _run_demo(runtime_config, "blend_risk", tmp_path)
 
+    assert result.schema_version == "1.1"
     assert result.status is RecommendationStatus.RECOMMEND
     assert result.baseline is not None
     assert result.baseline.feasible is False
     assert result.selected is not None
-    assert result.selected.candidate.blend_mass_fractions == {"A": 0.9, "B": 0.1}
-    assert "QUALITY_LIMIT" in result.reason_codes
-
-
-def test_stage1_abstains_when_model_demo_t95_is_missing(
-    runtime_config,
-    tmp_path: Path,
-) -> None:
-    """Missing scenario passport properties still block model-demo recommendations."""
-    scenario = load_scenario("config/scenarios/blend_normal.json")
-    first, second = scenario.blend_components
-    broken = scenario.model_copy(
-        update={"blend_components": (first.model_copy(update={"t95": None}), second)}
-    )
-
-    result = _run_scenario(runtime_config, broken, tmp_path)
-
-    assert result.status is RecommendationStatus.ABSTAIN
-    assert result.selected is None
-    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
+    assert result.selected.candidate.blend_mass_fractions == pytest.approx({"A": 0.891, "B": 0.099})
+    assert result.selected.candidate.additive_mass_fraction == pytest.approx(0.01)
+    assert all(check.status.value == "pass" for check in result.selected.checks)
+    legacy_payload = result.model_dump(mode="json")
+    legacy_payload["schema_version"] = "1.0"
+    with pytest.raises(ValueError, match="requires recommendation schema 1.1"):
+        type(result).model_validate(legacy_payload)
 
 
 def test_stage1_abstains_when_required_component_quality_is_missing(
@@ -106,6 +105,24 @@ def test_stage1_abstains_when_required_component_quality_is_missing(
     assert result.selected is None
     assert "MISSING_REQUIRED_SIGNAL" in result.reason_codes
     assert "Надёжной рекомендации нет" in result.explanation
+
+
+@pytest.mark.parametrize("missing_field", ["t95", "cetane_number"])
+def test_stage1_abstains_when_required_product_property_is_unassessed(
+    runtime_config,
+    tmp_path: Path,
+    missing_field: str,
+) -> None:
+    """Unknown T95 or cetane data must never be treated as a passed constraint."""
+    payload = load_scenario("config/scenarios/blend_normal.json").model_dump(mode="json")
+    payload["blend_components"][0][missing_field] = None
+    scenario = ScenarioConfig.model_validate(payload)
+
+    result = _run_scenario(runtime_config, scenario, tmp_path)
+
+    assert result.status is RecommendationStatus.ABSTAIN
+    assert result.selected is None
+    assert "UNASSESSED_REQUIRED_PROPERTY" in result.reason_codes
 
 
 def test_stage1_writes_journal_files(

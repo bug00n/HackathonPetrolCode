@@ -34,6 +34,8 @@ def _view(scenario_id: str, run_dir: Path):
     (
         ("blend_normal", RecommendationStatus.HOLD),
         ("blend_risk", RecommendationStatus.RECOMMEND),
+        ("blend_t95_risk", RecommendationStatus.RECOMMEND),
+        ("blend_cetane_risk", RecommendationStatus.RECOMMEND),
         ("blend_missing", RecommendationStatus.ABSTAIN),
     ),
 )
@@ -48,17 +50,22 @@ def test_ui_projection_preserves_backend_status(
     assert view.status == expected_status.value
 
 
-def test_ui_offers_synthetic_risk_recipe_and_shows_model_properties(tmp_path: Path) -> None:
+def test_ui_exposes_complete_risk_recipe_and_quality_bounds(tmp_path: Path) -> None:
     _, view = _view("blend_risk", tmp_path)
 
-    assert view.baseline_upper == pytest.approx(14.2)
-    assert view.selected_upper == pytest.approx(9.4)
-    assert view.current_fractions == {"A": 0.7, "B": 0.3}
-    assert view.proposed_fractions == {"A": 0.9, "B": 0.1}
-    future = {row.name: row for row in view.constraints if row.name in {"T95", "Цетановое число"}}
-    assert set(future) == {"T95", "Цетановое число"}
-    assert all(row.status == "Оценено" for row in future.values())
-    assert all(row.actual != "—" for row in future.values())
+    assert view.baseline_upper == pytest.approx(14.058)
+    assert view.selected_upper == pytest.approx(9.306)
+    assert view.selected_t95_upper == pytest.approx(354.0)
+    assert view.selected_cetane_lower == pytest.approx(52.6)
+    assert view.current_fractions == pytest.approx({"A": 0.693, "B": 0.297})
+    assert view.proposed_fractions == pytest.approx({"A": 0.891, "B": 0.099})
+    assert view.current_additive_fraction == pytest.approx(0.01)
+    assert view.proposed_additive_fraction == pytest.approx(0.01)
+    quality = {row.name: row for row in view.constraints if row.name in {"T95", "Цетановое число"}}
+    assert all(row.status == "В пределах" for row in quality.values())
+    additive = next(row for row in view.constraints if row.name == "Доля присадки")
+    assert additive.actual == "1 %"
+    assert additive.limit == "≤ 3 %"
 
 
 def test_ui_keeps_missing_sulfur_unavailable(tmp_path: Path) -> None:

@@ -16,12 +16,10 @@ from typing import Any, Iterable, Mapping
 from source.config import load_runtime_config, load_scenario
 from source.contracts import (
     CandidateEvaluation,
-    ConstraintStatus,
     DecisionContext,
     ProcessState,
     Recommendation,
 )
-from source.ml.artifacts import sha256_file
 from source.orchestrator import run_cycle
 
 JOURNAL_FILES = (
@@ -34,6 +32,15 @@ JOURNAL_FILES = (
 )
 
 
+def sha256_file(path: Path) -> str:
+    """Calculate a streaming SHA-256 digest without importing ML runtime deps."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class EpisodeSpec:
     """One checked-in acceptance episode and its stable expectations."""
@@ -42,9 +49,10 @@ class EpisodeSpec:
     scenario: str
     expected_status: str
     expected_reason_codes: tuple[str, ...]
-    expected_baseline_upper: float | None
-    expected_sulfur_only_upper: float | None
-    expected_sulfur_only_blend: dict[str, float] | None
+    expected_baseline_quality: dict[str, float | None]
+    expected_selected_quality: dict[str, float | None] | None
+    expected_recipe: dict[str, float] | None
+    expected_additive_fraction: float | None
 
 
 def load_episode_specs(path: Path) -> tuple[EpisodeSpec, ...]:
@@ -64,27 +72,32 @@ def load_episode_specs(path: Path) -> tuple[EpisodeSpec, ...]:
             "scenario",
             "expected_status",
             "expected_reason_codes",
-            "expected_baseline_upper",
-            "expected_sulfur_only_upper",
-            "expected_sulfur_only_blend",
+            "expected_baseline_quality",
+            "expected_selected_quality",
+            "expected_recipe",
+            "expected_additive_fraction",
         }
         missing = required.difference(raw)
         if missing:
             raise ValueError(f"episode is missing fields: {sorted(missing)}")
-        blend = raw["expected_sulfur_only_blend"]
+        selected_quality = raw["expected_selected_quality"]
+        recipe = raw["expected_recipe"]
         episodes.append(
             EpisodeSpec(
                 id=str(raw["id"]),
                 scenario=str(raw["scenario"]),
                 expected_status=str(raw["expected_status"]),
                 expected_reason_codes=tuple(str(item) for item in raw["expected_reason_codes"]),
-                expected_baseline_upper=_optional_float(raw["expected_baseline_upper"]),
-                expected_sulfur_only_upper=_optional_float(raw["expected_sulfur_only_upper"]),
-                expected_sulfur_only_blend=(
-                    None
-                    if blend is None
-                    else {str(key): float(value) for key, value in dict(blend).items()}
+                expected_baseline_quality=_quality_expectation(raw["expected_baseline_quality"]),
+                expected_selected_quality=(
+                    None if selected_quality is None else _quality_expectation(selected_quality)
                 ),
+                expected_recipe=(
+                    None
+                    if recipe is None
+                    else {str(key): float(value) for key, value in dict(recipe).items()}
+                ),
+                expected_additive_fraction=_optional_float(raw["expected_additive_fraction"]),
             )
         )
     if len({episode.id for episode in episodes}) != len(episodes):
@@ -145,16 +158,19 @@ def run_acceptance_suite(
             )
             cycle_seconds = time.perf_counter() - cycle_started
             journal_dir = run_root / result.run_id
-            sulfur_only = _sulfur_only_candidate(journal_dir)
-            _check_episode(episode, result, sulfur_only)
+            _check_episode(episode, result, scenario)
+            recipe, additive_fraction = _effective_selected_recipe(result, scenario)
             summaries.append(
                 {
                     "episode_id": episode.id,
                     "scenario": episode.scenario,
                     "status": result.status.value,
                     "reason_codes": list(result.reason_codes),
-                    "baseline_upper_mg_kg": _sulfur_upper(result.baseline),
-                    "sulfur_only_counterfactual": sulfur_only,
+                    "baseline_quality": _quality_snapshot(result.baseline),
+                    "selected_quality": _quality_snapshot(result.selected),
+                    "selected_recipe": recipe,
+                    "selected_additive_fraction": additive_fraction,
+                    "operator_recommendation": result.status.value in {"hold", "recommend"},
                     "decision_fingerprint": recommendation_fingerprint(result),
                     "cycle_seconds": cycle_seconds,
                     "run_id": result.run_id,
@@ -171,8 +187,8 @@ def run_acceptance_suite(
             "episodes": summaries,
             "journal_archive": archive.name,
             "evidence_boundary": (
-                "Historical metrics assess forecast accuracy; sulfur-only counterfactuals assess "
-                "the declared synthetic blending model and are not operator recommendations."
+                "Historical metrics assess forecast accuracy; model-demo recommendations prove "
+                "only the declared synthetic sulfur/T95/cetane and additive model."
             ),
         }
         _write_json(temporary / "summary.json", report)
@@ -286,7 +302,7 @@ def verify_model_freeze(root: Path, manifest_path: Path) -> dict[str, Any]:
 def _check_episode(
     episode: EpisodeSpec,
     result: Recommendation,
-    sulfur_only: dict[str, Any] | None,
+    scenario: Any,
 ) -> None:
     if result.status.value != episode.expected_status:
         raise ValueError(
@@ -296,71 +312,81 @@ def _check_episode(
     missing_reasons = set(episode.expected_reason_codes).difference(result.reason_codes)
     if missing_reasons:
         raise ValueError(f"episode {episode.id} lost reasons: {sorted(missing_reasons)}")
-    _check_optional_number(
-        _sulfur_upper(result.baseline), episode.expected_baseline_upper, "baseline upper"
+    _check_quality(
+        _quality_snapshot(result.baseline),
+        episode.expected_baseline_quality,
+        f"episode {episode.id} baseline",
     )
-    actual_upper = None if sulfur_only is None else sulfur_only["upper_mg_kg"]
-    _check_optional_number(actual_upper, episode.expected_sulfur_only_upper, "sulfur-only upper")
-    actual_blend = None if sulfur_only is None else sulfur_only["blend_mass_fractions"]
-    if actual_blend != episode.expected_sulfur_only_blend:
-        raise ValueError(f"episode {episode.id} sulfur-only blend changed")
+    actual_selected = _quality_snapshot(result.selected)
+    if episode.expected_selected_quality is None:
+        if actual_selected is not None:
+            raise ValueError(f"episode {episode.id} unexpectedly selected a result")
+    else:
+        _check_quality(
+            actual_selected,
+            episode.expected_selected_quality,
+            f"episode {episode.id} selected",
+        )
+    recipe, additive_fraction = _effective_selected_recipe(result, scenario)
+    if recipe != episode.expected_recipe:
+        raise ValueError(f"episode {episode.id} selected recipe changed")
+    _check_optional_number(
+        additive_fraction,
+        episode.expected_additive_fraction,
+        f"episode {episode.id} additive fraction",
+    )
 
 
-def _sulfur_only_candidate(journal_dir: Path) -> dict[str, Any] | None:
-    candidates = [
-        json.loads(line)
-        for line in (journal_dir / "candidates.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    eligible = []
-    for candidate in candidates:
-        checks = candidate["checks"]
-        if not checks or any(check["status"] != ConstraintStatus.PASS.value for check in checks):
-            continue
-        sulfur = _assessment_metric(candidate, "sulfur")
-        cost = _assessment_metric(candidate, "cost_proxy")
-        if sulfur is None or sulfur.get("upper") is None or cost is None:
-            continue
-        eligible.append((float(cost["value"]), candidate, sulfur))
-    if not eligible:
+def _quality_snapshot(evaluation: CandidateEvaluation | None) -> dict[str, float | None] | None:
+    if evaluation is None:
         return None
-    _, candidate, sulfur = min(eligible, key=lambda item: (item[0], item[1]["candidate"]["id"]))
-    action = candidate["candidate"]
-    fractions = action["blend_mass_fractions"] or None
+    estimates = {}
+    for assessment in evaluation.assessments:
+        estimates.update(assessment.metrics)
     return {
-        "candidate_id": action["id"],
-        "upper_mg_kg": float(sulfur["upper"]),
-        "blend_mass_fractions": fractions,
-        "operator_recommendation": False,
-        "blocked_by": list(
-            dict.fromkeys(
-                issue["code"]
-                for assessment in candidate["assessments"]
-                for issue in assessment["issues"]
-                if issue["severity"] == "blocking"
-            )
-        ),
+        "sulfur_upper": _estimate_value(estimates.get("sulfur"), "upper"),
+        "t95_upper": _estimate_value(estimates.get("t95"), "upper"),
+        "cetane_lower": _estimate_value(estimates.get("cetane_number"), "lower"),
     }
 
 
-def _assessment_metric(candidate: Mapping[str, Any], name: str) -> Mapping[str, Any] | None:
-    for assessment in candidate["assessments"]:
-        metric = assessment["metrics"].get(name)
-        if metric is not None:
-            if not isinstance(metric, Mapping):
-                raise ValueError(f"candidate metric {name} must be an object")
-            return metric
-    return None
+def _estimate_value(estimate: Any, field: str) -> float | None:
+    value = None if estimate is None else getattr(estimate, field)
+    return None if value is None else float(value)
 
 
-def _sulfur_upper(evaluation: CandidateEvaluation | None) -> float | None:
-    if evaluation is None:
-        return None
-    for assessment in evaluation.assessments:
-        metric = assessment.metrics.get("sulfur")
-        if metric is not None:
-            return None if metric.upper is None else float(metric.upper)
-    return None
+def _effective_selected_recipe(
+    result: Recommendation, scenario: Any
+) -> tuple[dict[str, float] | None, float | None]:
+    if result.selected is None:
+        return None, None
+    candidate = result.selected.candidate
+    if candidate.blend_mass_fractions:
+        return dict(candidate.blend_mass_fractions), candidate.additive_mass_fraction
+    return (
+        dict(scenario.current_blend_mass_fractions),
+        scenario.current_additive_mass_fraction,
+    )
+
+
+def _quality_expectation(value: object) -> dict[str, float | None]:
+    if not isinstance(value, Mapping):
+        raise ValueError("quality expectation must be an object")
+    expected_keys = {"sulfur_upper", "t95_upper", "cetane_lower"}
+    if set(value) != expected_keys:
+        raise ValueError(f"quality expectation needs keys: {sorted(expected_keys)}")
+    return {str(key): _optional_float(item) for key, item in value.items()}
+
+
+def _check_quality(
+    actual: dict[str, float | None] | None,
+    expected: dict[str, float | None],
+    label: str,
+) -> None:
+    if actual is None:
+        raise ValueError(f"{label} is unavailable")
+    for key, expected_value in expected.items():
+        _check_optional_number(actual[key], expected_value, f"{label} {key}")
 
 
 def _optional_float(value: object) -> float | None:
@@ -407,5 +433,6 @@ __all__ = [
     "load_episode_specs",
     "recommendation_fingerprint",
     "run_acceptance_suite",
+    "sha256_file",
     "verify_model_freeze",
 ]

@@ -84,7 +84,7 @@ def test_history_without_confirmed_severity_factors_is_unavailable_not_zero() ->
 
 @pytest.mark.parametrize(
     ("name", "value", "upper"),
-    [("blend_normal", 8.4, 9.4), ("blend_risk", 13.2, 14.2)],
+    [("blend_normal", 8.316, 9.306), ("blend_risk", 13.068, 14.058)],
 )
 def test_model_demo_quality_is_calculated_from_components(
     name: str, value: float, upper: float
@@ -100,6 +100,8 @@ def test_model_demo_quality_is_calculated_from_components(
     assert assessment.metrics["t95"].value is not None
     assert assessment.metrics["cetane_number"].value is not None
     assert assessment.metrics["sulfur"].basis.value == "formula"
+    assert assessment.metrics["t95"].upper is not None
+    assert assessment.metrics["cetane_number"].lower is not None
 
 
 def test_missing_component_quality_is_unavailable_not_zero() -> None:
@@ -168,12 +170,17 @@ def test_candidates_include_hold_and_deterministic_recipe_grid() -> None:
 
     candidates = generate_candidates(state, scenario)
 
-    assert len(candidates) == 21
+    assert len(candidates) == 84
     assert candidates[0].kind is CandidateKind.HOLD
     assert sum(candidate.kind is CandidateKind.HOLD for candidate in candidates) == 1
-    assert any(candidate.blend_mass_fractions == {"A": 0.9, "B": 0.1} for candidate in candidates)
+    assert any(
+        candidate.blend_mass_fractions == pytest.approx({"A": 0.891, "B": 0.099})
+        and candidate.additive_mass_fraction == pytest.approx(0.01)
+        for candidate in candidates
+    )
     assert all(
-        abs(sum(candidate.blend_mass_fractions.values()) - 1.0) <= 1e-9
+        abs(sum(candidate.blend_mass_fractions.values()) + candidate.additive_mass_fraction - 1.0)
+        <= 1e-9
         for candidate in candidates
         if candidate.kind is CandidateKind.BLEND
     )
@@ -183,9 +190,10 @@ def test_blend_effects_match_design_and_keep_state_immutable() -> None:
     state, scenario = _demo("blend_risk")
     before = state.model_dump_json()
     candidate = CandidateAction(
-        id="blend:A=0.90,B=0.10",
+        id="blend:A=0.891,B=0.099,additive=0.010",
         kind="blend",
-        blend_mass_fractions={"A": 0.9, "B": 0.1},
+        blend_mass_fractions={"A": 0.891, "B": 0.099},
+        additive_mass_fraction=0.01,
         horizon_minutes=60,
         is_model_scenario=True,
     )
@@ -193,11 +201,11 @@ def test_blend_effects_match_design_and_keep_state_immutable() -> None:
     metrics = calculate_blend_metrics(candidate, scenario)
     assessments = assess_blend_candidate(state, candidate, scenario)
 
-    assert metrics["sulfur"].value == pytest.approx(8.4)
-    assert metrics["sulfur"].upper == pytest.approx(9.4)
-    assert metrics["t95"].value == pytest.approx(351.0)
-    assert metrics["cetane_number"].value == pytest.approx(53.4)
-    assert metrics["cost_proxy"].value == pytest.approx(0.98)
-    assert metrics["change_size"].value == pytest.approx(0.4)
+    assert metrics["sulfur"].value == pytest.approx(8.316)
+    assert metrics["sulfur"].upper == pytest.approx(9.306)
+    assert metrics["t95"].upper == pytest.approx(354.0)
+    assert metrics["cetane_number"].lower == pytest.approx(52.6)
+    assert metrics["cost_proxy"].value == pytest.approx(1.9702)
+    assert metrics["change_size"].value == pytest.approx(0.396)
     assert [item.agent.value for item in assessments] == ["quality", "reliability", "optimizer"]
     assert state.model_dump_json() == before

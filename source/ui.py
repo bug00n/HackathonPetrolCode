@@ -1,7 +1,7 @@
 """Tkinter desktop interface for the currently implemented recommendation system.
 
 The UI deliberately exposes model-demo calculations as model scenarios.  It
-does not imply that real setpoints, T95 or cetane-number models are available.
+does not imply that real setpoint or product-quality action models are available.
 """
 
 from __future__ import annotations
@@ -52,6 +52,8 @@ RED = "#B3473C"
 SCENARIO_LABELS = {
     "Нормальный режим": "blend_normal",
     "Повышенная сера": "blend_risk",
+    "Риск T95": "blend_t95_risk",
+    "Низкое цетановое число": "blend_cetane_risk",
     "Недостающие данные": "blend_missing",
 }
 
@@ -75,24 +77,32 @@ class DashboardView:
     action_title: str
     action_detail: str
     baseline_value: float | None
+    baseline_t95_upper: float | None
+    baseline_cetane_lower: float | None
     baseline_upper: float | None
     selected_value: float | None
+    selected_t95_upper: float | None
+    selected_cetane_lower: float | None
     selected_upper: float | None
     current_fractions: dict[str, float]
     proposed_fractions: dict[str, float]
+    current_additive_fraction: float
+    proposed_additive_fraction: float
     constraints: tuple[ConstraintRow, ...]
     explanation: str
     reasons: tuple[str, ...]
 
 
-def _metric(evaluation: CandidateEvaluation | None, name: str) -> tuple[float | None, float | None]:
+def _metric(
+    evaluation: CandidateEvaluation | None, name: str
+) -> tuple[float | None, float | None, float | None]:
     if evaluation is None:
-        return None, None
+        return None, None, None
     for assessment in evaluation.assessments:
         estimate = assessment.metrics.get(name)
         if estimate is not None:
-            return estimate.value, estimate.upper
-    return None, None
+            return estimate.value, estimate.lower, estimate.upper
+    return None, None, None
 
 
 def _limit_text(lower: float | None, upper: float | None, unit: str | None) -> str:
@@ -107,7 +117,13 @@ def _limit_text(lower: float | None, upper: float | None, unit: str | None) -> s
 
 
 def _display_unit(unit: str | None) -> str:
-    return {"mg/kg": "мг/кг", "t": "т"}.get(unit or "", unit or "")
+    return {
+        "mg/kg": "мг/кг",
+        "degC": "°C",
+        "cetane_number": "ед.",
+        "t": "т",
+        "1": "доля",
+    }.get(unit or "", unit or "")
 
 
 def _constraint_rows(result: Recommendation) -> tuple[ConstraintRow, ...]:
@@ -118,6 +134,14 @@ def _constraint_rows(result: Recommendation) -> tuple[ConstraintRow, ...]:
             name = "Запас " + check.constraint_id.rsplit(":", 1)[-1]
         elif check.constraint_id == "blend_sulfur":
             name = "Сера"
+        elif check.constraint_id == "blend_t95":
+            name = "T95"
+        elif check.constraint_id == "blend_cetane":
+            name = "Цетановое число"
+        elif check.constraint_id == "additive_fraction":
+            name = "Доля присадки"
+        elif check.constraint_id == "additive_stock":
+            name = "Запас присадки"
         else:
             name = check.constraint_id
         status = {
@@ -130,40 +154,47 @@ def _constraint_rows(result: Recommendation) -> tuple[ConstraintRow, ...]:
             ConstraintStatus.FAIL: "bad",
             ConstraintStatus.UNKNOWN: "unknown",
         }[check.status]
-        actual = (
-            "—" if check.actual is None else f"{check.actual:g} {_display_unit(check.unit)}".strip()
-        )
+        if check.constraint_id == "additive_fraction":
+            actual = "—" if check.actual is None else f"{check.actual * 100:g} %"
+            limit = _limit_text(
+                None if check.lower is None else check.lower * 100,
+                None if check.upper is None else check.upper * 100,
+                "%",
+            )
+        else:
+            actual = (
+                "—"
+                if check.actual is None
+                else f"{check.actual:g} {_display_unit(check.unit)}".strip()
+            )
+            limit = _limit_text(check.lower, check.upper, check.unit)
         rows.append(
             ConstraintRow(
                 name,
                 actual,
-                _limit_text(check.lower, check.upper, check.unit),
+                limit,
                 status,
                 tone,
             )
         )
-    metric_labels = (("t95", "T95"), ("cetane_number", "Цетановое число"))
-    for metric_name, label in metric_labels:
-        value, upper = _metric(evaluation, metric_name)
-        if value is None:
-            rows.append(ConstraintRow(label, "—", "Модельное значение", "Не оценено", "unknown"))
-            continue
-        unit = "°C" if metric_name == "t95" else ""
-        actual = f"{value:g} {unit}".strip()
-        if upper is not None and upper != value:
-            actual = f"{actual} / upper {upper:g} {unit}".strip()
-        rows.append(ConstraintRow(label, actual, "Модельное значение", "Оценено", "ok"))
     return tuple(rows)
 
 
 def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> DashboardView:
     """Translate strict backend output into honest operator-facing content."""
-    baseline_value, baseline_upper = _metric(result.baseline, "sulfur")
-    selected_value, selected_upper = _metric(result.selected, "sulfur")
+    baseline_value, _, baseline_upper = _metric(result.baseline, "sulfur")
+    _, _, baseline_t95_upper = _metric(result.baseline, "t95")
+    _, baseline_cetane_lower, _ = _metric(result.baseline, "cetane_number")
+    selected_value, _, selected_upper = _metric(result.selected, "sulfur")
+    _, _, selected_t95_upper = _metric(result.selected, "t95")
+    _, selected_cetane_lower, _ = _metric(result.selected, "cetane_number")
     current = dict(scenario.current_blend_mass_fractions)
     proposed = dict(current)
+    current_additive = scenario.current_additive_mass_fraction
+    proposed_additive = current_additive
     if result.selected is not None and result.selected.candidate.blend_mass_fractions:
         proposed = dict(result.selected.candidate.blend_mass_fractions)
+        proposed_additive = result.selected.candidate.additive_mass_fraction
 
     if result.status is RecommendationStatus.RECOMMEND:
         changed = [key for key in proposed if proposed.get(key, 0.0) > current.get(key, 0.0) + 1e-9]
@@ -171,7 +202,7 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         banner_title = "Доступен модельный вариант"
         banner_detail = "Расчёт относится только к синтетическому сценарию блендинга."
         action_title = f"Увеличить долю компонента {component}"
-        action_detail = "Текущая рецептура нарушает ограничение по сере."
+        action_detail = "Текущая рецептура нарушает одно или несколько ограничений качества."
     elif result.status is RecommendationStatus.HOLD:
         banner_title = "Изменение режима не требуется"
         banner_detail = "Текущая модельная рецептура проходит доступные проверки."
@@ -179,7 +210,7 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         action_detail = "Материального улучшения относительно hold не найдено."
     else:
         banner_title = "Рекомендация недоступна"
-        banner_detail = "Обязательные данные или верхняя оценка качества отсутствуют."
+        banner_detail = "Обязательные данные или консервативная оценка качества отсутствуют."
         action_title = "Требуется ручная проверка"
         action_detail = "Система не подставляет неизвестные значения и не выбирает действие."
 
@@ -190,11 +221,17 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         action_title=action_title,
         action_detail=action_detail,
         baseline_value=baseline_value,
+        baseline_t95_upper=baseline_t95_upper,
+        baseline_cetane_lower=baseline_cetane_lower,
         baseline_upper=baseline_upper,
         selected_value=selected_value,
+        selected_t95_upper=selected_t95_upper,
+        selected_cetane_lower=selected_cetane_lower,
         selected_upper=selected_upper,
         current_fractions=current,
         proposed_fractions=proposed,
+        current_additive_fraction=current_additive,
+        proposed_additive_fraction=proposed_additive,
         constraints=_constraint_rows(result),
         explanation=result.explanation,
         reasons=result.reason_codes,
@@ -530,9 +567,15 @@ class PetrolCodeApp(tk.Tk):
         strip = tk.Frame(parent, bg=SURFACE)
         strip.pack(fill="x", padx=26, pady=(18, 12))
         values = (
-            ("Текущая смесь", _format_value(view.baseline_value) if view else "—"),
-            ("Выбранный вариант +60 мин", _format_value(view.selected_value) if view else "—"),
-            ("Верхняя оценка", _format_value(view.selected_upper) if view else "—"),
+            ("Сера · верхняя", _format_value(view.selected_upper) if view else "—"),
+            (
+                "T95 · верхняя",
+                _format_value(view.selected_t95_upper, "°C") if view else "—",
+            ),
+            (
+                "Цетановое · нижняя",
+                _format_value(view.selected_cetane_lower, "ед.") if view else "—",
+            ),
         )
         for index, (label, value) in enumerate(values):
             cell = tk.Frame(strip, bg=SURFACE)
@@ -773,6 +816,16 @@ class PetrolCodeApp(tk.Tk):
         tk.Frame(right, bg=BORDER, height=1).pack(fill="x", padx=20, pady=18)
         self._info_row(right, "Текущая", _format_value(view.baseline_upper if view else None))
         self._info_row(right, "Предел сценария", "≤ 10 мг/кг")
+        self._info_row(
+            right,
+            "T95 · верхняя",
+            _format_value(view.selected_t95_upper if view else None, "°C"),
+        )
+        self._info_row(
+            right,
+            "Цетановое · нижняя",
+            _format_value(view.selected_cetane_lower if view else None, "ед."),
+        )
 
         checks = self._surface(page)
         checks.pack(fill="x", pady=(16, 0))
@@ -821,7 +874,7 @@ class PetrolCodeApp(tk.Tk):
             parent,
             columns=("component", "current", "proposed"),
             show="headings",
-            height=max(2, len(view.current_fractions) if view else 2),
+            height=max(3, len(view.current_fractions) + 1 if view else 3),
             style="Petrol.Treeview",
         )
         for key, title, width in (
@@ -842,6 +895,15 @@ class PetrolCodeApp(tk.Tk):
                         f"{view.proposed_fractions.get(component, 0.0) * 100:.0f} %",
                     ),
                 )
+            table.insert(
+                "",
+                "end",
+                values=(
+                    "Цетаноповышающая присадка",
+                    f"{view.current_additive_fraction * 100:.1f} %",
+                    f"{view.proposed_additive_fraction * 100:.1f} %",
+                ),
+            )
         table.pack(fill="x")
 
     @staticmethod
@@ -1083,7 +1145,7 @@ class PetrolCodeApp(tk.Tk):
             return
         lines = []
         for alternative in self._result.alternatives:
-            value, upper = _metric(alternative, "sulfur")
+            value, _, upper = _metric(alternative, "sulfur")
             lines.append(
                 f"{alternative.candidate.id}: point {_format_value(value)}, "
                 f"upper {_format_value(upper)}"

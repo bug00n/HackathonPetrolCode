@@ -10,10 +10,15 @@
   },
   "expected": {
     "status": "recommend",
-    "current_sulfur_mg_kg": 13.2,
-    "current_upper_sulfur_mg_kg": 14.2,
-    "selected_sulfur_mg_kg": 8.4,
-    "selected_upper_sulfur_mg_kg": 9.4,
-    "selected_blend_mass_fractions": {"A": 0.9, "B": 0.1}
+    "current_sulfur_mg_kg": 13.068,
+    "current_upper_sulfur_mg_kg": 14.058,
+    "current_upper_t95_degC": 358.0,
+    "current_lower_cetane_number": 51.8,
+    "selected_sulfur_mg_kg": 8.316,
+    "selected_upper_sulfur_mg_kg": 9.306,
+    "selected_upper_t95_degC": 354.0,
+    "selected_lower_cetane_number": 52.6,
+    "selected_blend_mass_fractions": {"A": 0.891, "B": 0.099},
+    "selected_additive_mass_fraction": 0.01
   }
 }

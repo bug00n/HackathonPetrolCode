@@ -2,9 +2,9 @@
 
 Версия контракта: **1.0**. Статус: **частично реализованная спецификация**.
 
-Документ содержит целевую архитектуру. Актуальный runtime: Stages 0–6, Tkinter UI
-для `model_demo` и CLI для frozen training/evaluation/replay. Исторический ML-артефакт
-ещё не подключён к UI.
+Документ содержит целевую архитектуру. Актуальный runtime: Stages 0–6, полный
+синтетический паспорт S/T95/CN с присадкой в Tkinter UI и CLI для frozen
+training/evaluation/replay. Исторический ML-артефакт ещё не подключён к UI.
 
 Основания: [техническое задание](materials/ТЗ_нефтекод.docx), [материалы](materials/README.md), [поэтапный план](IMPLEMENTATION_PLAN.md). ТЗ определяет обязательные требования, этот документ — технические контракты, план — порядок реализации. При изменении контракта документ и тестовые примеры обновляются в том же PR.
 
@@ -20,7 +20,7 @@
 | Хранение | Исходные файлы; подготовленные CSV.gz; артефакты модели; JSON/JSONL с результатами |
 | Модели | Сохранение последнего значения → Ridge → HistGradientBoostingRegressor; улучшение допускается по результатам временной валидации |
 | Оптимизация | Детерминированный ограниченный перебор; жёсткий фильтр перед ранжированием |
-| Блендинг | Модель массового смешения с явно заданными компонентами и допущениями |
+| Блендинг | Модель S/T95/CN, сценарные границы и конфигурируемая цетановая присадка |
 | Объяснение | Шаблон из численных результатов и причин проверок; не влияет на решение |
 | Управление установкой | Только рекомендации оператору; команд исполнительным устройствам нет |
 
@@ -96,6 +96,8 @@ HackathonPetrolCode/
 │       ├── history.json              # режим истории; реальные controls отключены
 │       ├── blend_normal.json         # нормальный модельный период
 │       ├── blend_risk.json           # модельное превышение серы
+│       ├── blend_t95_risk.json       # модельное превышение T95
+│       ├── blend_cetane_risk.json    # модельный дефицит цетанового числа
 │       └── blend_missing.json        # модельная нехватка данных
 ├── source/
 │   ├── __init__.py
@@ -221,7 +223,7 @@ Backend не дублирует признаки в UI; ML не пишет ал�
 
 | Тип | Поля |
 | --- | --- |
-| `CandidateAction` | `id: str`, `kind: Literal['hold','setpoints','blend']`, `setpoints: dict[str,float]`, `blend_mass_fractions: dict[str,float]`, `horizon_minutes: int`, `is_model_scenario: bool` |
+| `CandidateAction` | `id: str`, `kind: Literal['hold','setpoints','blend']`, `setpoints: dict[str,float]`, `blend_mass_fractions: dict[str,float]`, `additive_mass_fraction: float`, `horizon_minutes: int`, `is_model_scenario: bool` |
 | `MetricEstimate` | `value: float \| None`, `lower: float \| None`, `upper: float \| None`, `unit: str`, `basis: Literal['measured','forecast','formula','proxy']`, `interval_kind: Literal['none','empirical','scenario_bound']`, `interval_level: float \| None`, `reference: str`, `assumptions: list[str]` |
 | `AgentAssessment` | `agent: Literal['quality','reliability','optimizer']`, `state_id: str`, `candidate_id: str`, `evaluated_for: Timestamp`, `status: Literal['ok','degraded','unavailable']`, `metrics: dict[str,MetricEstimate]`, `issues: list[Issue]` |
 | `ConstraintResult` | `constraint_id: str`, `candidate_id: str`, `status: Literal['pass','fail','unknown']`, `actual: float \| None`, `lower: float \| None`, `upper: float \| None`, `unit: str \| None`, `basis: Literal['tz','confirmed','model_assumption']`, `evidence_ref: str`, `reason_code: str` |
@@ -230,7 +232,7 @@ Backend не дублирует признаки в UI; ML не пишет ал�
 Правила:
 
 - `setpoints` содержит **новые абсолютные значения**, не приращения; единицы определяются `ControlSpec`. Разницу UI вычисляет относительно состояния.
-- Для `hold` обе карты пустые: сохраняются текущие уставки и текущая рецептура. Для `blend` задаётся полная рецептура, не только изменённые доли. В первой версии кандидат не совмещает изменение уставок и рецептуры.
+- Для `hold` обе карты пустые: сохраняются текущие уставки, рецептура и доза присадки. Для `blend` задаётся полная рецептура и доза, не только изменения. Сумма долей компонентов и присадки равна 1. Кандидат не совмещает изменение уставок и рецептуры.
 - У всех оценок кандидата совпадают `state_id`, `candidate_id` и горизонт. Прогноз вычисляется на `as_of + horizon`; измерение текущего состояния подписывается отдельно.
 - `MetricEstimate` с `basis='proxy'` не называется физической величиной без установленного соответствия. Прокси затрат имеют единицу `proxy_unit`, риска — `index_0_1`.
 - `interval_kind='scenario_bound'` — заданная граница сценария, не статистическая вероятность. `interval_level` для неё равен `None`.
@@ -240,7 +242,7 @@ Backend не дублирует признаки в UI; ML не пишет ал�
 
 | Тип | Поля |
 | --- | --- |
-| `Recommendation` | `schema_version: Literal['1.0']`, `run_id: str`, `state_id: str`, `as_of: Timestamp`, `scenario_id: str`, `mode: str`, `status: Literal['recommend','hold','abstain']`, `baseline: CandidateEvaluation \| None`, `selected: CandidateEvaluation \| None`, `alternatives: list[CandidateEvaluation]`, `reason_codes: list[str]`, `explanation: str`, `assumptions: list[str]`, `model_id: str \| None` |
+| `Recommendation` | `schema_version: Literal['1.0','1.1']` (новая выдача `1.1`, чтение старых журналов `1.0` сохранено), `run_id: str`, `state_id: str`, `as_of: Timestamp`, `scenario_id: str`, `mode: str`, `status: Literal['recommend','hold','abstain']`, `baseline: CandidateEvaluation \| None`, `selected: CandidateEvaluation \| None`, `alternatives: list[CandidateEvaluation]`, `reason_codes: list[str]`, `explanation: str`, `assumptions: list[str]`, `model_id: str \| None` |
 | `RunFailure` | `run_id: str`, `occurred_at: Timestamp`, `error_code: str`, `stage: str`, `message: str` |
 
 Инварианты: при `recommend` выбран допустимый ненулевой кандидат; при `hold` выбран допустимый кандидат `hold`; при `abstain` `selected=None` и есть причина. `baseline` может быть недопустимым — это исходная точка сравнения, а не разрешённое действие. В `alternatives` идут до трёх допустимых альтернатив, полный список сохраняется в журнале.
@@ -255,12 +257,13 @@ Backend не дублирует признаки в UI; ML не пишет ал�
 | --- | --- |
 | `RuntimeConfig` | `source_timezone`, задержки и пределы свежести; `horizon_minutes=60`; `seed=42`; `max_candidates=125`; пути к данным/моделям/журналам |
 | `ControlSpec` | `signal_id`, `unit`, `lower`, `upper`, `max_step`, `step`, `evidence_ref`, `basis`, `enabled` |
-| `ConstraintSpec` | `id`, `metric`, `stage`, `lower`, `upper`, `unit`, `use_upper_estimate`, `required`, `basis`, `evidence_ref` |
-| `BlendComponent` | `id`, `sulfur: MetricEstimate`, `available_mass_t`, `cost_proxy_per_t`, `risk_index`, `source_state_id: str \| None` |
-| `ScenarioConfig` | `id`, `mode`, обязательные сигналы, controls, constraints, компоненты, `total_mass_t`, текущая рецептура, список активных критериев, пороги существенности улучшения, `require_upper_bound`, `action_cooldown_minutes`, допущения |
+| `ConstraintSpec` | `id`, `metric`, `stage`, `lower`, `upper`, `unit`, `use_upper_estimate`, `use_lower_estimate`, `required`, `basis`, `evidence_ref` |
+| `BlendComponent` | `id`, оценки `sulfur`, `t95`, `cetane_number`, `available_mass_t`, `cost_proxy_per_t`, `risk_index`, `source_state_id` |
+| `CetaneAdditiveSpec` | `id`, максимум/шаг/запас/стоимость, монотонная таблица `mass_fraction -> cetane_gain`, источник и допущения |
+| `ScenarioConfig` | `id`, `mode`, сигналы, controls, constraints, компоненты, присадка, `total_mass_t`, текущие рецептура/доза, критерии, пороги, cooldown и допущения |
 | `DecisionContext` | `last_recommended_at: Timestamp \| None`; время последней выданной рекомендации для подавления повторов |
 
-Численные технологические границы без источника не имеют значения по умолчанию. Тогда `enabled=false`. Активное ограничение без предела, единицы или обоснования — ошибка конфигурации до запуска цикла. Граница серы смеси `upper=10`, `unit='mg/kg'`, `basis='tz'` обязательна для любого сценария товарного смешения.
+Численные технологические границы без источника не имеют значения по умолчанию. Тогда `enabled=false`. Активное ограничение без предела, единицы или обоснования — ошибка конфигурации до запуска цикла. В `model_demo` обязательны верхние оценки серы и T95 и нижняя оценка цетанового числа. Сера имеет `upper=10 mg/kg` из ТЗ; T95/CN и их границы явно помечены `model_assumption`.
 
 Доли считаются равными 1 при абсолютной погрешности не более `1e-9`. Этот допуск используется только для арифметики долей, не для разрешения серы выше 10 мг/кг. Сравнение качества выполняется до округления UI.
 
@@ -414,9 +417,11 @@ sequenceDiagram
 
 ## 9. Блендинг и фиксированный демонстрационный пример
 
-Первая модель смешивает два компонента по массе. Сера смеси `S = Σ(w_i × S_i)`, верхняя граница `S_upper = Σ(w_i × S_upper_i)` при неотрицательных долях. Это консервативная операция над границами, а не утверждение о совместном статистическом покрытии.
+Модель смешивает два дизельных компонента и цетаноповышающую присадку по массе. Сера смеси `S = Σ(w_i × S_i)`, верхняя граница `S_upper = Σ(w_i × S_upper_i)` при неотрицательных долях. Сумма долей дизельных компонентов и присадки равна 1. Это консервативная операция над заданными границами, а не утверждение о статистическом покрытии.
 
-Для каждого компонента `w_i × total_mass_t <= available_mass_t`. Дозировка присадок, плотность смеси и низкотемпературные свойства не моделируются без отдельного обоснования. Активный профиль ограничений перечисляет, что проверено; формулировка «полностью соответствует товарному стандарту» запрещена, если проверена только сера.
+T95 и базовое цетановое число считаются линейно по нормированным долям дизельных компонентов. Это **явное модельное приближение**, а не физический закон. Присадка считается не влияющей на S/T95 и добавляет к CN величину из монотонной кусочно-линейной таблицы сценария. Доза ограничена 3%; стоимость на тонну равна 100 стоимостным единицам при стоимости ДТ около 1. Сама кривая эффективности синтетическая и изменяемая.
+
+Для каждого компонента и присадки проверяется `fraction × total_mass_t <= available_mass_t`. Кандидат допустим только при `S_upper <= 10 mg/kg`, `T95_upper <= 360 °C` и `CN_lower >= 51` в текущем синтетическом профиле. Последние две границы — параметры модельного сценария, не универсальная промышленная спецификация. Формулировка «полностью соответствует товарному стандарту» запрещена: система доказывает лишь соответствие объявленной модели.
 
 ### Параметры синтетического примера
 
@@ -426,15 +431,15 @@ sequenceDiagram
 | --- | --- | --- |
 | Сера, мг/кг | 6 | 30 |
 | Верхняя граница серы, мг/кг | 7 | 31 |
+| T95 / верхняя граница, °C | 350 / 352 | 370 / 372 |
+| Цетановое / нижняя граница | 50.5 / 50 | 46.5 / 46 |
 | Доступная масса, т | 100 | 30 |
 | Стоимостной прокси на тонну | 1.0 | 0.8 |
 | Индекс риска сценария | 0 | 0 |
 
-Партия — 100 т; горизонт — 60 минут. Выпуск модели — масса партии за горизонт, одинаковая для всех рецептур. Критерий риска — взвешенный индекс компонентов. Генерируются доли B от 0 до 1 с шагом 0.05; доля A равна `1-B`. Проверки доступности и качества отбрасывают неподходящие варианты. Добавляется отдельный `hold`, дубликаты рецептуры схлопываются в пользу `hold`.
+Партия — 100 т; горизонт — 60 минут. Генерируются доли B от 0 до 1 с шагом 0.05 и дозы присадки 0–3% с шагом 1%; доли A/B масштабируются на оставшуюся массу. Всего не более 84 кандидатов с `hold`. Сначала проверяются паспорт и запасы, затем допустимые варианты ранжируются по риску, выпуску, стоимости и размеру изменения.
 
-- Model-demo рецептуры рассчитывают серу, сценарные `T95`, сценарное цетановое число
-  и запас компонентов. Эти `T95`/цетановые значения нужны только для демонстрации
-  `hold`/`recommend`/`abstain`; они не являются промышленным паспортом продукта.
+`blend_normal` возвращает `hold`; `blend_risk`, `blend_t95_risk` и `blend_cetane_risk` возвращают изменяемые рекомендации; `blend_missing` возвращает `abstain`. Каждый положительный результат проходит все три обязательные границы и явно подписан как результат синтетической модели.
 
 Для уставок после их подтверждения — до трёх параметров, до пяти значений каждого вокруг текущего режима, не больше 125 комбинаций плюс `hold`. При превышении бюджета запуск останавливается с понятной ошибкой, не обрезает пространство скрыто. Реальные шаги и границы фиксируются после анализа источников, без выдуманных температур и давлений в этом документе.
 
@@ -495,10 +500,10 @@ Metadata обязательно содержит: `model_id`, `schema_version`, 
 
 ### Текущий desktop UI и целевой экран
 
-Сейчас `source/ui.py` — локальное Tkinter-приложение. Оно запускает `model_demo`,
-отображает checks и журнал, вызывает `prepare`/`build-state` как диагностические
-операции и имеет отдельный экран trusted history forecast. History forecast загружает
-совместимый `ModelBundle`, но не включает реальные actions.
+Сейчас `source/ui.py` — локальное Tkinter-приложение. Оно запускает только
+`model_demo`, отображает S/T95/CN, дозу присадки, checks и журнал, а также вызывает
+`prepare` и `build-state` как диагностические операции. Оно не загружает `ModelBundle`
+и не выполняет historical forecast.
 
 Целевой экран должен поддерживать:
 
@@ -512,26 +517,23 @@ Metadata обязательно содержит: `model_id`, `schema_version`, 
 выбранные оптимизатором, и не округляет числа перед проверками. При будущей загрузке
 моделей prepared data и artifacts кэшируются только по идентификаторам и хешам.
 
-Модельный режим и неполнота проверенной спецификации всегда видны рядом с рекомендацией. Экран ошибки выполнения отличается от технологического отказа.
+Модельный режим и граница применимости синтетического паспорта всегда видны рядом с рекомендацией. Экран ошибки выполнения отличается от технологического отказа.
 
 ### Реализованные и целевые команды
 
 Команды выполняются из корня репозитория после активации совместимого окружения.
 Реализованы `validate-stage0`, `run-model-demo`/`demo`, `prepare`, `build-state`,
 `train`, `evaluate`, `replay`, `acceptance`, `verify-model-freeze`, `export-journal`
-и `python -m source.ui`. `run-history` сохранён как legacy-алиас forecast-only
-пути `replay` и требует явного `--trusted-model`.
+и `python -m source.ui`.
 
 ```bash
-python -m pip install -r requirements.lock.txt
+python -m pip install -r requirements.txt
 git lfs pull
 python -m source.main prepare --materials materials --config config/runtime.toml
-python -m source.main train --dataset data/processed/<dataset_id> --target-source pak
-python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --source pak --split test
-python -m source.main replay --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --scenario history --at 2026-01-15T12:00:00+03:00
-python -m source.main run-history --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --trusted-model --as-of 2026-01-15T12:00:00+03:00
-python -m source.main acceptance --output reports/final-acceptance
-python -m source.main run-model-demo blend_risk
+python -m source.main train --dataset data/processed/<dataset_id> --config config/runtime.toml
+python -m source.main evaluate --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --split test
+python -m source.main replay --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --scenario config/scenarios/history.json --at 2026-01-15T12:00:00+03:00
+python -m source.main demo blend_risk
 python -m source.ui
 python -m pytest
 python -m ruff check .
@@ -560,7 +562,7 @@ CI работает на малых синтетических fixtures без �
 | Пропуск оценки при активном критерии | `unknown` не превращается в допустимость или нулевой риск | Backend + ML |
 | Очень выгодный, но недопустимый вариант | Экономика не отменяет жёсткое ограничение | Backend |
 | Отсутствует action capability | Нельзя менять уставки через обычный прогноз | ML + Backend |
-| Три фиксированных сценария раздела 9 | `abstain` с известными серными counterfactuals и reason codes | Оба |
+| Пять фиксированных сценариев раздела 9 | S/T95/CN, присадка, `hold`, `recommend`, `abstain` с известными числами | Оба |
 | Исключение агента и ошибка записи | Техническая ошибка не замаскирована технологическим отказом | Backend |
 | Повтор запуска | Совпадают решение и численные оценки, кроме служебных ID/времени | Оба |
 
@@ -666,5 +668,5 @@ Backend → ML: подготовленные таблицы, manifest, отчё�
 - Исправленные формулы ВАК фиксируются отдельно от исходного Excel: `T90` использует `59.57*(F15/2000)`; коэффициент `T6` в `T50` равен `0.471`; `CloudPoint` начинается с `0.0002*F22`; первый член `CFPP` равен `0.22088*T23`; коэффициент `T6` в `T95` равен `0.50`. В формуле `AVT6:240-350:CFPP` последняя скобка лишняя, член читается как `F65/F32 + F30`.
 - Подтверждённые доступные оператору переменные гидроочистки: `P8` — температура ГСС на входе Р-202, `T11` — массовый расход сырья, `F19` — давление на входе Р-202. Пределы скорости не предоставлены; задержку эффекта следует оценивать в диапазоне 0–3 часов. До определения единиц, диапазонов, совместной области и отдельной проверки модели действий реальные controls в сценариях остаются выключенными.
 - Допустимый шаг рекомендаций — 15–60 минут, горизонт — 0–3 часа. Для Stage 2 сохраняется заранее выбранная точка 60 минут.
-- Для модельного блендинга обязательны сера, `T95` и цетановое число. Разрешена явно модельная имитация резервуаров; присадка до 3% и её цена в 100 раз выше цены ДТ относятся к будущему сценарию и не подменяют отсутствующие реальные данные.
+- Для модельного блендинга обязательны сера, `T95` и цетановое число. Реализована явно модельная имитация резервуаров; присадка до 3% и её цена в 100 раз выше цены ДТ заданы в сценариях. Кривая эффективности остаётся синтетическим настраиваемым допущением и не подменяет отсутствующие реальные данные.
 - Отложенная историческая оценка прогноза и собственная модель альтернативных действий показываются раздельно; история прогноза сама по себе не доказывает эффект невыполненных воздействий.

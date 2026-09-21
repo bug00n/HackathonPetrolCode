@@ -28,13 +28,28 @@ if TYPE_CHECKING:
 
 SplitName = Literal["train", "validation", "test"]
 TRAINING_TELEMETRY_SIGNALS = ("ht:P8", "ht:T11", "ht:F19")
+MODEL_DEMO_SCENARIOS = (
+    "blend_normal",
+    "blend_risk",
+    "blend_t95_risk",
+    "blend_cetane_risk",
+    "blend_missing",
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-MODEL_DEMO_SCENARIOS: tuple[str, ...] = ("blend_normal", "blend_risk", "blend_missing")
+MODEL_DEMO_SCENARIOS: tuple[str, ...] = (
+    "blend_normal",
+    "blend_risk",
+    "blend_t95_risk",
+    "blend_cetane_risk",
+    "blend_missing",
+)
 STAGE6_SCENARIOS = MODEL_DEMO_SCENARIOS
 STAGE6_EXPECTED_STATUSES: dict[str, str] = {
-    "blend_normal": "abstain",
-    "blend_risk": "abstain",
+    "blend_normal": "hold",
+    "blend_risk": "recommend",
+    "blend_t95_risk": "recommend",
+    "blend_cetane_risk": "recommend",
     "blend_missing": "abstain",
 }
 STAGE6_JOURNAL_FILES: tuple[str, ...] = (
@@ -431,9 +446,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate-stage0", help="validate contracts, configs and fixtures")
     demo = subparsers.add_parser("run-model-demo", help="run a stage-1 model-demo scenario")
-    demo.add_argument("scenario", choices=MODEL_DEMO_SCENARIOS, help="scenario id from config")
+    demo.add_argument(
+        "scenario",
+        choices=MODEL_DEMO_SCENARIOS,
+        help="scenario id from config/scenarios",
+    )
     demo_alias = subparsers.add_parser("demo", help="run a deterministic model-demo episode")
-    demo_alias.add_argument("scenario", choices=MODEL_DEMO_SCENARIOS)
+    demo_alias.add_argument(
+        "scenario",
+        choices=MODEL_DEMO_SCENARIOS,
+    )
     prepare = subparsers.add_parser(
         "prepare", help="prepare original materials into data/processed"
     )

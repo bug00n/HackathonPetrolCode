@@ -8,6 +8,7 @@ from typing import Literal
 
 from source.contracts import (
     BlendComponent,
+    CetaneAdditiveSpec,
     ConstraintStatus,
     EstimateBasis,
     IntervalKind,
@@ -52,7 +53,7 @@ class HybridComponentForecast:
 
 @dataclass(frozen=True)
 class BlendResult:
-    """Partial blend result: core demo properties are assessed, not the full passport."""
+    """Synthetic product-passport result with explicit scenario bounds."""
 
     sulfur: MetricEstimate
     t95: MetricEstimate
@@ -60,7 +61,7 @@ class BlendResult:
     stock_shortfalls_t: tuple[tuple[str, float], ...]
     checked_properties: tuple[str, ...]
     unassessed_properties: tuple[str, ...]
-    full_specification_status: Literal["not_assessed"]
+    full_specification_status: Literal["assessed", "not_assessed"]
     assumptions: tuple[str, ...]
 
     @property
@@ -161,8 +162,11 @@ def calculate_mass_blend(
     mass_fractions: dict[str, float],
     components: tuple[BlendComponent, ...],
     total_mass_t: float,
+    *,
+    additive_mass_fraction: float = 0.0,
+    additive: CetaneAdditiveSpec | None = None,
 ) -> BlendResult:
-    """Calculate sulfur by mass and preserve missing values instead of imputing zero."""
+    """Calculate the declared synthetic blend model without imputing missing quality."""
     if total_mass_t <= 0:
         raise ValueError("total_mass_t must be positive")
     if not components:
@@ -175,15 +179,18 @@ def calculate_mass_blend(
         raise ValueError("mass fractions must contain every component exactly once")
     if any(weight < 0 for weight in mass_fractions.values()):
         raise ValueError("mass fractions must be nonnegative")
-    if abs(sum(mass_fractions.values()) - 1.0) > FRACTION_TOLERANCE:
-        raise ValueError("mass fractions must sum to one")
-    if {component.sulfur.unit for component in components} != {Unit.MG_KG.value}:
-        raise ValueError("all component sulfur estimates must use mg/kg")
+    if abs(sum(mass_fractions.values()) + additive_mass_fraction - 1.0) > FRACTION_TOLERANCE:
+        raise ValueError("mass fractions and additive must sum to one")
+    if additive_mass_fraction and additive is None:
+        raise ValueError("additive dose needs an additive model")
 
     positive_ids = [key for key, weight in mass_fractions.items() if weight > 0]
 
     def weighted(
-        metric: Literal["sulfur", "t95", "cetane_number"], field: Literal["value", "upper"]
+        metric: Literal["sulfur", "t95", "cetane_number"],
+        field: Literal["value", "lower", "upper"],
+        *,
+        normalize: bool = False,
     ) -> float | None:
         total = 0.0
         for key in positive_ids:
@@ -192,70 +199,108 @@ def calculate_mass_blend(
             if value is None:
                 return None
             total += mass_fractions[key] * value
-        return total
+        return total / sum(mass_fractions.values()) if normalize else total
 
-    def metric_estimate(metric: Literal["sulfur", "t95", "cetane_number"]) -> MetricEstimate:
-        estimates = [getattr(component_map[key], metric) for key in positive_ids]
-        present = [item for item in estimates if item is not None]
-        if len(present) != len(estimates):
-            return MetricEstimate(
-                value=None,
-                lower=None,
-                upper=None,
-                unit=Unit.UNKNOWN.value,
-                basis=EstimateBasis.FORMULA,
-                interval_kind=IntervalKind.NONE,
-                interval_level=None,
-                reference="DESIGN.md#9",
-                assumptions=assumptions,
-            )
-        units = {item.unit for item in present}
-        if len(units) != 1:
-            raise ValueError(f"all component {metric} estimates must use one unit")
-        upper = weighted(metric, "upper")
-        return MetricEstimate(
-            value=weighted(metric, "value"),
-            lower=None,
-            upper=upper,
-            unit=present[0].unit,
-            basis=EstimateBasis.FORMULA,
-            interval_kind=IntervalKind.SCENARIO_BOUND if upper is not None else IntervalKind.NONE,
-            interval_level=None,
-            reference="DESIGN.md#9",
-            assumptions=assumptions
-            + tuple(
-                assumption
-                for component in components
-                for estimate in (getattr(component, metric),)
-                if estimate is not None
-                for assumption in estimate.assumptions
-            ),
-        )
-
+    sulfur_value = weighted("sulfur", "value")
+    sulfur_upper = weighted("sulfur", "upper")
+    t95_value = weighted("t95", "value", normalize=True)
+    t95_upper = weighted("t95", "upper", normalize=True)
+    cetane_value = weighted("cetane_number", "value", normalize=True)
+    cetane_lower = weighted("cetane_number", "lower", normalize=True)
+    cetane_gain = _additive_gain(additive, additive_mass_fraction)
+    if cetane_value is not None:
+        cetane_value += cetane_gain
+    if cetane_lower is not None:
+        cetane_lower += cetane_gain
     shortfalls = tuple(
         (component.id, mass_fractions[component.id] * total_mass_t - component.available_mass_t)
         for component in components
         if mass_fractions[component.id] * total_mass_t
         > component.available_mass_t + FRACTION_TOLERANCE
     )
+    if (
+        additive is not None
+        and additive_mass_fraction * total_mass_t > additive.available_mass_t + FRACTION_TOLERANCE
+    ):
+        shortfalls += (
+            (
+                additive.id,
+                additive_mass_fraction * total_mass_t - additive.available_mass_t,
+            ),
+        )
     assumptions = (
-        "Sulfur, T95, cetane number and their upper bounds are mixed by mass fraction.",
-        "The weighted upper bounds are conservative scenario bounds without joint coverage claims.",
-        "Only the model-demo product properties and component stock are assessed.",
+        "Sulfur and its upper bound are mixed by mass fraction.",
+        "The weighted upper bound is conservative and has no joint coverage claim.",
+        "T95 and base cetane number are explicit linear scenario approximations.",
+        "Additive has zero modeled sulfur/T95 effect and follows its scenario cetane curve.",
     )
-    sulfur = metric_estimate("sulfur")
-    t95 = metric_estimate("t95")
-    cetane_number = metric_estimate("cetane_number")
+    sulfur = MetricEstimate(
+        value=sulfur_value,
+        lower=None,
+        upper=sulfur_upper,
+        unit=Unit.MG_KG.value,
+        basis=EstimateBasis.FORMULA,
+        interval_kind=(
+            IntervalKind.SCENARIO_BOUND if sulfur_upper is not None else IntervalKind.NONE
+        ),
+        interval_level=None,
+        reference="DESIGN.md#9",
+        assumptions=assumptions
+        + tuple(
+            assumption for component in components for assumption in component.sulfur.assumptions
+        ),
+    )
+    t95 = MetricEstimate(
+        value=t95_value,
+        lower=None,
+        upper=t95_upper,
+        unit=Unit.CELSIUS.value,
+        basis=EstimateBasis.FORMULA,
+        interval_kind=IntervalKind.SCENARIO_BOUND if t95_upper is not None else IntervalKind.NONE,
+        interval_level=None,
+        reference="scenario linear T95 blend assumption",
+        assumptions=assumptions,
+    )
+    cetane = MetricEstimate(
+        value=cetane_value,
+        lower=cetane_lower,
+        upper=None,
+        unit=Unit.CETANE.value,
+        basis=EstimateBasis.FORMULA,
+        interval_kind=(
+            IntervalKind.SCENARIO_BOUND if cetane_lower is not None else IntervalKind.NONE
+        ),
+        interval_level=None,
+        reference="scenario linear cetane blend and additive response curve",
+        assumptions=assumptions,
+    )
+    missing = tuple(
+        name
+        for name, value in (("t95", t95.upper), ("cetane_number", cetane.lower))
+        if value is None
+    )
     return BlendResult(
         sulfur=sulfur,
         t95=t95,
-        cetane_number=cetane_number,
+        cetane_number=cetane,
         stock_shortfalls_t=shortfalls,
         checked_properties=("sulfur", "t95", "cetane_number", "component_stock"),
-        unassessed_properties=("full_product_passport",),
-        full_specification_status="not_assessed",
+        unassessed_properties=missing,
+        full_specification_status="not_assessed" if missing else "assessed",
         assumptions=assumptions,
     )
+
+
+def _additive_gain(additive: CetaneAdditiveSpec | None, dose: float) -> float:
+    if dose == 0:
+        return 0.0
+    if additive is None or dose > additive.max_mass_fraction + FRACTION_TOLERANCE:
+        raise ValueError("additive dose is outside the configured model")
+    for left, right in zip(additive.response_curve, additive.response_curve[1:], strict=False):
+        if left.mass_fraction <= dose <= right.mass_fraction:
+            share = (dose - left.mass_fraction) / (right.mass_fraction - left.mass_fraction)
+            return left.cetane_gain + share * (right.cetane_gain - left.cetane_gain)
+    raise ValueError("additive response curve does not cover dose")
 
 
 def sulfur_constraint_status(
@@ -308,30 +353,55 @@ def rank_feasible_blends(
     current_fractions: dict[str, float],
     *,
     sulfur_upper_limit: float = 10.0,
+    t95_upper_limit: float = 360.0,
+    cetane_lower_limit: float = 51.0,
+    additive_mass_fraction: float = 0.0,
+    additive: CetaneAdditiveSpec | None = None,
 ) -> tuple[BlendOption, ...]:
-    """Filter quality/stock failures and rank the remaining hybrid recipes."""
+    """Filter the complete scenario passport and rank remaining recipes."""
     component_map = {component.id: component for component in components}
     if set(current_fractions) != set(component_map):
         raise ValueError("current fractions must contain every component")
     options: list[BlendOption] = []
     for recipe in recipes:
-        result = calculate_mass_blend(recipe, components, total_mass_t)
+        final_recipe = {
+            key: value * (1.0 - additive_mass_fraction) for key, value in recipe.items()
+        }
+        result = calculate_mass_blend(
+            final_recipe,
+            components,
+            total_mass_t,
+            additive_mass_fraction=additive_mass_fraction,
+            additive=additive,
+        )
         if sulfur_constraint_status(result, sulfur_upper_limit) is not ConstraintStatus.PASS:
             continue
-        recipe_id = "blend:" + ",".join(f"{key}={recipe[key]:.2f}" for key in sorted(recipe))
+        if (
+            result.t95.upper is None
+            or result.t95.upper > t95_upper_limit
+            or result.cetane_number.lower is None
+            or result.cetane_number.lower < cetane_lower_limit
+        ):
+            continue
+        recipe_id = "blend:" + ",".join(
+            f"{key}={final_recipe[key]:.3f}" for key in sorted(final_recipe)
+        )
         options.append(
             BlendOption(
                 recipe_id=recipe_id,
-                mass_fractions=recipe,
+                mass_fractions=final_recipe,
                 result=result,
                 risk_index=sum(
-                    recipe[key] * component_map[key].risk_index for key in component_map
+                    final_recipe[key] * component_map[key].risk_index for key in component_map
                 ),
                 throughput=total_mass_t,
                 cost_proxy=sum(
-                    recipe[key] * component_map[key].cost_proxy_per_t for key in component_map
+                    final_recipe[key] * component_map[key].cost_proxy_per_t for key in component_map
+                )
+                + (0.0 if additive is None else additive_mass_fraction * additive.cost_proxy_per_t),
+                change_size=sum(
+                    abs(final_recipe[key] - current_fractions[key]) for key in component_map
                 ),
-                change_size=sum(abs(recipe[key] - current_fractions[key]) for key in component_map),
             )
         )
     return tuple(sorted(options, key=lambda option: option.rank_key))
