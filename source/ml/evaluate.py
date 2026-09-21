@@ -218,6 +218,16 @@ def evaluate_model(
         "schema_version": "1.0",
         "model_id": model.metadata.model_id,
         "split": split,
+        "evaluation_role": "held_out_test" if split == "test" else "in_sample_diagnostic",
+        "independent_evaluation": split == "test",
+        "limitations": (
+            []
+            if split == "test"
+            else [
+                "The saved predictor may be refitted on train and validation. "
+                "These metrics are not an independent quality estimate; use split=test."
+            ]
+        ),
         "target_signal": model.metadata.target_signal,
         "training_target_source": model.metadata.target_source,
         "evaluation_target_sources": sorted(

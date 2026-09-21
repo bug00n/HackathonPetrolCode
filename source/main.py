@@ -12,11 +12,12 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Sequence, cast
+from typing import TYPE_CHECKING, Callable, Literal, Sequence, cast
 
 import pandas as pd
 
 from source.config import (
+    PROJECT_ROOT,
     config_fingerprint,
     load_runtime_config,
     load_scenario,
@@ -46,8 +47,8 @@ SplitName = Literal["train", "validation", "test"]
 # Curated, dictionary-confirmed 24-2000 context.  P8/F19 remain historical
 # action candidates; no signal is enabled as a real setpoint control.
 TRAINING_TELEMETRY_SIGNALS = ("ht:P8", "ht:F19", "ht:T11")
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DEMO_SCENARIOS: tuple[str, ...] = (
+    "blend_tradeoff",
     "blend_normal",
     "blend_risk",
     "blend_t95_risk",
@@ -56,6 +57,7 @@ MODEL_DEMO_SCENARIOS: tuple[str, ...] = (
 )
 STAGE6_SCENARIOS = MODEL_DEMO_SCENARIOS
 STAGE6_EXPECTED_STATUSES: dict[str, str] = {
+    "blend_tradeoff": "recommend",
     "blend_normal": "hold",
     "blend_risk": "recommend",
     "blend_t95_risk": "recommend",
@@ -827,6 +829,8 @@ def evaluate_command(
         "baseline_mae": metrics["baseline"]["mae"],
         "model_mae": metrics["model"]["mae"],
         "coverage": evaluation.report["coverage"],
+        "evaluation_role": evaluation.report["evaluation_role"],
+        "independent_evaluation": evaluation.report["independent_evaluation"],
     }
 
 
@@ -900,6 +904,111 @@ def run_history_command(
         run_dir=run_dir,
         root=root,
     )
+
+
+def history_interval_command(
+    dataset: str | Path,
+    model: str | Path,
+    start: datetime,
+    end: datetime,
+    *,
+    step_minutes: int = 60,
+    config_path: str | Path = "config/runtime.toml",
+    run_dir: str | Path | None = None,
+    root: Path = PROJECT_ROOT,
+    progress: Callable[[int, int], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> dict[str, object]:
+    """Replay a user-selected historical interval without fitting or tuning."""
+    from source.orchestrator import run_cycle
+
+    if start.tzinfo is None or end.tzinfo is None:
+        raise ValueError("interval boundaries must include timezone")
+    if end < start:
+        raise ValueError("interval end must not precede start")
+    if step_minutes <= 0:
+        raise ValueError("step_minutes must be positive")
+    requested_points = int((end - start).total_seconds() // (step_minutes * 60)) + 1
+    if requested_points > 10000:
+        raise ValueError("interval exceeds 10000 points; choose a shorter interval or larger step")
+    if progress is not None:
+        progress(0, requested_points)
+
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
+    forecast_model = _load_trusted_model(model, data, root)
+    scenario = load_scenario(root / "config/scenarios/history.json")
+    output_dir = _resolve_path(run_dir if run_dir is not None else config.runs_dir, root)
+    timestamps = pd.date_range(
+        start=pd.Timestamp(start).tz_convert("UTC"),
+        end=pd.Timestamp(end).tz_convert("UTC"),
+        freq=f"{step_minutes}min",
+    )
+    if timestamps.empty:
+        raise ValueError("interval contains no timestamps")
+    rows: list[dict[str, object]] = []
+    counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+    available_forecasts = 0
+    for timestamp in timestamps:
+        if cancelled is not None and cancelled():
+            break
+        result = run_cycle(
+            data=data,
+            model=forecast_model,
+            as_of=timestamp.to_pydatetime(),
+            scenario=scenario,
+            config=config,
+            context=DecisionContext(),
+            run_dir=output_dir,
+        )
+        carrier = result.selected or result.baseline
+        sulfur = None
+        if carrier is not None:
+            for assessment in carrier.assessments:
+                estimate = assessment.metrics.get("sulfur")
+                if estimate is not None:
+                    sulfur = {
+                        "point": estimate.value,
+                        "upper": estimate.upper,
+                        "unit": estimate.unit,
+                    }
+                    available_forecasts += int(estimate.value is not None)
+                    break
+        status = result.status.value
+        counts[status] = counts.get(status, 0) + 1
+        for reason in result.reason_codes:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        rows.append(
+            {
+                "as_of": result.as_of.isoformat(),
+                "run_id": result.run_id,
+                "model_id": result.model_id,
+                "status": result.status.value,
+                "reason_codes": list(result.reason_codes),
+                "sulfur": sulfur,
+            }
+        )
+        if progress is not None:
+            progress(len(rows), requested_points)
+    return {
+        "dataset_id": data.manifest.dataset_id,
+        "model_id": forecast_model.metadata.model_id,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "requested_points": requested_points,
+        "cancelled": len(rows) < requested_points,
+        "step_minutes": step_minutes,
+        "points": len(rows),
+        "forecast_coverage": available_forecasts / len(rows) if rows else 0.0,
+        "status_counts": counts,
+        "reason_counts": reason_counts,
+        "results": rows,
+        "limitations": [
+            "Interval replay is forecast-only and does not recommend real actions.",
+            "Each point uses only data available at its as_of timestamp.",
+        ],
+    }
 
 
 def accept_stage6(
@@ -1090,6 +1199,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     history.add_argument("--scenario", default="history", help="scenario id or JSON path")
     history.add_argument("--config", default="config/runtime.toml", help="runtime config path")
     history.add_argument("--run-dir", default=None, help="journal directory override")
+    interval = subparsers.add_parser(
+        "history-interval", help="replay a selected historical interval at a fixed step"
+    )
+    interval.add_argument("--dataset", required=True, help="prepared dataset directory")
+    interval.add_argument("--model", required=True, help="trusted local model directory")
+    interval.add_argument("--from", dest="start", required=True, type=_parse_as_of)
+    interval.add_argument("--to", dest="end", required=True, type=_parse_as_of)
+    interval.add_argument("--step-minutes", type=int, default=60)
+    interval.add_argument("--config", default="config/runtime.toml")
+    interval.add_argument("--run-dir", default=None, help="journal directory override")
     acceptance = subparsers.add_parser(
         "acceptance", help="run fixed Stage-6 episodes and export their journals"
     )
@@ -1229,6 +1348,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_dir=args.run_dir,
             )
             print(history_result.model_dump_json(indent=2))
+            return 0
+        if args.command == "history-interval":
+            interval_result = history_interval_command(
+                args.dataset,
+                args.model,
+                args.start,
+                args.end,
+                step_minutes=args.step_minutes,
+                config_path=args.config,
+                run_dir=args.run_dir,
+            )
+            print(json.dumps(interval_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "acceptance":
             from source.acceptance import run_acceptance_suite

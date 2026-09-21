@@ -1,0 +1,342 @@
+{
+  "schema_version": "1.1",
+  "run_id": "9236a104-85c7-46c8-92e8-15dcebafe50d",
+  "state_id": "9b30821965b9b3f4",
+  "as_of": "2026-01-15T09:00:00Z",
+  "scenario_id": "blend_missing",
+  "mode": "model_demo",
+  "status": "abstain",
+  "baseline": {
+    "candidate": {
+      "id": "hold",
+      "kind": "hold",
+      "setpoints": {},
+      "blend_mass_fractions": {},
+      "additive_mass_fraction": 0.0,
+      "horizon_minutes": 60,
+      "is_model_scenario": true
+    },
+    "assessments": [
+      {
+        "agent": "quality",
+        "state_id": "9b30821965b9b3f4",
+        "candidate_id": "hold",
+        "evaluated_for": "2026-01-15T10:00:00Z",
+        "status": "unavailable",
+        "metrics": {
+          "sulfur": {
+            "value": null,
+            "lower": null,
+            "upper": null,
+            "unit": "mg/kg",
+            "basis": "formula",
+            "interval_kind": "none",
+            "interval_level": null,
+            "reference": "DESIGN.md#9",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          },
+          "sulfur_operating_target": {
+            "value": 8.0,
+            "lower": null,
+            "upper": null,
+            "unit": "mg/kg",
+            "basis": "formula",
+            "interval_kind": "none",
+            "interval_level": null,
+            "reference": "ScenarioConfig.sulfur_margin_mgkg",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          },
+          "t95": {
+            "value": 356.0,
+            "lower": null,
+            "upper": 357.99999999999994,
+            "unit": "degC",
+            "basis": "formula",
+            "interval_kind": "scenario_bound",
+            "interval_level": null,
+            "reference": "scenario linear T95 blend assumption",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          },
+          "cetane_number": {
+            "value": 52.3,
+            "lower": 51.8,
+            "upper": null,
+            "unit": "cetane_number",
+            "basis": "formula",
+            "interval_kind": "scenario_bound",
+            "interval_level": null,
+            "reference": "scenario linear cetane blend and additive response curve",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          },
+          "density": {
+            "value": null,
+            "lower": null,
+            "upper": null,
+            "unit": "kg/m3",
+            "basis": "formula",
+            "interval_kind": "none",
+            "interval_level": null,
+            "reference": "mass/volume density blend",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          }
+        },
+        "issues": [
+          {
+            "code": "MISSING_REQUIRED_SIGNAL",
+            "severity": "blocking",
+            "signal_id": "blend:sulfur",
+            "detail": "Sulfur is missing for a component with a positive mass fraction.",
+            "source_ref": "scenario:blend_missing"
+          }
+        ]
+      },
+      {
+        "agent": "reliability",
+        "state_id": "9b30821965b9b3f4",
+        "candidate_id": "hold",
+        "evaluated_for": "2026-01-15T10:00:00Z",
+        "status": "ok",
+        "metrics": {
+          "risk_index": {
+            "value": 0.0,
+            "lower": null,
+            "upper": null,
+            "unit": "index_0_1",
+            "basis": "proxy",
+            "interval_kind": "none",
+            "interval_level": null,
+            "reference": "config scenario blend_components[*].risk_index",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          }
+        },
+        "issues": []
+      },
+      {
+        "agent": "optimizer",
+        "state_id": "9b30821965b9b3f4",
+        "candidate_id": "hold",
+        "evaluated_for": "2026-01-15T10:00:00Z",
+        "status": "ok",
+        "metrics": {
+          "throughput": {
+            "value": 100.0,
+            "lower": null,
+            "upper": null,
+            "unit": "t",
+            "basis": "formula",
+            "interval_kind": "none",
+            "interval_level": null,
+            "reference": "config scenario total_mass_t",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          },
+          "cost_proxy": {
+            "value": 1.9306,
+            "lower": null,
+            "upper": null,
+            "unit": "proxy_unit",
+            "basis": "proxy",
+            "interval_kind": "none",
+            "interval_level": null,
+            "reference": "config scenario blend_components[*].cost_proxy_per_t",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          },
+          "change_size": {
+            "value": 0.0,
+            "lower": null,
+            "upper": null,
+            "unit": "1",
+            "basis": "formula",
+            "interval_kind": "none",
+            "interval_level": null,
+            "reference": "DESIGN.md#7",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          },
+          "additive_mass_fraction": {
+            "value": 0.01,
+            "lower": null,
+            "upper": null,
+            "unit": "1",
+            "basis": "formula",
+            "interval_kind": "none",
+            "interval_level": null,
+            "reference": "config scenario cetane_additive",
+            "assumptions": [
+              "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+              "Sulfur and its scenario upper bound are mixed by mass fraction.",
+              "T95 and base cetane number are linear scenario approximations over diesel components.",
+              "The additive has zero modeled sulfur/T95 effect; cetane gain follows the configured curve.",
+              "Risk and cost are scenario proxies, not plant safety or currency estimates.",
+              "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+            ]
+          }
+        },
+        "issues": []
+      }
+    ],
+    "checks": [
+      {
+        "constraint_id": "blend_sulfur",
+        "candidate_id": "hold",
+        "status": "unknown",
+        "actual": null,
+        "lower": null,
+        "upper": 10.0,
+        "unit": "mg/kg",
+        "basis": "tz",
+        "evidence_ref": "materials/ТЗ_нефтекод.docx",
+        "reason_code": "UNCERTAINTY_UNAVAILABLE"
+      },
+      {
+        "constraint_id": "blend_t95",
+        "candidate_id": "hold",
+        "status": "pass",
+        "actual": 357.99999999999994,
+        "lower": null,
+        "upper": 360.0,
+        "unit": "degC",
+        "basis": "model_assumption",
+        "evidence_ref": "expert clarification 10.09.2026; explicit synthetic scenario",
+        "reason_code": "OK"
+      },
+      {
+        "constraint_id": "blend_cetane",
+        "candidate_id": "hold",
+        "status": "pass",
+        "actual": 51.8,
+        "lower": 51.0,
+        "upper": null,
+        "unit": "cetane_number",
+        "basis": "model_assumption",
+        "evidence_ref": "expert clarification 10.09.2026; explicit synthetic scenario",
+        "reason_code": "OK"
+      },
+      {
+        "constraint_id": "component_stock:A",
+        "candidate_id": "hold",
+        "status": "pass",
+        "actual": 69.3,
+        "lower": null,
+        "upper": 100.0,
+        "unit": "t",
+        "basis": "model_assumption",
+        "evidence_ref": "ScenarioConfig.blend_components",
+        "reason_code": "OK"
+      },
+      {
+        "constraint_id": "component_stock:B",
+        "candidate_id": "hold",
+        "status": "pass",
+        "actual": 29.7,
+        "lower": null,
+        "upper": 30.0,
+        "unit": "t",
+        "basis": "model_assumption",
+        "evidence_ref": "ScenarioConfig.blend_components",
+        "reason_code": "OK"
+      },
+      {
+        "constraint_id": "additive_fraction",
+        "candidate_id": "hold",
+        "status": "pass",
+        "actual": 0.01,
+        "lower": null,
+        "upper": 0.03,
+        "unit": "1",
+        "basis": "model_assumption",
+        "evidence_ref": "expert clarification 10.09.2026: dose <=3%, price ratio 100x",
+        "reason_code": "OK"
+      },
+      {
+        "constraint_id": "additive_stock",
+        "candidate_id": "hold",
+        "status": "pass",
+        "actual": 1.0,
+        "lower": null,
+        "upper": 3.0,
+        "unit": "t",
+        "basis": "model_assumption",
+        "evidence_ref": "expert clarification 10.09.2026: dose <=3%, price ratio 100x",
+        "reason_code": "OK"
+      }
+    ],
+    "feasible": false,
+    "rank_key": null
+  },
+  "selected": null,
+  "alternatives": [],
+  "reason_codes": [
+    "MISSING_REQUIRED_SIGNAL",
+    "UNCERTAINTY_UNAVAILABLE",
+    "QUALITY_LIMIT",
+    "COMPONENT_STOCK"
+  ],
+  "explanation": "Надёжной рекомендации нет: MISSING_REQUIRED_SIGNAL, UNCERTAINTY_UNAVAILABLE, QUALITY_LIMIT, COMPONENT_STOCK. Проверки baseline: blend_sulfur: unknown <= 10 mg/kg, reason=UNCERTAINTY_UNAVAILABLE, source=materials/ТЗ_нефтекод.docx; blend_t95: pass <= 360 degC, reason=OK, source=expert clarification 10.09.2026; explicit synthetic scenario; blend_cetane: pass >= 51 cetane_number, reason=OK, source=expert clarification 10.09.2026; explicit synthetic scenario; component_stock:A: pass <= 100 t, reason=OK, source=ScenarioConfig.blend_components; component_stock:B: pass <= 30 t, reason=OK, source=ScenarioConfig.blend_components; additive_fraction: pass <= 0.03 1, reason=OK, source=expert clarification 10.09.2026: dose <=3%, price ratio 100x; additive_stock: pass <= 3 t, reason=OK, source=expert clarification 10.09.2026: dose <=3%, price ratio 100x. Сценарий blend_missing требует ручной проверки.",
+  "assumptions": [
+    "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+    "stage-3 deterministic backend cycle"
+  ],
+  "model_id": null
+}

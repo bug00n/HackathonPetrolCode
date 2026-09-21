@@ -8,7 +8,15 @@ on:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout code
@@ -17,7 +25,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: 'pip' # Кэширует pip-пакеты для ускорения сборки
 
       - name: Install dependencies
@@ -33,8 +41,13 @@ jobs:
       - name: Run mypy
         run: mypy source
 
-      - name: Run Pytest
-        run: pytest
+      - name: Run Pytest (Windows desktop)
+        if: runner.os == 'Windows'
+        run: python -m pytest
+
+      - name: Run Pytest (Linux virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest
 
       - name: Run deterministic acceptance episodes
         run: |

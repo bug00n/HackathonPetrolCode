@@ -1,0 +1,1 @@
+{"event": "run_cycle_completed", "rejection_summary": {"COMPONENT_STOCK": 32, "QUALITY_LIMIT": 84}, "selection_reason": "baseline_infeasible_recommend", "status": "recommend"}

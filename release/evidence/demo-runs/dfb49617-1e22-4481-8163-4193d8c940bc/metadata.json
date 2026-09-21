@@ -1,0 +1,12 @@
+{
+  "dataset_id": "modeldemo001",
+  "model_id": null,
+  "rejection_summary": {
+    "COMPONENT_STOCK": 56,
+    "QUALITY_LIMIT": 152
+  },
+  "run_id": "dfb49617-1e22-4481-8163-4193d8c940bc",
+  "scenario_id": "blend_risk",
+  "schema_version": "1.1",
+  "selection_reason": "baseline_infeasible_recommend"
+}

@@ -1,0 +1,1 @@
+{"event": "run_cycle_completed", "rejection_summary": {"COMPONENT_STOCK": 56, "MISSING_REQUIRED_SIGNAL": 80, "QUALITY_LIMIT": 84, "UNCERTAINTY_UNAVAILABLE": 80}, "selection_reason": "no_feasible_candidate", "status": "abstain"}

@@ -1,0 +1,11 @@
+{
+  "dataset_id": "66bdfcbb23b4",
+  "model_id": "sulfur-upper-33efba3c3141",
+  "rejection_summary": {
+    "RELIABILITY_UNAVAILABLE": 1
+  },
+  "run_id": "02c0e637-2605-4b88-8796-bab60f1b79a2",
+  "scenario_id": "history",
+  "schema_version": "1.1",
+  "selection_reason": "action_model_unavailable"
+}

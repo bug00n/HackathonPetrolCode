@@ -11,6 +11,9 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+Neftekod.exe
+_internal/
+Neftekod-Windows-*.zip
 downloads/
 eggs/
 .eggs/

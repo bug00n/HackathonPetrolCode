@@ -1,0 +1,14 @@
+{
+  "dataset_id": "modeldemo001",
+  "model_id": null,
+  "rejection_summary": {
+    "COMPONENT_STOCK": 56,
+    "MISSING_REQUIRED_SIGNAL": 80,
+    "QUALITY_LIMIT": 84,
+    "UNCERTAINTY_UNAVAILABLE": 80
+  },
+  "run_id": "9236a104-85c7-46c8-92e8-15dcebafe50d",
+  "scenario_id": "blend_missing",
+  "schema_version": "1.1",
+  "selection_reason": "no_feasible_candidate"
+}

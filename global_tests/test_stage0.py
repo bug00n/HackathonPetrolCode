@@ -46,6 +46,7 @@ def test_all_versioned_configs_load() -> None:
         "blend_cetane_risk",
         "blend_missing",
         "hybrid_blend",
+        "blend_tradeoff",
     }
 
 

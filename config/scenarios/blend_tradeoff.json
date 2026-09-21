@@ -1,0 +1,192 @@
+{
+  "id": "blend_tradeoff",
+  "mode": "model_demo",
+  "required_signals": [],
+  "controls": [],
+  "constraints": [
+    {
+      "id": "blend_sulfur",
+      "metric": "sulfur",
+      "stage": "blend",
+      "lower": null,
+      "upper": 10,
+      "unit": "mg/kg",
+      "use_upper_estimate": true,
+      "use_lower_estimate": false,
+      "required": true,
+      "basis": "tz",
+      "evidence_ref": "materials/ТЗ_нефтекод.docx"
+    },
+    {
+      "id": "blend_t95",
+      "metric": "t95",
+      "stage": "blend",
+      "lower": null,
+      "upper": 360,
+      "unit": "degC",
+      "use_upper_estimate": true,
+      "use_lower_estimate": false,
+      "required": true,
+      "basis": "model_assumption",
+      "evidence_ref": "expert clarification 10.09.2026; explicit synthetic scenario"
+    },
+    {
+      "id": "blend_cetane",
+      "metric": "cetane_number",
+      "stage": "blend",
+      "lower": 51,
+      "upper": null,
+      "unit": "cetane_number",
+      "use_upper_estimate": false,
+      "use_lower_estimate": true,
+      "required": true,
+      "basis": "model_assumption",
+      "evidence_ref": "expert clarification 10.09.2026; explicit synthetic scenario"
+    }
+  ],
+  "blend_components": [
+    {
+      "id": "A",
+      "sulfur": {
+        "value": 6,
+        "lower": null,
+        "upper": 7,
+        "unit": "mg/kg",
+        "basis": "formula",
+        "interval_kind": "scenario_bound",
+        "interval_level": null,
+        "reference": "DESIGN.md#9",
+        "assumptions": [
+          "Synthetic model-demo value"
+        ]
+      },
+      "t95": {
+        "value": 350,
+        "lower": null,
+        "upper": 352,
+        "unit": "degC",
+        "basis": "formula",
+        "interval_kind": "scenario_bound",
+        "interval_level": null,
+        "reference": "scenario component passport",
+        "assumptions": [
+          "Synthetic model-demo value"
+        ]
+      },
+      "cetane_number": {
+        "value": 50.5,
+        "lower": 50,
+        "upper": null,
+        "unit": "cetane_number",
+        "basis": "formula",
+        "interval_kind": "scenario_bound",
+        "interval_level": null,
+        "reference": "scenario component passport",
+        "assumptions": [
+          "Synthetic model-demo value"
+        ]
+      },
+      "available_mass_t": 100,
+      "cost_proxy_per_t": 1,
+      "risk_index": 0.8,
+      "source_state_id": null
+    },
+    {
+      "id": "B",
+      "sulfur": {
+        "value": 30,
+        "lower": null,
+        "upper": 31,
+        "unit": "mg/kg",
+        "basis": "formula",
+        "interval_kind": "scenario_bound",
+        "interval_level": null,
+        "reference": "DESIGN.md#9",
+        "assumptions": [
+          "Synthetic model-demo value"
+        ]
+      },
+      "t95": {
+        "value": 370,
+        "lower": null,
+        "upper": 372,
+        "unit": "degC",
+        "basis": "formula",
+        "interval_kind": "scenario_bound",
+        "interval_level": null,
+        "reference": "scenario component passport",
+        "assumptions": [
+          "Synthetic model-demo value"
+        ]
+      },
+      "cetane_number": {
+        "value": 46.5,
+        "lower": 46,
+        "upper": null,
+        "unit": "cetane_number",
+        "basis": "formula",
+        "interval_kind": "scenario_bound",
+        "interval_level": null,
+        "reference": "scenario component passport",
+        "assumptions": [
+          "Synthetic model-demo value"
+        ]
+      },
+      "available_mass_t": 30,
+      "cost_proxy_per_t": 1.5,
+      "risk_index": 0.1,
+      "source_state_id": null
+    }
+  ],
+  "cetane_additive": {
+    "id": "cetane_improver",
+    "max_mass_fraction": 0.03,
+    "fraction_step": 0.01,
+    "available_mass_t": 3,
+    "cost_proxy_per_t": 100,
+    "response_curve": [
+      {
+        "mass_fraction": 0,
+        "cetane_gain": 0
+      },
+      {
+        "mass_fraction": 0.01,
+        "cetane_gain": 3
+      },
+      {
+        "mass_fraction": 0.02,
+        "cetane_gain": 5
+      },
+      {
+        "mass_fraction": 0.03,
+        "cetane_gain": 6.5
+      }
+    ],
+    "evidence_ref": "expert clarification 10.09.2026: dose <=3%, price ratio 100x",
+    "assumptions": [
+      "The dose-to-cetane curve is synthetic and configurable; it is not plant-calibrated."
+    ]
+  },
+  "total_mass_t": 100,
+  "current_blend_mass_fractions": {
+    "A": 0.99,
+    "B": 0
+  },
+  "current_additive_mass_fraction": 0.01,
+  "active_criteria": [
+    "risk_index",
+    "throughput",
+    "cost_proxy"
+  ],
+  "materiality_thresholds": {
+    "risk_index": 0.02,
+    "throughput": 0.02,
+    "cost_proxy": 0.02
+  },
+  "require_upper_bound": true,
+  "action_cooldown_minutes": 60,
+  "assumptions": [
+    "All component values and T95/cetane blend relations are synthetic and are not plant guarantees.",
+    "Synthetic tradeoff: lower risk has priority over cost; proxies do not represent measured plant reliability or savings."
+  ]
+}

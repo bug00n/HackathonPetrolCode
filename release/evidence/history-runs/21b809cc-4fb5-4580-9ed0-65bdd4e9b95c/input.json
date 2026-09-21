@@ -1,0 +1,91 @@
+{
+  "context": {
+    "last_recommended_at": null
+  },
+  "scenario": {
+    "action_cooldown_minutes": 60,
+    "active_criteria": [
+      "risk_index",
+      "throughput",
+      "cost_proxy"
+    ],
+    "assumptions": [
+      "Real setpoint controls are disabled until a validated action model exists."
+    ],
+    "blend_components": [],
+    "cetane_additive": null,
+    "constraints": [
+      {
+        "basis": "tz",
+        "evidence_ref": "materials/ТЗ_нефтекод.docx",
+        "id": "product_sulfur",
+        "lower": null,
+        "metric": "sulfur",
+        "required": true,
+        "stage": "ht",
+        "unit": "mg/kg",
+        "upper": 10.0,
+        "use_lower_estimate": false,
+        "use_upper_estimate": true
+      }
+    ],
+    "controls": [],
+    "current_additive_mass_fraction": 0.0,
+    "current_blend_mass_fractions": {},
+    "id": "history",
+    "materiality_thresholds": {
+      "cost_proxy": 0.02,
+      "risk_index": 0.02,
+      "throughput": 0.02
+    },
+    "mode": "history",
+    "product_grade": "summer_diesel",
+    "require_upper_bound": true,
+    "required_signals": [
+      "ht:2:Mg.Sulfur"
+    ],
+    "sulfur_margin_mgkg": 2.0,
+    "total_mass_t": null
+  },
+  "state": {
+    "as_of": "2025-06-01T11:00:00Z",
+    "dataset_id": "66bdfcbb23b4",
+    "issues": [],
+    "mode": "history",
+    "schema_version": "1.0",
+    "signals": {
+      "ht:2:Mg.Sulfur": {
+        "age_seconds": 14400.0,
+        "alternatives": [
+          {
+            "available_at": "2025-06-01T11:00:00Z",
+            "id": "bd44df22-ba34-56eb-8fa1-cbe236d6eeaa",
+            "measured_at": "2025-06-01T11:00:00Z",
+            "signal_id": "ht:2:Mg.Sulfur",
+            "source": "pak",
+            "source_ref": "D:/ML/hakneft/HackathonPetrolCode/materials/Выгрузка ПАК 01.01.2023 - н.в_.xlsx#row=127095;columns=1,2",
+            "stage": "ht",
+            "unit": "mg/kg",
+            "validity": "valid",
+            "value": 8.171501159667969
+          }
+        ],
+        "fresh": true,
+        "issues": [],
+        "selected": {
+          "available_at": "2025-06-01T11:00:00Z",
+          "id": "31000187-f7ea-511b-bb3d-ddaad73b5de9",
+          "measured_at": "2025-06-01T07:00:00Z",
+          "signal_id": "ht:2:Mg.Sulfur",
+          "source": "lims",
+          "source_ref": "D:/ML/hakneft/HackathonPetrolCode/materials/ЛИМСы 01.01.2023 - н.в_ (2).xlsx#row=958;columns=95,96",
+          "stage": "ht",
+          "unit": "mg/kg",
+          "validity": "valid",
+          "value": 8.699999809265137
+        }
+      }
+    },
+    "state_id": "d3d03559b4986c01"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "release_id": "neftekod-dev-2026-09-21",
+  "dataset_id": "66bdfcbb23b4",
+  "forecast_artifact": "sulfur-upper-33efba3c3141",
+  "v2_artifact": "sulfur-v2-shadow-61f972d07181",
+  "model_demo": [
+    {"scenario": "blend_normal", "status": "hold", "origin": "synthetic fixture"},
+    {"scenario": "blend_risk", "status": "recommend", "origin": "synthetic fixture"},
+    {"scenario": "blend_t95_risk", "status": "recommend", "origin": "synthetic fixture"},
+    {"scenario": "blend_cetane_risk", "status": "recommend", "origin": "synthetic fixture"},
+    {"scenario": "blend_missing", "status": "abstain", "origin": "synthetic missing-data fixture"},
+    {"scenario": "blend_tradeoff", "status": "recommend", "origin": "synthetic risk-cost tradeoff"}
+  ],
+  "historical_examples": [
+    {
+      "id": "real-normal-or-risk-slice",
+      "as_of": "2025-06-01T12:00:00+03:00",
+      "mode": "history",
+      "origin": "prepared organizer data",
+      "actions": "not recommended without a verified action artifact"
+    },
+    {
+      "id": "selected-interval",
+      "from": "2025-06-01T12:00:00+03:00",
+      "to": "2025-06-01T18:00:00+03:00",
+      "step_minutes": 60,
+      "command": "python -m source.main history-interval"
+    }
+  ],
+  "limits": [
+    "No production setpoint control",
+    "Hybrid checks sulfur only and does not prove whole-chain optimization",
+    "v2 and action-effect artifacts are research/shadow evidence"
+  ]
+}

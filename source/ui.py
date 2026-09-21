@@ -8,15 +8,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import queue
 import sys
 import threading
 import tkinter as tk
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from source.config import load_scenario
 from source.contracts import (
@@ -31,6 +32,7 @@ from source.main import (
     action_shadow_estimate_command,
     build_state_command,
     evaluate_lims_correction_command,
+    history_interval_command,
     prepare_command,
     replay_v2_shadow_command,
     run_history_command,
@@ -38,10 +40,10 @@ from source.main import (
     validate_stage0,
 )
 from source.ui_data import (
+    UiContext,
     UiHistoryReplayView,
     UiHybridBlendView,
     UiStageSnapshot,
-    default_as_of_for_dataset,
     discover_ui_context,
     history_replay_to_view,
     ui_history_snapshot,
@@ -62,8 +64,24 @@ BORDER = "#D8E0E4"
 SOFT = "#EDF1F3"
 GREEN = "#149B68"
 RED = "#B3473C"
+RELEASE_DEMO_AS_OF = "2025-06-01T12:00:00+03:00"
+STATUS_RU = {
+    "empty": "ожидает расчёта",
+    "ready": "готово",
+    "error": "ошибка расчёта",
+    "abstain": "отказ от управляющего действия",
+    "hold": "сохранить режим",
+    "recommend": "рекомендация",
+    "pass": "в пределах",
+    "fail": "превышение",
+    "unknown": "неизвестно",
+    "not_actionable": "не рекомендованы",
+    "actionable": "разрешены моделью",
+    "unavailable": "недоступны",
+}
 
 SCENARIO_LABELS = {
+    "Риск и стоимость": "blend_tradeoff",
     "Нормальный режим": "blend_normal",
     "Повышенная сера": "blend_risk",
     "Риск T95": "blend_t95_risk",
@@ -113,6 +131,7 @@ class DashboardView:
     proposed_fractions: dict[str, float]
     current_additive_fraction: float
     proposed_additive_fraction: float
+    total_mass_t: float | None
     constraints: tuple[ConstraintRow, ...]
     explanation: str
     reasons: tuple[str, ...]
@@ -262,6 +281,7 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         proposed_fractions=proposed,
         current_additive_fraction=current_additive,
         proposed_additive_fraction=proposed_additive,
+        total_mass_t=scenario.total_mass_t,
         constraints=_constraint_rows(result),
         explanation=result.explanation,
         reasons=result.reason_codes,
@@ -373,23 +393,25 @@ def format_v2_forecast_payload(payload: dict[str, object]) -> str:
 def format_history_replay_view(view: UiHistoryReplayView) -> str:
     """Render a history replay result without hiding the raw journal payload."""
     rows = [
-        "Исторический forecast серы",
-        view.message,
+        "Исторический прогноз серы",
+        "Прогноз рассчитан. Реальные уставки не изменяются."
+        if view.status == "ready"
+        else view.message,
         "",
-        f"Status: {view.recommendation_status or view.status}",
-        f"Model: {view.model_id or '—'}",
-        f"As of: {view.as_of or '—'}",
-        f"Сера point: {_format_value(view.sulfur_point)}",
-        f"Сера upper: {_format_value(view.sulfur_upper)}",
-        f"Upper status: {view.upper_status}",
-        f"Action state: {view.action_state}",
-        f"Selected kind: {view.selected_kind or '—'}",
-        f"Reason codes: {', '.join(view.reason_codes) if view.reason_codes else '—'}",
+        f"Статус: {STATUS_RU.get(view.recommendation_status or view.status, view.status)}",
+        f"Модель: {view.model_id or '—'}",
+        f"Момент данных: {view.as_of or '—'}",
+        f"Сера, точечный прогноз: {_format_value(view.sulfur_point)}",
+        f"Сера, верхняя граница: {_format_value(view.sulfur_upper)}",
+        f"Проверка верхней границы: {STATUS_RU.get(view.upper_status, view.upper_status)}",
+        f"Действия: {STATUS_RU.get(view.action_state, view.action_state)}",
+        f"Выбранный тип: {view.selected_kind or '—'}",
+        f"Коды причин: {', '.join(view.reason_codes) if view.reason_codes else '—'}",
     ]
     if view.issues:
-        rows.append("Issues: " + " | ".join(view.issues))
+        rows.append("Проблемы: " + " | ".join(view.issues))
     if view.journal_path:
-        rows.append(f"Journal: {view.journal_path}")
+        rows.append(f"Журнал: {view.journal_path}")
     if view.raw is not None:
         rows.extend(
             ("", "Raw recommendation JSON:", json.dumps(view.raw, ensure_ascii=False, indent=2))
@@ -400,23 +422,26 @@ def format_history_replay_view(view: UiHistoryReplayView) -> str:
 def format_hybrid_blend_view(view: UiHybridBlendView) -> str:
     """Render the hybrid sulfur-only blend panel in a compact form."""
     rows = [
-        "Hybrid sulfur-only blend",
-        view.message,
+        "Условное смешение по прогнозу серы (Hybrid sulfur-only blend)",
+        "Рассчитана только сера. Остальные свойства смеси здесь не подтверждаются."
+        if view.status == "ready"
+        else view.message,
         "",
-        f"Status: {view.status}",
-        f"Scenario: {view.scenario_id}",
-        f"Model: {view.model_id or '—'}",
-        f"State: {view.source_state_id or '—'}",
-        f"Component A sulfur point: {_format_value(view.component_sulfur_point)}",
-        f"Component A sulfur upper: {_format_value(view.component_sulfur_upper)}",
-        f"Blend sulfur point: {_format_value(view.blend_sulfur_point)}",
-        f"Blend sulfur upper: {_format_value(view.blend_sulfur_upper)}",
-        f"Constraint: {view.constraint_status}",
+        f"Статус расчёта: {STATUS_RU.get(view.status, view.status)}",
+        f"Сценарий: {view.scenario_id}",
+        f"Модель: {view.model_id or '—'}",
+        f"Состояние: {view.source_state_id or '—'}",
+        f"Компонент A, сера point: {_format_value(view.component_sulfur_point)}",
+        f"Компонент A, сера upper: {_format_value(view.component_sulfur_upper)}",
+        f"Смесь, сера point: {_format_value(view.blend_sulfur_point)}",
+        f"Смесь, сера upper: {_format_value(view.blend_sulfur_upper)}",
+        "Проверка ограничения серы: "
+        + STATUS_RU.get(view.constraint_status, view.constraint_status),
     ]
     if view.reason_codes:
-        rows.append("Reason codes: " + ", ".join(view.reason_codes))
+        rows.append("Коды причин: " + ", ".join(view.reason_codes))
     if view.assumptions:
-        rows.append("Assumptions: " + " | ".join(view.assumptions))
+        rows.append("Допущения: " + " | ".join(view.assumptions))
     return "\n".join(rows)
 
 
@@ -430,23 +455,59 @@ class PetrolCodeApp(tk.Tk):
     ) -> None:
         super().__init__()
         self.title("НЕФТЕКОД — поддержка технологических решений")
-        self.geometry("1536x1024")
-        self.minsize(1120, 760)
+        width = min(1536, max(1000, self.winfo_screenwidth() - 80))
+        height = min(960, max(680, self.winfo_screenheight() - 100))
+        self.geometry(f"{width}x{height}")
+        self.minsize(1000, 680)
         self.configure(bg=BG)
         self.option_add("*Font", "{Segoe UI} 11")
         self.scenario_var = tk.StringVar(value=self._scenario_label(initial_scenario))
         self.horizon_var = tk.StringVar(value="60 мин")
         self.status_var = tk.StringVar(value="Готово к расчёту")
+        self._ui_events: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
+        self._closing = False
+        self._interval_cancel = threading.Event()
+        self._shared_dataset = tk.StringVar(value=discover_ui_context().latest_dataset or "")
+        self._shared_as_of = tk.StringVar(value=RELEASE_DEMO_AS_OF)
         self._result: Recommendation | None = None
         self._scenario: ScenarioConfig | None = None
         self._calculation_request_id = 0
         self._history_request_id = 0
+        self._hybrid_request_id = 0
+        self._stage_request_id = 0
         self._history_view: UiHistoryReplayView | None = None
+        self._history_export_payload: dict[str, Any] | None = None
+        self._history_interval_text: str | None = None
+        self._hybrid_view: UiHybridBlendView | None = None
+        self._stage_snapshot_cache: dict[tuple[str, str, str], UiStageSnapshot] = {}
+        self._overview_context: UiContext | None = None
+        self._overview_key: tuple[str, str] | None = None
+        self._overview_snapshots: dict[str, UiStageSnapshot] | None = None
         self._page = initial_page
         self._nav_buttons: dict[str, tk.Button] = {}
         self._build_styles()
         self._build_shell()
         self.calculate()
+        self._drain_ui_events()
+
+    def _post_ui(self, callback: Callable[[], None]) -> None:
+        """Workers enqueue results without calling the Tcl interpreter."""
+        if not self._closing:
+            self._ui_events.put(callback)
+
+    def _drain_ui_events(self) -> None:
+        if self._closing:
+            return
+        while not self._ui_events.empty():
+            self._ui_events.get_nowait()()
+        self._poll_id = self.after(40, self._drain_ui_events)
+
+    def destroy(self) -> None:
+        self._closing = True
+        self._interval_cancel.set()
+        if hasattr(self, "_poll_id"):
+            self.after_cancel(self._poll_id)
+        super().destroy()
 
     @staticmethod
     def _scenario_label(scenario_id: str) -> str:
@@ -542,6 +603,11 @@ class PetrolCodeApp(tk.Tk):
 
     def show_page(self, page: str) -> None:
         page = PAGE_ALIASES.get(page, page)
+        if self._page == "history":
+            self._history_request_id += 1
+            self._interval_cancel.set()
+        if self._page == "blend" and page != "blend":
+            self._hybrid_request_id += 1
         self._page = page
         self._set_nav(page)
         self._clear_body()
@@ -640,12 +706,57 @@ class PetrolCodeApp(tk.Tk):
     def _stage_tone(status: str) -> str:
         return {"fresh": "ok", "stale": "unknown", "missing": "bad"}.get(status, "unknown")
 
+    @staticmethod
+    def _widget_exists(widget: tk.Misc) -> bool:
+        try:
+            return bool(widget.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _schedule_dialog_render(self, dialog: tk.Toplevel, render: Any, value: str) -> None:
+        """Deliver a worker result only while its dialog still exists."""
+
+        def finish() -> None:
+            if self._widget_exists(dialog):
+                try:
+                    render(value)
+                except tk.TclError:
+                    return
+
+        try:
+            self._post_ui(finish)
+        except tk.TclError:
+            return
+
     def _render_stage_cards(self, parent: tk.Misc) -> None:
+        if self._overview_key != (self._shared_dataset.get(), self._shared_as_of.get()):
+            self._overview_context = None
         row = tk.Frame(parent, bg=BG)
         row.pack(fill="x", pady=(16, 12))
-        context = discover_ui_context()
+        context = self._overview_context
+        if context is None:
+            for label in ("АВТ", "Гидроочистка", "История/ML"):
+                card = self._surface(row)
+                card.pack(side="left", fill="x", expand=True, padx=(0, 12), ipady=8)
+                tk.Label(card, text=label, bg=SURFACE, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(
+                    anchor="w", padx=18, pady=(14, 4)
+                )
+                tk.Label(
+                    card,
+                    text="Загрузка состояния…",
+                    bg=SURFACE,
+                    fg=MUTED,
+                    wraplength=360,
+                    justify="left",
+                ).pack(anchor="w", padx=18, pady=(6, 14))
+            self._load_overview_stage_cards(parent, row)
+            return
+        snapshots = self._overview_snapshots or {
+            page: ui_stage_snapshot(page, context.latest_dataset)
+            for page in ("avt", "hydrotreating")
+        }
         for page, label in (("avt", "АВТ"), ("hydrotreating", "Гидроочистка")):
-            snapshot = ui_stage_snapshot(page)
+            snapshot = snapshots[page]
             card = self._surface(row)
             card.pack(side="left", fill="x", expand=True, padx=(0, 12), ipady=8)
             tk.Label(card, text=label, bg=SURFACE, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(
@@ -654,8 +765,8 @@ class PetrolCodeApp(tk.Tk):
             tk.Label(
                 card,
                 text=(
-                    f"fresh {snapshot.fresh_count} · stale {snapshot.stale_count} · "
-                    f"missing {snapshot.missing_count}"
+                    f"свежие {snapshot.fresh_count} · устаревшие {snapshot.stale_count} · "
+                    f"нет данных {snapshot.missing_count}"
                 ),
                 bg=SURFACE,
                 fg=TEXT,
@@ -702,6 +813,40 @@ class PetrolCodeApp(tk.Tk):
             anchor="w", padx=18, pady=(0, 14)
         )
 
+    def _load_overview_stage_cards(self, parent: tk.Misc, row: tk.Misc) -> None:
+        self._stage_request_id += 1
+        request_id = self._stage_request_id
+        dataset = self._shared_dataset.get()
+        as_of = self._shared_as_of.get()
+
+        def work() -> None:
+            context = discover_ui_context()
+            snapshots = {
+                page: ui_stage_snapshot(page, dataset, as_of) for page in ("avt", "hydrotreating")
+            }
+
+            def finish() -> None:
+                if request_id != self._stage_request_id or self._page != "overview":
+                    return
+                if not self._widget_exists(parent):
+                    return
+                self._overview_context = context
+                self._overview_key = (dataset, as_of)
+                self._overview_snapshots = snapshots
+                for key, snapshot in snapshots.items():
+                    self._stage_snapshot_cache[
+                        (key, context.latest_dataset or "", snapshot.as_of or "")
+                    ] = snapshot
+                row.destroy()
+                self._render_stage_cards(parent)
+
+            try:
+                self._post_ui(finish)
+            except tk.TclError:
+                return
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _render_stage_page(self, page_key: str) -> None:
         page = self._page_container()
         title = "АВТ" if page_key == "avt" else "Гидроочистка"
@@ -715,9 +860,8 @@ class PetrolCodeApp(tk.Tk):
             anchor="w", pady=(2, 18)
         )
 
-        context = discover_ui_context()
-        dataset_var = tk.StringVar(value=context.latest_dataset or "")
-        as_of_var = tk.StringVar(value=default_as_of_for_dataset(dataset_var.get() or None))
+        dataset_var = self._shared_dataset
+        as_of_var = self._shared_as_of
         controls = self._surface(page)
         controls.pack(fill="x", pady=(0, 14), padx=0)
         inner = tk.Frame(controls, bg=SURFACE)
@@ -726,15 +870,40 @@ class PetrolCodeApp(tk.Tk):
         left.pack(side="left", fill="x", expand=True, padx=(0, 14))
         right = tk.Frame(inner, bg=SURFACE)
         right.pack(side="left", fill="x", expand=True)
-        self._field(left, "Prepared dataset", dataset_var)
-        self._field(right, "As of (ISO timezone)", as_of_var)
+        self._field(left, "Исторические данные", dataset_var)
+        self._field(right, "Момент данных (ISO с timezone)", as_of_var)
         content = tk.Frame(page, bg=BG)
         content.pack(fill="both", expand=True)
 
-        def draw() -> None:
+        def draw(snapshot: UiStageSnapshot | None = None) -> None:
             for child in content.winfo_children():
                 child.destroy()
-            snapshot = ui_stage_snapshot(page_key, dataset_var.get() or None, as_of_var.get())
+            if snapshot is None:
+                self._text_content(content, "Загрузка исторических данных…")
+                self._stage_request_id += 1
+                request_id = self._stage_request_id
+                dataset = dataset_var.get() or None
+                as_of = as_of_var.get().strip() or None
+
+                def work() -> None:
+                    result = ui_stage_snapshot(page_key, dataset, as_of)
+
+                    def finish() -> None:
+                        if request_id != self._stage_request_id or self._page != page_key:
+                            return
+                        if not self._widget_exists(content):
+                            return
+                        if result.as_of:
+                            as_of_var.set(result.as_of)
+                        draw(result)
+
+                    try:
+                        self._post_ui(finish)
+                    except tk.TclError:
+                        return
+
+                threading.Thread(target=work, daemon=True).start()
+                return
             self._render_stage_snapshot(content, snapshot)
 
         self._primary_button(inner, "Обновить", draw).pack(side="right", padx=(14, 0), pady=20)
@@ -744,11 +913,11 @@ class PetrolCodeApp(tk.Tk):
         summary = self._surface(parent)
         summary.pack(fill="x", pady=(0, 14))
         for label, value in (
-            ("Dataset", snapshot.dataset_id or "—"),
-            ("As of", snapshot.as_of or "—"),
-            ("Fresh", str(snapshot.fresh_count)),
-            ("Stale", str(snapshot.stale_count)),
-            ("Missing", str(snapshot.missing_count)),
+            ("Набор данных", snapshot.dataset_id or "—"),
+            ("Момент данных", snapshot.as_of or "—"),
+            ("Свежие", str(snapshot.fresh_count)),
+            ("Устаревшие", str(snapshot.stale_count)),
+            ("Нет данных", str(snapshot.missing_count)),
         ):
             cell = tk.Frame(summary, bg=SURFACE)
             cell.pack(side="left", fill="x", expand=True, padx=18, pady=16)
@@ -1091,22 +1260,23 @@ class PetrolCodeApp(tk.Tk):
         tk.Label(
             page,
             text=(
-                "Исторический forecast read-only; actionable setpoints показываются "
-                "только с verified action artifact."
+                "Исторические данные и прогноз серы в режиме только чтение. "
+                "Реальные действия не рекомендуются."
             ),
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 11),
         ).pack(anchor="w", pady=(2, 18))
         context = discover_ui_context()
-        dataset_var = tk.StringVar(value=context.latest_dataset or "")
+        dataset_var = self._shared_dataset
         model_var = tk.StringVar(
-            value=context.forecast_artifacts[-1].path if context.forecast_artifacts else ""
+            value=context.forecast_artifacts[0].path if context.forecast_artifacts else ""
         )
         action_var = tk.StringVar(
-            value=context.action_artifacts[-1].path if context.action_artifacts else ""
+            value=context.action_artifacts[0].path if context.action_artifacts else ""
         )
-        as_of_var = tk.StringVar(value=default_as_of_for_dataset(dataset_var.get() or None))
+        as_of_var = self._shared_as_of
+        interval_to_var = tk.StringVar(value="2025-06-01T18:00:00+03:00")
         fields = self._surface(page)
         fields.pack(fill="x", pady=(0, 14))
         grid = tk.Frame(fields, bg=SURFACE)
@@ -1117,10 +1287,11 @@ class PetrolCodeApp(tk.Tk):
         left.grid(row=0, column=0, sticky="ew", padx=(0, 12))
         right = tk.Frame(grid, bg=SURFACE)
         right.grid(row=0, column=1, sticky="ew", padx=(12, 0))
-        self._field(left, "Prepared dataset", dataset_var)
-        self._field(left, "Forecast artifact", model_var)
-        self._field(right, "As of (ISO timezone)", as_of_var)
-        self._field(right, "Verified action artifact (optional)", action_var)
+        self._field(left, "Исторические данные", dataset_var)
+        self._field(left, "Прогноз серы", model_var)
+        self._field(right, "Момент данных (ISO с timezone)", as_of_var)
+        self._field(right, "Артефакт действий (не используется)", action_var)
+        self._field(right, "Конец исторического интервала (ISO с timezone)", interval_to_var)
         output = tk.Text(page, height=24, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
         output.pack(fill="both", expand=True)
 
@@ -1140,16 +1311,28 @@ class PetrolCodeApp(tk.Tk):
             view = ui_history_snapshot(dataset, model, as_of, action_model)
 
             def finish() -> None:
-                if request_id != self._history_request_id:
+                if (
+                    request_id != self._history_request_id
+                    or self._page != "history"
+                    or not self._widget_exists(output)
+                ):
                     return
                 self._history_view = view
+                self._history_export_payload = view.raw
+                self._history_interval_text = None
                 if output.winfo_exists():
                     render(view)
 
-            self.after(0, finish)
+            self._post_ui(finish)
 
         def start_calculation() -> None:
             self._history_request_id += 1
+            self._interval_cancel.set()
+            self._history_export_payload = None
+            output.configure(state="normal")
+            output.delete("1.0", "end")
+            output.insert("1.0", "Расчёт исторического прогноза…")
+            output.configure(state="disabled")
             threading.Thread(
                 target=calculate,
                 args=(
@@ -1162,21 +1345,108 @@ class PetrolCodeApp(tk.Tk):
                 daemon=True,
             ).start()
 
+        def calculate_interval() -> None:
+            self._history_request_id += 1
+            self._interval_cancel.set()
+            cancel = threading.Event()
+            self._interval_cancel = cancel
+            self._history_export_payload = None
+            request_id = self._history_request_id
+            dataset = dataset_var.get().strip()
+            model = model_var.get().strip()
+            try:
+                start = datetime.fromisoformat(as_of_var.get().replace("Z", "+00:00"))
+                end = datetime.fromisoformat(interval_to_var.get().replace("Z", "+00:00"))
+                if start.tzinfo is None or end.tzinfo is None:
+                    raise ValueError("обе границы интервала должны содержать timezone")
+            except (TypeError, ValueError) as exc:
+                self._history_interval_text = f"Ошибка ввода интервала: {exc}"
+                output.configure(state="normal")
+                output.delete("1.0", "end")
+                output.insert("1.0", self._history_interval_text)
+                output.configure(state="disabled")
+                return
+
+            def progress(done: int, total: int) -> None:
+                def show_progress() -> None:
+                    if request_id != self._history_request_id or not self._widget_exists(output):
+                        return
+                    output.configure(state="normal")
+                    output.delete("1.0", "end")
+                    output.insert(
+                        "1.0",
+                        f"Исторический интервал: {done} / {total} точек.\n"
+                        "Отмена завершится после текущей точки.\n"
+                        "Начальная загрузка данных может занять несколько секунд.",
+                    )
+                    output.configure(state="disabled")
+
+                self._post_ui(show_progress)
+
+            progress(0, 0)
+
+            def work() -> None:
+                payload = None
+                try:
+                    payload = history_interval_command(
+                        dataset, model, start, end, progress=progress, cancelled=cancel.is_set
+                    )
+                    title = (
+                        "Интервал отменён. Частичный результат"
+                        if payload.get("cancelled")
+                        else "Исторический интервал"
+                    )
+                    text = title + "\n\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+                except Exception as exc:
+                    text = f"Ошибка интервала: {exc}"
+
+                def finish() -> None:
+                    if request_id != self._history_request_id or self._page != "history":
+                        return
+                    if self._widget_exists(output):
+                        self._history_export_payload = payload
+                        self._history_interval_text = text
+                        output.configure(state="normal")
+                        output.delete("1.0", "end")
+                        output.insert("1.0", text)
+                        output.configure(state="disabled")
+
+                try:
+                    self._post_ui(finish)
+                except tk.TclError:
+                    return
+
+            threading.Thread(target=work, daemon=True).start()
+
         actions = tk.Frame(page, bg=BG)
-        actions.pack(fill="x", pady=(12, 0))
+        actions.pack(fill="x", pady=(0, 12), before=output)
         self._primary_button(
             actions,
-            "Рассчитать history replay",
+            "Рассчитать на выбранный момент",
             start_calculation,
         ).pack(side="left")
         self._secondary_button(actions, "Журнал", lambda: self.show_page("journal")).pack(
             side="left", padx=12
         )
+        self._secondary_button(actions, "Рассчитать интервал", calculate_interval).pack(side="left")
+        self._secondary_button(
+            actions, "Отменить интервал", lambda: self._interval_cancel.set()
+        ).pack(side="left")
+        self._secondary_button(
+            actions, "Экспортировать этот результат", self.export_history_result
+        ).pack(side="left", padx=12)
+        buttons = [child for child in actions.winfo_children() if isinstance(child, tk.Button)]
+        for button in buttons:
+            button.pack_forget()
+        for index, button in enumerate(buttons):
+            button.grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=4)
+        for column in range(3):
+            actions.grid_columnconfigure(column, weight=1)
         render(
             self._history_view
             or UiHistoryReplayView(
                 status="empty",
-                message="Выберите dataset/model и запустите расчёт.",
+                message="Данные и модель уже выбраны. Укажите время и запустите расчёт.",
                 recommendation_status=None,
                 scenario_id=None,
                 model_id=None,
@@ -1192,6 +1462,11 @@ class PetrolCodeApp(tk.Tk):
                 raw=None,
             )
         )
+        if self._history_interval_text is not None:
+            output.configure(state="normal")
+            output.delete("1.0", "end")
+            output.insert("1.0", self._history_interval_text)
+            output.configure(state="disabled")
 
     def _render_hybrid_panel(self, parent: tk.Misc) -> None:
         panel = self._surface(parent)
@@ -1215,11 +1490,11 @@ class PetrolCodeApp(tk.Tk):
             justify="left",
         ).pack(anchor="w", padx=26, pady=(0, 12))
         context = discover_ui_context()
-        dataset_var = tk.StringVar(value=context.latest_dataset or "")
+        dataset_var = self._shared_dataset
         model_var = tk.StringVar(
-            value=context.forecast_artifacts[-1].path if context.forecast_artifacts else ""
+            value=context.forecast_artifacts[0].path if context.forecast_artifacts else ""
         )
-        as_of_var = tk.StringVar(value=default_as_of_for_dataset(dataset_var.get() or None))
+        as_of_var = self._shared_as_of
         form = tk.Frame(panel, bg=SURFACE)
         form.pack(fill="x", padx=26)
         left = tk.Frame(form, bg=SURFACE)
@@ -1228,9 +1503,9 @@ class PetrolCodeApp(tk.Tk):
         middle.pack(side="left", fill="x", expand=True, padx=10)
         right = tk.Frame(form, bg=SURFACE)
         right.pack(side="left", fill="x", expand=True, padx=(10, 0))
-        self._field(left, "Prepared dataset", dataset_var)
-        self._field(middle, "Forecast artifact", model_var)
-        self._field(right, "As of (ISO timezone)", as_of_var)
+        self._field(left, "Исторические данные", dataset_var)
+        self._field(middle, "Прогноз серы", model_var)
+        self._field(right, "Момент данных (ISO с timezone)", as_of_var)
         output = tk.Text(panel, height=10, bg="#FAFBFB", fg=TEXT, bd=0, wrap="word")
         output.pack(fill="x", padx=26, pady=(4, 16))
 
@@ -1240,21 +1515,46 @@ class PetrolCodeApp(tk.Tk):
             output.insert("1.0", format_hybrid_blend_view(view))
             output.configure(state="disabled")
 
-        def calculate() -> None:
-            view = ui_hybrid_snapshot(
-                dataset_var.get().strip() or None,
-                model_var.get().strip() or None,
-                as_of_var.get(),
-            )
-            self.after(0, lambda: render(view))
+        def calculate(request_id: int, dataset: str, model: str, as_of: str) -> None:
+            view = ui_hybrid_snapshot(dataset or None, model or None, as_of)
+
+            def finish() -> None:
+                if request_id != self._hybrid_request_id or self._page != "blend":
+                    return
+                if self._widget_exists(output):
+                    self._hybrid_view = view
+                    render(view)
+
+            try:
+                self._post_ui(finish)
+            except tk.TclError:
+                return
+
+        def start_calculation() -> None:
+            self._hybrid_request_id += 1
+            request_id = self._hybrid_request_id
+            threading.Thread(
+                target=calculate,
+                args=(
+                    request_id,
+                    dataset_var.get().strip(),
+                    model_var.get().strip(),
+                    as_of_var.get(),
+                ),
+                daemon=True,
+            ).start()
 
         self._secondary_button(
             panel,
             "Рассчитать hybrid",
-            lambda: threading.Thread(target=calculate, daemon=True).start(),
+            start_calculation,
         ).pack(anchor="e", padx=26, pady=(0, 16))
+        self._secondary_button(panel, "Экспортировать hybrid", self.export_hybrid_result).pack(
+            anchor="e", padx=26, pady=(0, 16)
+        )
         render(
-            UiHybridBlendView(
+            self._hybrid_view
+            or UiHybridBlendView(
                 status="empty",
                 message="Hybrid не рассчитан.",
                 scenario_id="hybrid_blend",
@@ -1429,14 +1729,28 @@ class PetrolCodeApp(tk.Tk):
             table.heading(key, text=title)
             table.column(key, width=width, anchor="w", stretch=True)
         if view:
+
+            def fraction_text(fraction: float) -> str:
+                percent = f"{fraction * 100:.4f}".rstrip("0").rstrip(".").replace(".", ",")
+                if view.total_mass_t is None:
+                    return f"{percent} %"
+                mass = (
+                    f"{fraction * view.total_mass_t:.4f}".rstrip("0").rstrip(".").replace(".", ",")
+                )
+                return f"{percent} % · {mass} т"
+
             for component in sorted(view.current_fractions):
                 table.insert(
                     "",
                     "end",
                     values=(
                         f"Компонент {component}",
-                        f"{view.current_fractions[component] * 100:.0f} %",
-                        f"{view.proposed_fractions.get(component, 0.0) * 100:.0f} %",
+                        fraction_text(view.current_fractions[component]),
+                        (
+                            "Рецептура не выбрана"
+                            if view.status == RecommendationStatus.ABSTAIN.value
+                            else fraction_text(view.proposed_fractions.get(component, 0.0))
+                        ),
                     ),
                 )
             table.insert(
@@ -1444,8 +1758,12 @@ class PetrolCodeApp(tk.Tk):
                 "end",
                 values=(
                     "Цетаноповышающая присадка",
-                    f"{view.current_additive_fraction * 100:.1f} %",
-                    f"{view.proposed_additive_fraction * 100:.1f} %",
+                    fraction_text(view.current_additive_fraction),
+                    (
+                        "Рецептура не выбрана"
+                        if view.status == RecommendationStatus.ABSTAIN.value
+                        else fraction_text(view.proposed_additive_fraction)
+                    ),
                 ),
             )
         table.pack(fill="x")
@@ -1520,17 +1838,54 @@ class PetrolCodeApp(tk.Tk):
             font=("Consolas", 10),
         )
         detail.grid(row=0, column=1, sticky="nsew", padx=18, pady=18)
+        labels: list[str] = []
         for path in paths:
-            listbox.insert("end", path.parent.name)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                as_of = str(payload.get("as_of", "—"))[:19]
+                scenario = str(payload.get("scenario_id", "расчёт"))
+                status = str(payload.get("status", "—"))
+                run_id = str(payload.get("run_id", path.parent.name))[:8]
+                label = f"{as_of} · {scenario} · {status} · {run_id}"
+            except (OSError, json.JSONDecodeError):
+                label = f"{path.parent.name} · повреждённая запись"
+            labels.append(label)
+            listbox.insert("end", label)
 
         def select(_: tk.Event[Any] | None = None) -> None:
             selection = listbox.curselection()
             if not selection:
                 return
-            payload = json.loads(paths[selection[0]].read_text(encoding="utf-8"))
+            path = paths[selection[0]]
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                metadata_path = path.parent / "metadata.json"
+                metadata = (
+                    json.loads(metadata_path.read_text(encoding="utf-8"))
+                    if metadata_path.is_file()
+                    else {}
+                )
+                summary = (
+                    f"Запуск: {payload.get('run_id', path.parent.name)}\n"
+                    f"Сценарий: {payload.get('scenario_id', '—')}\n"
+                    f"Момент данных: {payload.get('as_of', '—')}\n"
+                    f"Статус: {payload.get('status', '—')}\n"
+                    f"Модель: {payload.get('model_id', '—')}\n"
+                    f"Папка доказательств: {path.parent}\n\n"
+                    "Краткий результат:\n"
+                    f"{payload.get('explanation', '—')}\n\n"
+                    "Полный result.json:\n"
+                )
+                rendered = summary + json.dumps(payload, ensure_ascii=False, indent=2)
+                if metadata:
+                    rendered += "\n\nmetadata.json:\n" + json.dumps(
+                        metadata, ensure_ascii=False, indent=2
+                    )
+            except (OSError, json.JSONDecodeError) as exc:
+                rendered = f"Не удалось открыть текущий запуск: {exc}"
             detail.configure(state="normal")
             detail.delete("1.0", "end")
-            detail.insert("1.0", json.dumps(payload, ensure_ascii=False, indent=2))
+            detail.insert("1.0", rendered)
             detail.configure(state="disabled")
 
         listbox.bind("<<ListboxSelect>>", select)
@@ -1651,9 +2006,9 @@ class PetrolCodeApp(tk.Tk):
                 scenario = load_scenario(PROJECT_ROOT / f"config/scenarios/{scenario_id}.json")
                 result = run_model_demo(scenario_id)
             except Exception as exc:  # UI boundary: render backend failure without crashing Tk.
-                self.after(0, partial(self._calculation_failed, request_id, exc))
+                self._post_ui(partial(self._calculation_failed, request_id, exc))
                 return
-            self.after(0, lambda: self._calculation_done(request_id, result, scenario))
+            self._post_ui(lambda: self._calculation_done(request_id, result, scenario))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1674,6 +2029,59 @@ class PetrolCodeApp(tk.Tk):
         messagebox.showerror("Ошибка расчёта", str(error), parent=self)
         self.show_page(self._page)
 
+    def export_history_result(self) -> None:
+        payload = self._history_export_payload
+        if payload is None:
+            messagebox.showinfo(
+                "Нет исторического результата",
+                "Сначала выполните исторический прогноз.",
+                parent=self,
+            )
+            return
+        destination = filedialog.asksaveasfilename(
+            parent=self,
+            title="Сохранить исторический прогноз",
+            defaultextension=".json",
+            filetypes=(("JSON", "*.json"),),
+            initialfile=f"neftekod-history-{payload.get('model_id') or 'result'}.json",
+        )
+        if not destination:
+            return
+        try:
+            Path(destination).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+                newline="\n",
+            )
+        except OSError as exc:
+            messagebox.showerror("Не удалось сохранить", str(exc), parent=self)
+
+    def export_hybrid_result(self) -> None:
+        if self._hybrid_view is None or self._hybrid_view.status == "empty":
+            messagebox.showinfo(
+                "Нет hybrid-результата",
+                "Сначала выполните условное смешение по прогнозу серы.",
+                parent=self,
+            )
+            return
+        destination = filedialog.asksaveasfilename(
+            parent=self,
+            title="Сохранить hybrid-результат",
+            defaultextension=".json",
+            filetypes=(("JSON", "*.json"),),
+            initialfile="neftekod-hybrid-result.json",
+        )
+        if not destination:
+            return
+        try:
+            Path(destination).write_text(
+                json.dumps(asdict(self._hybrid_view), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+                newline="\n",
+            )
+        except OSError as exc:
+            messagebox.showerror("Не удалось сохранить", str(exc), parent=self)
+
     def export_result(self) -> None:
         if self._result is None:
             messagebox.showinfo("Нет расчёта", "Сначала выполните расчёт.", parent=self)
@@ -1685,10 +2093,14 @@ class PetrolCodeApp(tk.Tk):
             filetypes=(("JSON", "*.json"),),
             initialfile=f"neftekod-{self._result.scenario_id}-{self._result.run_id[:8]}.json",
         )
-        if destination:
+        if not destination:
+            return
+        try:
             Path(destination).write_text(
                 self._result.model_dump_json(indent=2), encoding="utf-8", newline="\n"
             )
+        except OSError as exc:
+            messagebox.showerror("Не удалось сохранить", str(exc), parent=self)
 
     def validate_config(self) -> None:
         try:
@@ -1716,9 +2128,9 @@ class PetrolCodeApp(tk.Tk):
             try:
                 result = prepare_command("materials", "config/runtime.toml")
             except Exception as exc:
-                self.after(0, partial(self._preparation_failed, exc))
+                self._post_ui(partial(self._preparation_failed, exc))
                 return
-            self.after(0, partial(self._preparation_done, result))
+            self._post_ui(partial(self._preparation_done, result))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1742,14 +2154,13 @@ class PetrolCodeApp(tk.Tk):
         dialog.transient(self)
         fields = tk.Frame(dialog, bg=BG)
         fields.pack(fill="both", expand=True, padx=26, pady=22)
-        tk.Label(fields, text="Prepared dataset", bg=BG, fg=TEXT).pack(anchor="w")
-        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
-        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
+        tk.Label(fields, text="Исторические данные", bg=BG, fg=TEXT).pack(anchor="w")
+        dataset_var = self._shared_dataset
         tk.Entry(fields, textvariable=dataset_var, bg=SURFACE, fg=TEXT, bd=1).pack(
             fill="x", pady=(4, 14), ipady=7
         )
-        tk.Label(fields, text="As of (ISO с timezone)", bg=BG, fg=TEXT).pack(anchor="w")
-        as_of_var = tk.StringVar(value="2025-01-15T10:00:00+03:00")
+        tk.Label(fields, text="Момент данных (ISO с timezone)", bg=BG, fg=TEXT).pack(anchor="w")
+        as_of_var = self._shared_as_of
         tk.Entry(fields, textvariable=as_of_var, bg=SURFACE, fg=TEXT, bd=1).pack(
             fill="x", pady=(4, 14), ipady=7
         )
@@ -1777,19 +2188,15 @@ class PetrolCodeApp(tk.Tk):
         dialog.transient(self)
         fields = tk.Frame(dialog, bg=BG)
         fields.pack(fill="both", expand=True, padx=26, pady=22)
-        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
-        artifacts = sorted(
-            (PROJECT_ROOT / "artifacts/models").glob("action-shadow-*/metadata.json"),
-            key=lambda path: path.stat().st_mtime,
-        )
-        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
-        model_var = tk.StringVar(value=str(artifacts[-1].parent) if artifacts else "")
+        dataset_var = self._shared_dataset
+        # Action-shadow artifacts are not part of the live release selection.
+        model_var = tk.StringVar(value="")
         control_var = tk.StringVar(value="ht:P8")
         delta_var = tk.StringVar(value="0.001")
-        at_var = tk.StringVar(value="2025-06-01T12:00:00+03:00")
+        at_var = self._shared_as_of
         for label, variable in (
-            ("Prepared dataset", dataset_var),
-            ("Action shadow artifact", model_var),
+            ("Исторические данные", dataset_var),
+            ("Исследовательский action-артефакт", model_var),
             ("Время состояния (ISO с timezone)", at_var),
             ("Изменение тега в его исходной единице", delta_var),
         ):
@@ -1824,27 +2231,39 @@ class PetrolCodeApp(tk.Tk):
             output.delete("1.0", "end")
             output.insert("1.0", text)
 
-        def calculate() -> None:
+        def calculate(values: dict[str, str]) -> None:
             try:
-                at = datetime.fromisoformat(at_var.get().replace("Z", "+00:00"))
+                at = datetime.fromisoformat(values["at_var"].replace("Z", "+00:00"))
                 if at.tzinfo is None:
                     raise ValueError("время должно содержать timezone")
                 result = action_shadow_estimate_command(
-                    dataset_var.get(),
-                    model_var.get(),
-                    control_var.get(),
-                    float(delta_var.get()),
+                    values["dataset_var"],
+                    values["model_var"],
+                    values["control_var"],
+                    float(values["delta_var"]),
                     at,
                 )
                 text = format_action_shadow_payload(result)
             except Exception as exc:
                 text = f"Ошибка: {exc}"
-            self.after(0, lambda: render(text))
+            self._schedule_dialog_render(dialog, render, text)
 
         self._primary_button(
             fields,
             "Рассчитать исследовательский сценарий",
-            lambda: threading.Thread(target=calculate, daemon=True).start(),
+            lambda: threading.Thread(
+                target=calculate,
+                args=(
+                    {
+                        "at_var": at_var.get(),
+                        "dataset_var": dataset_var.get(),
+                        "model_var": model_var.get(),
+                        "control_var": control_var.get(),
+                        "delta_var": delta_var.get(),
+                    },
+                ),
+                daemon=True,
+            ).start(),
         ).pack(anchor="e", pady=(12, 0))
 
     def open_history_forecast_dialog(self) -> None:
@@ -1856,45 +2275,20 @@ class PetrolCodeApp(tk.Tk):
         dialog.transient(self)
         fields = tk.Frame(dialog, bg=BG)
         fields.pack(fill="both", expand=True, padx=26, pady=22)
-        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
-        artifacts = sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json"))
-        forecast_artifacts: list[Path] = []
-        action_artifacts: list[Path] = []
-        for path in artifacts:
-            if path.parent.name.startswith("action-shadow-"):
-                continue
-            try:
-                metadata = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if metadata.get("artifact_kind") == "action_effect" and metadata.get(
-                "supports_actions"
-            ):
-                action_artifacts.append(path)
-                continue
-            capabilities = metadata.get("capabilities")
-            # LIMS correction consumes the ordinary PAK feature schema.  A v2
-            # episode artifact has derived features and is deliberately not a
-            # drop-in replacement for this delayed control layer.
-            if (
-                metadata.get("schema_version") == "1.0"
-                and isinstance(capabilities, dict)
-                and not capabilities.get("supports_multi_horizon", False)
-            ):
-                forecast_artifacts.append(path)
-        forecast_artifacts.sort(key=lambda path: path.stat().st_mtime)
-        action_artifacts.sort(key=lambda path: path.stat().st_mtime)
-        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
+        context = discover_ui_context()
+        dataset_var = self._shared_dataset
         model_var = tk.StringVar(
-            value=str(forecast_artifacts[-1].parent) if forecast_artifacts else ""
+            value=context.forecast_artifacts[0].path if context.forecast_artifacts else ""
         )
-        action_model_var = tk.StringVar(value="")
-        at_var = tk.StringVar(value="2025-06-01T12:00:00+03:00")
+        action_model_var = tk.StringVar(
+            value=context.action_artifacts[0].path if context.action_artifacts else ""
+        )
+        at_var = self._shared_as_of
         for label, variable in (
-            ("Prepared dataset", dataset_var),
-            ("Forecast artifact", model_var),
+            ("Исторические данные", dataset_var),
+            ("Прогноз серы", model_var),
             (
-                "Verified action artifact (optional)",
+                "Проверенный action-артефакт (необязательно)",
                 action_model_var,
             ),
             ("Время состояния (ISO с timezone)", at_var),
@@ -1921,27 +2315,38 @@ class PetrolCodeApp(tk.Tk):
             output.delete("1.0", "end")
             output.insert("1.0", text)
 
-        def calculate() -> None:
+        def calculate(values: dict[str, str]) -> None:
             try:
-                at = datetime.fromisoformat(at_var.get().replace("Z", "+00:00"))
+                at = datetime.fromisoformat(values["at_var"].replace("Z", "+00:00"))
                 if at.tzinfo is None:
                     raise ValueError("время должно содержать timezone")
-                action_model = action_model_var.get().strip() or None
+                action_model = values["action_model_var"].strip() or None
                 view = ui_history_snapshot(
-                    dataset_var.get(),
-                    model_var.get(),
+                    values["dataset_var"],
+                    values["model_var"],
                     at,
                     action_model,
                 )
                 text = format_history_replay_view(view)
             except Exception as exc:
                 text = f"Ошибка: {exc}"
-            self.after(0, lambda: render(text))
+            self._schedule_dialog_render(dialog, render, text)
 
         self._primary_button(
             fields,
             "Рассчитать прогноз",
-            lambda: threading.Thread(target=calculate, daemon=True).start(),
+            lambda: threading.Thread(
+                target=calculate,
+                args=(
+                    {
+                        "at_var": at_var.get(),
+                        "action_model_var": action_model_var.get(),
+                        "dataset_var": dataset_var.get(),
+                        "model_var": model_var.get(),
+                    },
+                ),
+                daemon=True,
+            ).start(),
         ).pack(anchor="e", pady=(12, 0))
 
     def open_v2_forecast_dialog(self) -> None:
@@ -1953,27 +2358,13 @@ class PetrolCodeApp(tk.Tk):
         dialog.transient(self)
         fields = tk.Frame(dialog, bg=BG)
         fields.pack(fill="both", expand=True, padx=26, pady=22)
-        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
-        v2_artifacts: list[Path] = []
-        for metadata_path in sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json")):
-            try:
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            capabilities = metadata.get("capabilities")
-            if (
-                metadata.get("schema_version") == "1.2"
-                and isinstance(capabilities, dict)
-                and capabilities.get("supports_multi_horizon")
-            ):
-                v2_artifacts.append(metadata_path)
-        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
-        v2_artifacts.sort(key=lambda path: path.stat().st_mtime)
-        model_var = tk.StringVar(value=str(v2_artifacts[-1].parent) if v2_artifacts else "")
-        at_var = tk.StringVar(value="2025-06-01T12:00:00+03:00")
+        context = discover_ui_context()
+        dataset_var = self._shared_dataset
+        model_var = tk.StringVar(value=context.v2_artifacts[0].path if context.v2_artifacts else "")
+        at_var = self._shared_as_of
         for label, variable in (
-            ("Prepared dataset", dataset_var),
-            ("Schema-1.2 shadow artifact", model_var),
+            ("Исторические данные", dataset_var),
+            ("Shadow-артефакт v2", model_var),
             ("Время состояния (ISO с timezone)", at_var),
         ):
             tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
@@ -1999,21 +2390,31 @@ class PetrolCodeApp(tk.Tk):
             output.delete("1.0", "end")
             output.insert("1.0", text)
 
-        def calculate() -> None:
+        def calculate(values: dict[str, str]) -> None:
             try:
-                at = datetime.fromisoformat(at_var.get().replace("Z", "+00:00"))
+                at = datetime.fromisoformat(values["at_var"].replace("Z", "+00:00"))
                 if at.tzinfo is None:
                     raise ValueError("время должно содержать timezone")
-                result = replay_v2_shadow_command(dataset_var.get(), model_var.get(), at)
+                result = replay_v2_shadow_command(values["dataset_var"], values["model_var"], at)
                 text = format_v2_forecast_payload(result)
             except Exception as exc:
                 text = f"Ошибка: {exc}"
-            self.after(0, lambda: render(text))
+            self._schedule_dialog_render(dialog, render, text)
 
         self._primary_button(
             fields,
             "Рассчитать episode forecast",
-            lambda: threading.Thread(target=calculate, daemon=True).start(),
+            lambda: threading.Thread(
+                target=calculate,
+                args=(
+                    {
+                        "at_var": at_var.get(),
+                        "dataset_var": dataset_var.get(),
+                        "model_var": model_var.get(),
+                    },
+                ),
+                daemon=True,
+            ).start(),
         ).pack(anchor="e", pady=(12, 0))
 
     def open_lims_correction_dialog(self) -> None:
@@ -2025,31 +2426,14 @@ class PetrolCodeApp(tk.Tk):
         dialog.transient(self)
         fields = tk.Frame(dialog, bg=BG)
         fields.pack(fill="both", expand=True, padx=26, pady=22)
-        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
-        artifacts = sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json"))
-        forecast_artifacts: list[Path] = []
-        for path in artifacts:
-            if path.parent.name.startswith("action-shadow-"):
-                continue
-            try:
-                metadata = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            capabilities = metadata.get("capabilities")
-            if (
-                metadata.get("schema_version") == "1.0"
-                and isinstance(capabilities, dict)
-                and not capabilities.get("supports_multi_horizon", False)
-            ):
-                forecast_artifacts.append(path)
-        forecast_artifacts.sort(key=lambda path: path.stat().st_mtime)
-        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
+        context = discover_ui_context()
+        dataset_var = self._shared_dataset
         model_var = tk.StringVar(
-            value=str(forecast_artifacts[-1].parent) if forecast_artifacts else ""
+            value=context.forecast_artifacts[0].path if context.forecast_artifacts else ""
         )
         for label, variable in (
-            ("Prepared dataset", dataset_var),
-            ("PAK forecast artifact", model_var),
+            ("Исторические данные", dataset_var),
+            ("Прогноз ПАК", model_var),
         ):
             tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
             tk.Entry(fields, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1).pack(
@@ -2074,18 +2458,24 @@ class PetrolCodeApp(tk.Tk):
             output.delete("1.0", "end")
             output.insert("1.0", text)
 
-        def calculate() -> None:
+        def calculate(values: dict[str, str]) -> None:
             try:
-                result = evaluate_lims_correction_command(dataset_var.get(), model_var.get())
+                result = evaluate_lims_correction_command(
+                    values["dataset_var"], values["model_var"]
+                )
                 text = json.dumps(result, ensure_ascii=False, indent=2)
             except Exception as exc:
                 text = f"Ошибка: {exc}"
-            self.after(0, lambda: render(text))
+            self._schedule_dialog_render(dialog, render, text)
 
         self._primary_button(
             fields,
             "Оценить LIMS-коррекцию",
-            lambda: threading.Thread(target=calculate, daemon=True).start(),
+            lambda: threading.Thread(
+                target=calculate,
+                args=({"dataset_var": dataset_var.get(), "model_var": model_var.get()},),
+                daemon=True,
+            ).start(),
         ).pack(anchor="e", pady=(12, 0))
 
 

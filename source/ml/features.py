@@ -261,24 +261,22 @@ def _last_available_quality(
     events = observations.sort_values(
         ["available_at", "measured_at", "observation_id"], kind="stable"
     ).reset_index(drop=True)
-    query_order = sorted(range(len(queries)), key=lambda position: queries[position])
-    event_index = 0
-    latest_measured_at: pd.Timestamp | None = None
-    latest_value = np.nan
-    for position in query_order:
-        query = queries[position]
-        while event_index < len(events):
-            available_at = pd.Timestamp(cast(Any, events.at[event_index, "available_at"]))
-            if available_at > query:
-                break
-            measured_at = pd.Timestamp(cast(Any, events.at[event_index, "measured_at"]))
-            if latest_measured_at is None or measured_at > latest_measured_at:
-                latest_measured_at = measured_at
-                latest_value = float(cast(Any, events.at[event_index, "value"]))
-            event_index += 1
-        if latest_measured_at is not None and latest_measured_at <= query:
-            values[position] = latest_value
-            ages[position] = (query - latest_measured_at).total_seconds() / 60.0
+    available = pd.DatetimeIndex(events["available_at"]).as_unit("ns").astype("int64").to_numpy()
+    measured = pd.DatetimeIndex(events["measured_at"]).as_unit("ns").astype("int64").to_numpy()
+    query_times = queries.as_unit("ns").astype("int64").to_numpy()
+    # Prefix records preserve the latest *measured* reading, even when an older
+    # lab sample is published later. Search publication time, never future data.
+    latest_measured = np.maximum.accumulate(measured)
+    new_record = np.r_[True, measured[1:] > latest_measured[:-1]]
+    latest_index = np.maximum.accumulate(np.where(new_record, np.arange(len(events)), 0))
+    event_positions = np.searchsorted(available, query_times, side="right") - 1
+    visible = event_positions >= 0
+    positions = np.flatnonzero(visible)
+    selected = latest_index[event_positions[visible]]
+    safe = measured[selected] <= query_times[visible]
+    positions, selected = positions[safe], selected[safe]
+    values[positions] = events["value"].to_numpy(dtype=float)[selected]
+    ages[positions] = (query_times[positions] - measured[selected]) / 60_000_000_000.0
     return values, ages
 
 

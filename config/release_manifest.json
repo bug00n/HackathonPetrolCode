@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "release_id": "neftekod-dev-2026-09-21",
+  "prepared_dataset": "data/processed/66bdfcbb23b4",
+  "forecast_artifact": "artifacts/models/sulfur-upper-33efba3c3141",
+  "v2_artifact": "artifacts/models/sulfur-v2-shadow-61f972d07181",
+  "action_artifact": null,
+  "action_report": null,
+  "notes": [
+    "The pinned forecast and v2 artifacts are compatible with the pinned prepared dataset.",
+    "Action effects remain research-only; no production action artifact is enabled.",
+    "Paths are relative to the release root and must not be replaced by newest-file discovery."
+  ]
+}

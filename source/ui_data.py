@@ -81,6 +81,7 @@ class UiArtifactOption:
     artifact_kind: str
     supports_actions: bool
     supports_multi_horizon: bool
+    training_dataset_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,7 @@ class UiContext:
     forecast_artifacts: tuple[UiArtifactOption, ...]
     action_artifacts: tuple[UiArtifactOption, ...]
     v2_artifacts: tuple[UiArtifactOption, ...]
+    release_id: str | None = None
 
 
 def list_prepared_datasets(root: Path = PROJECT_ROOT) -> tuple[Path, ...]:
@@ -165,6 +167,35 @@ def list_prepared_datasets(root: Path = PROJECT_ROOT) -> tuple[Path, ...]:
     data_root = _resolve(config.data_dir, root)
     manifests = [path for path in data_root.glob("*/manifest.json") if path.is_file()]
     return tuple(path.parent for path in sorted(manifests, key=lambda item: item.stat().st_mtime))
+
+
+def _release_manifest(root: Path) -> dict[str, Any]:
+    """Read the optional release pin without making it a runtime dependency."""
+    path = root / "config/release_manifest.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _manifest_dataset_id(path: Path) -> str | None:
+    try:
+        payload = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("dataset_id")
+    return str(value) if value else None
+
+
+def _release_path(root: Path, key: str) -> Path | None:
+    value = _release_manifest(root).get(key)
+    if not isinstance(value, str) or not value:
+        return None
+    path = _resolve(value, root)
+    return path if path.exists() else None
 
 
 def latest_prepared_dataset(root: Path = PROJECT_ROOT) -> Path | None:
@@ -182,6 +213,8 @@ def list_model_artifacts(root: Path = PROJECT_ROOT) -> tuple[UiArtifactOption, .
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        if not isinstance(metadata, dict):
+            continue
         capabilities = metadata.get("capabilities")
         if not isinstance(capabilities, dict):
             capabilities = {}
@@ -198,6 +231,11 @@ def list_model_artifacts(root: Path = PROJECT_ROOT) -> tuple[UiArtifactOption, .
                     or capabilities.get("supports_actions") is True
                 ),
                 supports_multi_horizon=bool(capabilities.get("supports_multi_horizon")),
+                training_dataset_id=(
+                    str(metadata["training_dataset_id"])
+                    if metadata.get("training_dataset_id")
+                    else None
+                ),
             )
         )
     return tuple(result)
@@ -205,27 +243,60 @@ def list_model_artifacts(root: Path = PROJECT_ROOT) -> tuple[UiArtifactOption, .
 
 def discover_ui_context(root: Path = PROJECT_ROOT) -> UiContext:
     artifacts = list_model_artifacts(root)
-    forecast = tuple(
+    manifest = _release_manifest(root)
+    configured_dataset = _release_path(root, "prepared_dataset")
+    latest = configured_dataset if "prepared_dataset" in manifest else latest_prepared_dataset(root)
+    dataset_id = _manifest_dataset_id(latest) if latest is not None else None
+
+    def compatible(item: UiArtifactOption) -> bool:
+        return item.training_dataset_id in {None, dataset_id}
+
+    def configured_artifact(
+        key: str, items: tuple[UiArtifactOption, ...]
+    ) -> tuple[UiArtifactOption, ...]:
+        preferred = _release_path(root, key)
+        if preferred is None:
+            return ()
+        return tuple(item for item in items if Path(item.path).resolve() == preferred.resolve())
+
+    all_forecast = tuple(
         item
         for item in artifacts
         if item.schema_version == "1.0"
         and not item.supports_multi_horizon
-        and item.artifact_kind != "action_effect"
+        and item.artifact_kind == "forecast"
     )
+    all_v2 = tuple(
+        item for item in artifacts if item.schema_version == "1.2" and item.supports_multi_horizon
+    )
+    configured_forecast = configured_artifact("forecast_artifact", all_forecast)
+    configured_v2 = configured_artifact("v2_artifact", all_v2)
+    forecast = tuple(item for item in all_forecast if compatible(item))
     action = tuple(
         item
         for item in artifacts
         if item.artifact_kind == "action_effect" and item.supports_actions
     )
-    v2 = tuple(
-        item for item in artifacts if item.schema_version == "1.2" and item.supports_multi_horizon
-    )
-    latest = latest_prepared_dataset(root)
+    v2 = tuple(item for item in all_v2 if compatible(item))
+    # A pinned serving model may have been trained on an earlier compatible
+    # snapshot.  Its metadata is still checked by the serving loader; the
+    # release manifest is the explicit permission to use this pairing.
+    if "forecast_artifact" in manifest:
+        forecast = configured_forecast
+    if "v2_artifact" in manifest:
+        v2 = configured_v2
+    if "action_artifact" in manifest:
+        action = configured_artifact("action_artifact", action)
     return UiContext(
         latest_dataset=str(latest) if latest is not None else None,
         forecast_artifacts=forecast,
         action_artifacts=action,
         v2_artifacts=v2,
+        release_id=(
+            str(_release_manifest(root).get("release_id"))
+            if _release_manifest(root).get("release_id")
+            else None
+        ),
     )
 
 
@@ -361,7 +432,7 @@ def ui_history_snapshot(
             recommendation_status=None,
             scenario_id=None,
             model_id=None,
-            as_of=_parse_as_of(as_of).isoformat() if as_of else None,
+            as_of=_safe_as_of_text(as_of),
             sulfur_point=None,
             sulfur_upper=None,
             upper_status="unknown",
@@ -543,6 +614,8 @@ def _resolve(path: str | Path, root: Path) -> Path:
 def _dataset_path(dataset: str | Path | None, root: Path) -> Path | None:
     if dataset:
         return _resolve(dataset, root)
+    if "prepared_dataset" in _release_manifest(root):
+        return _release_path(root, "prepared_dataset")
     return latest_prepared_dataset(root)
 
 
@@ -565,6 +638,17 @@ def _parse_as_of(value: datetime | str) -> datetime:
     return timestamp.astimezone(UTC)
 
 
+def _safe_as_of_text(value: datetime | str | None) -> str | None:
+    """Keep an invalid user value visible without parsing it a second time."""
+    if value is None:
+        return None
+    try:
+        return _parse_as_of(value).isoformat()
+    except (TypeError, ValueError, OverflowError):
+        text = str(value).strip()
+        return text or None
+
+
 def _default_as_of(data: PreparedData) -> datetime:
     candidates: list[pd.Timestamp] = []
     if "timestamp" in data.telemetry.columns:
@@ -577,7 +661,12 @@ def _default_as_of(data: PreparedData) -> datetime:
             candidates.append(available.max())
     if not candidates:
         return datetime.now(UTC)
-    return max(candidates).to_pydatetime()
+    # Use a moment covered by both telemetry and quality.  Choosing the latest
+    # quality timestamp can put the initial screen after telemetry has ended,
+    # making every process signal look stale before the operator does anything.
+    if len(candidates) > 1:
+        return min(candidates).to_pydatetime()
+    return candidates[0].to_pydatetime()
 
 
 def _signal_row(
@@ -641,7 +730,7 @@ def _select_observation(
 ) -> dict[str, Any] | None:
     candidates: list[dict[str, Any]] = []
     if signal_id in data.quality.get("signal_id", pd.Series(dtype=str)).astype(str).values:
-        frame = data.quality.copy()
+        frame = data.quality.loc[data.quality["signal_id"].astype(str).eq(signal_id)].copy()
         frame["measured_at"] = pd.to_datetime(frame["measured_at"], utc=True, errors="coerce")
         frame["available_at"] = pd.to_datetime(frame["available_at"], utc=True, errors="coerce")
         visible = frame[
@@ -651,7 +740,12 @@ def _select_observation(
             & (frame["validity"].astype(str) == "valid")
             & frame["value"].notna()
         ]
-        for _, row in visible.iterrows():
+        latest = (
+            visible.sort_values("measured_at", ascending=False, kind="stable")
+            .groupby("source", sort=False)
+            .head(1)
+        )
+        for _, row in latest.iterrows():
             candidates.append(
                 {
                     "source": str(row["source"]),
@@ -662,7 +756,7 @@ def _select_observation(
                 }
             )
     if signal_id in data.telemetry.columns and "timestamp" in data.telemetry.columns:
-        frame = data.telemetry.copy()
+        frame = data.telemetry.loc[:, ["timestamp", signal_id]].copy()
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
         visible = frame[frame["timestamp"] <= pd.Timestamp(as_of)]
         values = pd.to_numeric(visible[signal_id], errors="coerce")

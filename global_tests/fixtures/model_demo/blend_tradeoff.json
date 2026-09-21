@@ -1,0 +1,12 @@
+{
+  "state": {
+    "schema_version": "1.0",
+    "state_id": "fixture-state-tradeoff",
+    "as_of": "2026-01-15T09:00:00Z",
+    "dataset_id": "modeldemo001",
+    "mode": "model_demo",
+    "signals": {},
+    "issues": []
+  },
+  "expected": {"status": "recommend"}
+}

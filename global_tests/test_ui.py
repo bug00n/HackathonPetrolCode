@@ -257,6 +257,131 @@ def test_stage_snapshot_reports_missing_dataset_gracefully(tmp_path: Path) -> No
     assert "missing prepared dataset files" in snapshot.message
 
 
+def test_release_manifest_pins_one_live_context() -> None:
+    context = ui_data_module.discover_ui_context()
+
+    assert context.release_id == "neftekod-dev-2026-09-21"
+    assert context.latest_dataset is not None
+    assert context.latest_dataset.endswith("66bdfcbb23b4")
+    assert tuple(item.model_id for item in context.forecast_artifacts) == (
+        "sulfur-upper-33efba3c3141",
+    )
+    assert tuple(item.model_id for item in context.v2_artifacts) == (
+        "sulfur-v2-shadow-61f972d07181",
+    )
+    assert context.action_artifacts == ()
+
+
+def test_missing_release_pins_do_not_select_other_available_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = ui_data_module.discover_ui_context()
+    monkeypatch.setattr(
+        ui_data_module,
+        "list_model_artifacts",
+        lambda root: (
+            *context.forecast_artifacts,
+            *context.v2_artifacts,
+        ),
+    )
+    monkeypatch.setattr(ui_data_module, "latest_prepared_dataset", lambda root: tmp_path)
+    monkeypatch.setattr(
+        ui_data_module,
+        "_release_manifest",
+        lambda root: {
+            "prepared_dataset": "missing-data",
+            "forecast_artifact": "missing-model",
+            "v2_artifact": "missing-v2",
+        },
+    )
+
+    missing = ui_data_module.discover_ui_context(tmp_path)
+
+    assert missing.latest_dataset is None
+    assert missing.forecast_artifacts == ()
+    assert missing.v2_artifacts == ()
+    assert ui_data_module._dataset_path(None, tmp_path) is None
+
+
+def test_history_export_uses_displayed_interval_not_previous_point(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import source.ui as ui_module
+
+    destination = tmp_path / "interval.json"
+    payload = {"model_id": "interval-model", "points": 2, "results": []}
+    app = SimpleNamespace(
+        _history_view=history_replay_to_view(_history_recommendation()),
+        _history_export_payload=payload,
+    )
+    monkeypatch.setattr(
+        ui_module.filedialog, "asksaveasfilename", lambda **kwargs: str(destination)
+    )
+
+    ui_module.PetrolCodeApp.export_history_result(app)
+
+    assert json.loads(destination.read_text(encoding="utf-8")) == payload
+
+
+def test_history_interval_ui_retains_and_exports_completed_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tkinter as tk
+    from types import SimpleNamespace
+
+    import source.ui as ui_module
+
+    payload = {"model_id": "interval-model", "points": 2, "results": []}
+    destination = tmp_path / "interval.json"
+    monkeypatch.setattr(ui_module.PetrolCodeApp, "calculate", lambda self: None)
+    monkeypatch.setattr(ui_module, "history_interval_command", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(
+        ui_module.threading, "Thread", lambda target, **kwargs: SimpleNamespace(start=target)
+    )
+    monkeypatch.setattr(
+        ui_module.filedialog, "asksaveasfilename", lambda **kwargs: str(destination)
+    )
+    try:
+        display_probe = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    display_probe.destroy()
+    app = ui_module.PetrolCodeApp(initial_page="history")
+    app.withdraw()
+
+    def descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from descendants(child)
+
+    try:
+        button = next(
+            widget
+            for widget in descendants(app)
+            if isinstance(widget, tk.Button) and widget.cget("text") == "Рассчитать интервал"
+        )
+        button.invoke()
+        app.after(100, app.quit)
+        app.mainloop()
+        assert app._history_export_payload == payload
+        app.show_page("journal")
+        app.show_page("history")
+        assert any(
+            '"points": 2' in widget.get("1.0", "end")
+            for widget in descendants(app)
+            if isinstance(widget, tk.Text)
+        )
+        app.export_history_result()
+        assert json.loads(destination.read_text(encoding="utf-8")) == payload
+    finally:
+        app.destroy()
+
+
 def test_history_snapshot_with_forecast_only_is_not_actionable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -273,6 +398,49 @@ def test_history_snapshot_with_forecast_only_is_not_actionable(
     assert view.sulfur_upper == pytest.approx(11.0)
     assert "ACTION_MODEL_UNAVAILABLE" in view.reason_codes
     assert "Raw recommendation JSON" in format_history_replay_view(view)
+
+
+def test_history_snapshot_reports_invalid_datetime_without_reparsing_failure() -> None:
+    view = ui_history_snapshot("dataset", "model", "21.09.2026")
+
+    assert view.status == "error"
+    assert view.as_of == "21.09.2026"
+    assert view.issues
+
+
+def test_history_interval_reports_each_selected_point(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import source.main as main_module
+    from global_tests.test_stage7_history_serving import _prepared_data, _write_point_model
+    from source.data.prepare import write_prepared_dataset
+    from source.main import history_interval_command
+
+    data = _prepared_data()
+    dataset_path = write_prepared_dataset(data, tmp_path / "processed")
+    model_dir = _write_point_model(tmp_path / "models", data.manifest.tag_dictionary_sha256)
+    loads: list[object] = []
+    original_load = main_module._load_current_prepared_dataset
+
+    def counted_load(*args, **kwargs):
+        loads.append(args[0])
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "_load_current_prepared_dataset", counted_load)
+
+    payload = history_interval_command(
+        dataset_path,
+        model_dir,
+        datetime(2026, 1, 15, 9, tzinfo=UTC),
+        datetime(2026, 1, 15, 10, tzinfo=UTC),
+        run_dir=tmp_path / "runs",
+    )
+
+    assert payload["points"] == 2
+    assert payload["status_counts"] == {"abstain": 2}
+    assert len(loads) == 1
+    assert payload["results"][0]["sulfur"]["point"] == pytest.approx(8.8)
 
 
 def test_history_projection_marks_verified_setpoint_result_actionable() -> None:

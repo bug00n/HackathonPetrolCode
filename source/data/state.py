@@ -110,9 +110,22 @@ def build_state(
     snapshots: dict[str, SignalSnapshot] = {}
     state_issues: list[Issue] = []
     for signal_id in scenario.required_signals:
-        candidates = [
-            _observation(row) for _, row in visible[visible["signal_id"] == signal_id].iterrows()
+        signal_rows = visible[visible["signal_id"] == signal_id].sort_values(
+            "measured_at", ascending=False, kind="stable"
+        )
+        # A state is a snapshot, not a second copy of the historical dataset.
+        # Keep the latest reading and latest usable reading of each source:
+        # an invalid new sample must not hide an older valid observation.
+        usable_rows = signal_rows[
+            signal_rows["validity"].eq(Validity.VALID.value) & signal_rows["value"].notna()
         ]
+        snapshot_rows = pd.concat(
+            [
+                signal_rows.groupby("source", sort=False).head(1),
+                usable_rows.groupby("source", sort=False).head(1),
+            ]
+        ).drop_duplicates("observation_id")
+        candidates = [_observation(row) for _, row in snapshot_rows.iterrows()]
         candidates.extend(
             _telemetry_candidates(
                 telemetry,

@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.1",
+  "run_id": "4b6e5d21-3082-475d-bfd1-77a88203cbcf",
+  "state_id": "e74aa7539b3bcdb6",
+  "as_of": "2025-06-01T13:00:00Z",
+  "scenario_id": "history",
+  "mode": "history",
+  "status": "abstain",
+  "baseline": {
+    "candidate": {
+      "id": "hold",
+      "kind": "hold",
+      "setpoints": {},
+      "blend_mass_fractions": {},
+      "additive_mass_fraction": 0.0,
+      "horizon_minutes": 60,
+      "is_model_scenario": false
+    },
+    "assessments": [
+      {
+        "agent": "quality",
+        "state_id": "e74aa7539b3bcdb6",
+        "candidate_id": "hold",
+        "evaluated_for": "2025-06-01T14:00:00Z",
+        "status": "ok",
+        "metrics": {
+          "sulfur": {
+            "value": 9.455018997192385,
+            "lower": null,
+            "upper": 11.17580083107128,
+            "unit": "mg/kg",
+            "basis": "forecast",
+            "interval_kind": "empirical",
+            "interval_level": 0.95,
+            "reference": "model:sulfur-upper-33efba3c3141",
+            "assumptions": [
+              "60-minute point forecast",
+              "training target source: pak",
+              "supports_forecast does not imply supports_actions",
+              "0.95 empirical coverage is not a safety guarantee"
+            ]
+          }
+        },
+        "issues": []
+      },
+      {
+        "agent": "reliability",
+        "state_id": "e74aa7539b3bcdb6",
+        "candidate_id": "hold",
+        "evaluated_for": "2025-06-01T13:00:00Z",
+        "status": "unavailable",
+        "metrics": {},
+        "issues": [
+          {
+            "code": "RELIABILITY_UNAVAILABLE",
+            "severity": "blocking",
+            "signal_id": null,
+            "detail": "No confirmed severity factors are configured.",
+            "source_ref": null
+          }
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "constraint_id": "product_sulfur",
+        "candidate_id": "hold",
+        "status": "fail",
+        "actual": 11.17580083107128,
+        "lower": null,
+        "upper": 10.0,
+        "unit": "mg/kg",
+        "basis": "tz",
+        "evidence_ref": "materials/ТЗ_нефтекод.docx",
+        "reason_code": "QUALITY_LIMIT"
+      }
+    ],
+    "feasible": false,
+    "rank_key": null
+  },
+  "selected": null,
+  "alternatives": [],
+  "reason_codes": [
+    "RELIABILITY_UNAVAILABLE",
+    "QUALITY_LIMIT",
+    "ACTION_MODEL_UNAVAILABLE"
+  ],
+  "explanation": "Надёжной рекомендации нет: RELIABILITY_UNAVAILABLE, QUALITY_LIMIT, ACTION_MODEL_UNAVAILABLE. Проверки baseline: product_sulfur: fail <= 10 mg/kg, reason=QUALITY_LIMIT, source=materials/ТЗ_нефтекод.docx. Сценарий history требует ручной проверки.",
+  "assumptions": [
+    "Real setpoint controls are disabled until a validated action model exists.",
+    "stage-3 deterministic backend cycle"
+  ],
+  "model_id": "sulfur-upper-33efba3c3141"
+}

@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from source.contracts import RuntimeConfig, ScenarioConfig, TagMeta
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent.parent
+)
 DATA_DIR = PROJECT_ROOT / "data"
 MATERIALS_DIR = PROJECT_ROOT / "materials"
 CONFIG_DIR = PROJECT_ROOT / "config"
