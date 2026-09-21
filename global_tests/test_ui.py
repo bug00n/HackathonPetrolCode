@@ -257,8 +257,42 @@ def test_stage_snapshot_reports_missing_dataset_gracefully(tmp_path: Path) -> No
     assert "missing prepared dataset files" in snapshot.message
 
 
-def test_release_manifest_pins_one_live_context() -> None:
-    context = ui_data_module.discover_ui_context()
+@pytest.fixture
+def release_context_root(tmp_path: Path) -> Path:
+    """Discovery metadata only; CI must not depend on ignored local model files."""
+    source_config = Path(__file__).parents[1] / "config"
+    config = tmp_path / "config"
+    config.mkdir()
+    for name in ("runtime.toml", "release_manifest.json"):
+        (config / name).write_bytes((source_config / name).read_bytes())
+    manifest = json.loads((config / "release_manifest.json").read_text(encoding="utf-8"))
+    dataset = tmp_path / manifest["prepared_dataset"]
+    dataset.mkdir(parents=True)
+    (dataset / "manifest.json").write_text(
+        json.dumps({"dataset_id": dataset.name}), encoding="utf-8"
+    )
+    for key, schema, multi in (
+        ("forecast_artifact", "1.0", False),
+        ("v2_artifact", "1.2", True),
+    ):
+        model = tmp_path / manifest[key]
+        model.mkdir(parents=True)
+        (model / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "model_id": model.name,
+                    "schema_version": schema,
+                    "training_dataset_id": dataset.name,
+                    "capabilities": {"supports_multi_horizon": multi},
+                }
+            ),
+            encoding="utf-8",
+        )
+    return tmp_path
+
+
+def test_release_manifest_pins_one_live_context(release_context_root: Path) -> None:
+    context = ui_data_module.discover_ui_context(release_context_root)
 
     assert context.release_id == "neftekod-dev-2026-09-21"
     assert context.latest_dataset is not None
@@ -275,8 +309,9 @@ def test_release_manifest_pins_one_live_context() -> None:
 def test_missing_release_pins_do_not_select_other_available_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    release_context_root: Path,
 ) -> None:
-    context = ui_data_module.discover_ui_context()
+    context = ui_data_module.discover_ui_context(release_context_root)
     monkeypatch.setattr(
         ui_data_module,
         "list_model_artifacts",
