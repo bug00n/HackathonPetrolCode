@@ -179,6 +179,8 @@ def _forecast_history_quality(
             )
     prediction = float(predict(features)[0])
     upper: float | None = None
+    exceedance_probability: float | None = None
+    alarm = False
     interval_kind = IntervalKind.NONE
     interval_level: float | None = None
     if getattr(capabilities, "supports_uncertainty", False):
@@ -193,18 +195,73 @@ def _forecast_history_quality(
         upper = float(predict_upper(features)[0])
         interval_kind = IntervalKind.EMPIRICAL
         interval_level = 0.95
-    issues: tuple[Issue, ...] = ()
+    issues_list: list[Issue] = []
     status = AssessmentStatus.OK
     if scenario.require_upper_bound and upper is None:
         status = AssessmentStatus.DEGRADED
-        issues = (
+        issues_list.append(
             Issue(
                 code="UNCERTAINTY_UNAVAILABLE",
                 severity=Severity.BLOCKING,
                 signal_id=target_signal,
                 detail="Stage-2 point forecasts have no validated upper interval.",
                 source_ref=f"model:{metadata.model_id}",
+            )
+        )
+    if getattr(capabilities, "supports_exceedance_probability", False):
+        predict_probability = getattr(model, "predict_exceedance_probability", None)
+        predict_alarm = getattr(model, "predict_alarm", None)
+        if not callable(predict_probability) or not callable(predict_alarm):
+            return _unavailable(
+                state,
+                "RISK_MODEL_UNAVAILABLE",
+                target_signal,
+                "The artifact declares exceedance risk but exposes no compatible predictor.",
+            )
+        exceedance_probability = float(predict_probability(features)[0])
+        alarm = bool(predict_alarm(features)[0])
+        if alarm:
+            status = AssessmentStatus.DEGRADED
+            issues_list.append(
+                Issue(
+                    code="SULFUR_EXCEEDANCE_RISK",
+                    severity=Severity.BLOCKING,
+                    signal_id=target_signal,
+                    detail="The calibrated safety head predicts material risk of S > 10 mg/kg.",
+                    source_ref=f"model:{metadata.model_id}",
+                )
+            )
+    metrics = {
+        "sulfur": MetricEstimate(
+            value=prediction,
+            lower=None,
+            upper=upper,
+            unit=target_unit,
+            basis=EstimateBasis.FORECAST,
+            interval_kind=interval_kind,
+            interval_level=interval_level,
+            reference=f"model:{metadata.model_id}",
+            assumptions=(
+                f"{horizon_minutes}-minute point forecast",
+                f"training target source: {metadata.target_source}",
+                "supports_forecast does not imply supports_actions",
+                "0.95 empirical coverage is not a safety guarantee"
+                if upper is not None
+                else "upper estimate unavailable",
             ),
+        )
+    }
+    if exceedance_probability is not None:
+        metrics["sulfur_exceedance_probability"] = MetricEstimate(
+            value=exceedance_probability,
+            lower=None,
+            upper=None,
+            unit="index_0_1",
+            basis=EstimateBasis.FORECAST,
+            interval_kind=IntervalKind.NONE,
+            interval_level=None,
+            reference=f"model:{metadata.model_id}",
+            assumptions=("validation-calibrated probability", "alarm threshold stored in artifact"),
         )
     return AgentAssessment(
         agent=AssessmentAgent.QUALITY,
@@ -212,27 +269,8 @@ def _forecast_history_quality(
         candidate_id="hold",
         evaluated_for=state.as_of + timedelta(minutes=horizon_minutes),
         status=status,
-        metrics={
-            "sulfur": MetricEstimate(
-                value=prediction,
-                lower=None,
-                upper=upper,
-                unit=target_unit,
-                basis=EstimateBasis.FORECAST,
-                interval_kind=interval_kind,
-                interval_level=interval_level,
-                reference=f"model:{metadata.model_id}",
-                assumptions=(
-                    f"{horizon_minutes}-minute point forecast",
-                    f"training target source: {metadata.target_source}",
-                    "supports_forecast does not imply supports_actions",
-                    "0.95 empirical coverage is not a safety guarantee"
-                    if upper is not None
-                    else "upper estimate unavailable",
-                ),
-            )
-        },
-        issues=issues,
+        metrics=metrics,
+        issues=tuple(issues_list),
     )
 
 

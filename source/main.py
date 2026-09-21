@@ -233,14 +233,22 @@ def train_command(
     *,
     target_signal: str = "ht:2:Mg.Sulfur",
     with_uncertainty: bool = False,
+    with_safety: bool = False,
     config_path: str | Path = "config/runtime.toml",
     root: Path = PROJECT_ROOT,
 ) -> dict[str, object]:
     """Train the selected point model and optionally its frozen upper model."""
+    from source.ml.safety import save_safety_model
     from source.ml.train import train_model
     from source.ml.uncertainty import save_stage5_model
 
+<<<<<<< HEAD
     source, target_output = _source_or_output(target_source, output)
+=======
+    if with_safety and not with_uncertainty:
+        raise ValueError("--with-safety requires --with-uncertainty")
+
+>>>>>>> f0ad14f (Complete ML stages and safety diagnostics)
     config = load_runtime_config(_resolve_path(config_path, root))
     revision = _git_revision(root)
     data = load_prepared_dataset(_resolve_path(dataset, root))
@@ -283,7 +291,80 @@ def train_command(
                 "test_applicability_rate": fitted.report["test_applicability_rate"],
             }
         )
+        if with_safety:
+            safety_recipe = f"{data.manifest.dataset_id}:{upper.metadata.model_id}:safety:1.1"
+            safety_id = f"sulfur-safety-{hashlib.sha256(safety_recipe.encode()).hexdigest()[:12]}"
+            safety_path = models_root / safety_id
+            safety, safety_fit = save_safety_model(
+                safety_path,
+                supervised,
+                upper,
+                source_timezone=config.source_timezone,
+                seed=config.seed,
+                include_lightgbm=True,
+            )
+            result.update(
+                {
+                    "safety_model_id": safety.metadata.model_id,
+                    "safety_model_path": safety_path.as_posix(),
+                    "alarm_threshold": safety_fit.report["alarm_threshold"],
+                    "validation_safety": safety_fit.report["validation_policy"],
+                    "test_safety": safety_fit.report["test"],
+                    "test_transition_recall": safety_fit.report["test_transition_recall"],
+                    "test_joint_applicability_rate": safety_fit.report["test_applicability_rate"],
+                }
+            )
     return result
+
+
+def diagnose_ml_command(
+    dataset: str | Path,
+    *,
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Run read-only alignment, drift and telemetry diagnostics."""
+    from source.ml.diagnostics import build_diagnostic_report
+
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    supervised = _supervised_dataset(data, SourceKind.PAK)
+    return build_diagnostic_report(data, supervised)
+
+
+def train_v2_shadow_command(
+    dataset: str | Path,
+    output: str | Path | None = None,
+    *,
+    config_path: str | Path = "config/runtime.toml",
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Train and persist a schema-1.2 artifact that is restricted to shadow use."""
+    from source.ml.v2 import save_episode_safety_model
+
+    config = load_runtime_config(_resolve_path(config_path, root))
+    revision = _git_revision(root)
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    supervised = _supervised_dataset(data, SourceKind.PAK)
+    models_root = _resolve_path(output if output is not None else config.models_dir, root)
+    recipe = f"{data.manifest.dataset_id}:episode-multihorizon:1.2:{revision}"
+    model_id = f"sulfur-v2-shadow-{hashlib.sha256(recipe.encode()).hexdigest()[:12]}"
+    path = models_root / model_id
+    bundle, fitted = save_episode_safety_model(
+        path,
+        data,
+        supervised,
+        git_commit=revision,
+        seed=config.seed,
+    )
+    return {
+        "dataset_id": data.manifest.dataset_id,
+        "model_id": bundle.metadata.model_id,
+        "model_path": path.as_posix(),
+        "schema_version": bundle.metadata.schema_version,
+        "production_status": "shadow_only",
+        "selected_family": fitted.report["selected_family"],
+        "threshold_metrics": fitted.report["threshold_metrics"],
+        "audit_2026": fitted.report["audit_2026"],
+    }
 
 
 def _load_trusted_model(model_path: str | Path, data: PreparedData, root: Path) -> ModelBundle:
@@ -485,6 +566,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="also fit the Stage-5 empirical upper model",
     )
+    train.add_argument(
+        "--with-safety",
+        action="store_true",
+        help="also fit the calibrated safety alarm and joint applicability model",
+    )
+    diagnose = subparsers.add_parser(
+        "diagnose-ml", help="inspect sulfur alignment, temporal drift and candidate signals"
+    )
+    diagnose.add_argument("--dataset", required=True, help="prepared dataset directory")
+    v2 = subparsers.add_parser(
+        "train-v2-shadow", help="train the episode-aware schema-1.2 shadow artifact"
+    )
+    v2.add_argument("--dataset", required=True, help="prepared dataset directory")
+    v2.add_argument("--output", default=None, help="model artifacts root")
+    v2.add_argument("--config", default="config/runtime.toml", help="runtime config path")
     evaluate = subparsers.add_parser(
         "evaluate", help="compare a frozen model with persistence on one temporal split"
     )
@@ -560,9 +656,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.output,
                 target_signal=args.target_signal,
                 with_uncertainty=args.with_uncertainty,
+                with_safety=args.with_safety,
                 config_path=args.config,
             )
             print(json.dumps(training_result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "diagnose-ml":
+            diagnostic_result = diagnose_ml_command(args.dataset)
+            print(json.dumps(diagnostic_result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "train-v2-shadow":
+            v2_result = train_v2_shadow_command(args.dataset, args.output, config_path=args.config)
+            print(json.dumps(v2_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "evaluate":
             evaluation_result = evaluate_command(

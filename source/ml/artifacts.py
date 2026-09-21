@@ -18,7 +18,8 @@ import sklearn
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sklearn.base import BaseEstimator, RegressorMixin
 
-MODEL_METADATA_VERSION: Literal["1.0"] = "1.0"
+MODEL_METADATA_VERSION: Literal["1.2"] = "1.2"
+SUPPORTED_MODEL_METADATA_VERSIONS = frozenset({"1.0", "1.1", "1.2"})
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
@@ -30,6 +31,8 @@ class ModelCapabilities(BaseModel):
     supports_forecast: bool
     supports_actions: bool
     supports_uncertainty: bool = False
+    supports_exceedance_probability: bool = False
+    supports_multi_horizon: bool = False
 
 
 class ModelMetadata(BaseModel):
@@ -38,7 +41,7 @@ class ModelMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
 
     model_id: str
-    schema_version: Literal["1.0"] = MODEL_METADATA_VERSION
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.0"
     model_sha256: str = Field(pattern=_SHA256_PATTERN)
     model_type: str
     training_dataset_id: str
@@ -85,6 +88,8 @@ class ModelMetadata(BaseModel):
             raise ValueError("a stage-2 artifact must support forecasting")
         if self.capabilities.supports_actions:
             raise ValueError("a stage-2 forecast cannot claim action support")
+        if self.capabilities.supports_multi_horizon and self.schema_version != "1.2":
+            raise ValueError("multi-horizon capability requires schema 1.2")
         return self
 
 
@@ -156,9 +161,100 @@ class ModelBundle:
             raise ValueError("upper prediction cannot be below point prediction")
         return prediction
 
+    def predict_exceedance_probability(self, features: pd.DataFrame) -> np.ndarray:
+        """Return a calibrated probability only when the artifact declares it."""
+        if not self.metadata.capabilities.supports_exceedance_probability:
+            raise ValueError("model artifact does not declare exceedance probability support")
+        self._check_feature_order(features)
+        predict_probability = getattr(self.predictor, "predict_exceedance_probability", None)
+        if not callable(predict_probability):
+            raise ValueError(
+                "safety predictor must expose predict_exceedance_probability(features)"
+            )
+        probability = np.asarray(predict_probability(features), dtype=float)
+        if probability.shape != (len(features),) or not np.isfinite(probability).all():
+            raise ValueError("risk predictor must return one finite value per feature row")
+        if np.any((probability < 0.0) | (probability > 1.0)):
+            raise ValueError("exceedance probabilities must be in [0, 1]")
+        return probability
+
+    def predict_alarm(self, features: pd.DataFrame) -> np.ndarray:
+        """Apply the validation-selected threshold stored in the predictor."""
+        self.predict_exceedance_probability(features)
+        predict_alarm = getattr(self.predictor, "predict_alarm", None)
+        if not callable(predict_alarm):
+            raise ValueError("safety predictor must expose predict_alarm(features)")
+        alarm = np.asarray(predict_alarm(features), dtype=bool)
+        if alarm.shape != (len(features),):
+            raise ValueError("alarm predictor must return one flag per feature row")
+        return alarm
+
+    def predict_safety(self, features: pd.DataFrame) -> list[dict[str, object]]:
+        """Return the complete schema-1.1 safety contract for every row."""
+        point = self.predict(features)
+        upper = self.predict_upper(features)
+        probability = self.predict_exceedance_probability(features)
+        alarm = self.predict_alarm(features)
+        rows: list[dict[str, object]] = []
+        for position in range(len(features)):
+            applicability = self.check_applicability(features.iloc[[position]])
+            available = bool(getattr(applicability, "available", False))
+            reason = getattr(applicability, "reason_code", None)
+            rows.append(
+                {
+                    "point": float(point[position]),
+                    "upper": float(upper[position]),
+                    "exceedance_probability": float(probability[position]),
+                    "alarm": bool(alarm[position]),
+                    "applicable": available,
+                    "reason_codes": () if reason is None else (str(reason),),
+                }
+            )
+        return rows
+
+    def predict_v2(self, features: pd.DataFrame) -> list[dict[str, object]]:
+        """Return the schema-1.2 multi-horizon contract after capability checks."""
+        if not self.metadata.capabilities.supports_multi_horizon:
+            raise ValueError("model artifact does not declare multi-horizon support")
+        self._check_feature_order(features)
+        predict = getattr(self.predictor, "predict_v2", None)
+        if not callable(predict):
+            raise ValueError("v2 predictor must expose predict_v2(features)")
+        rows = predict(features)
+        if not isinstance(rows, list) or len(rows) != len(features):
+            raise ValueError("v2 predictor must return one object per feature row")
+        required = {
+            "point",
+            "upper",
+            "exceedance_probability",
+            "alarm",
+            "horizon_probabilities",
+            "crossing_probability_60m",
+            "event_alarm",
+            "predicted_delta",
+            "point_60m",
+            "upper_60m",
+            "applicable",
+            "reason_codes",
+        }
+        if any(not isinstance(row, Mapping) or not required.issubset(row) for row in rows):
+            raise ValueError("v2 predictor returned an incomplete safety contract")
+        return rows
+
+    def _check_feature_order(self, features: pd.DataFrame) -> None:
+        actual = tuple(str(name) for name in features.columns)
+        if actual != self.metadata.feature_names:
+            raise ValueError(
+                f"feature order mismatch: expected {self.metadata.feature_names}, received {actual}"
+            )
+
     def check_applicability(self, features: pd.DataFrame) -> object:
         """Check persisted train-only feature bounds before a Stage-5 forecast."""
         from source.ml.uncertainty import ApplicabilityResult, check_applicability
+
+        joint_check = getattr(self.predictor, "check_applicability", None)
+        if callable(joint_check):
+            return joint_check(features)
 
         raw_bounds = self.metadata.applicability.get("feature_bounds")
         if not isinstance(raw_bounds, Mapping):
@@ -239,7 +335,7 @@ def load_model(
     directory: Path,
     *,
     trusted: bool = False,
-    expected_schema_version: str = MODEL_METADATA_VERSION,
+    expected_schema_version: str | None = None,
     expected_horizon_minutes: int | None = None,
     expected_feature_names: Sequence[str] | None = None,
     expected_feature_schema_hash: str | None = None,
@@ -257,7 +353,9 @@ def load_model(
     metadata = ModelMetadata.model_validate_json(metadata_path.read_text(encoding="utf-8"))
     if metadata.model_id != directory.name:
         raise ValueError("metadata model_id does not match the artifact directory")
-    if metadata.schema_version != expected_schema_version:
+    if metadata.schema_version not in SUPPORTED_MODEL_METADATA_VERSIONS:
+        raise ValueError("model schema version is unsupported")
+    if expected_schema_version is not None and metadata.schema_version != expected_schema_version:
         raise ValueError("model schema version is incompatible")
     if _python_major_minor(metadata.python_version) != platform.python_version_tuple()[:2]:
         raise ValueError("model Python version is incompatible")
@@ -309,6 +407,7 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 __all__ = [
     "MODEL_METADATA_VERSION",
+    "SUPPORTED_MODEL_METADATA_VERSIONS",
     "LastValueRegressor",
     "ModelBundle",
     "ModelCapabilities",
