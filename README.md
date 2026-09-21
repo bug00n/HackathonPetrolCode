@@ -19,7 +19,11 @@
 - [Stage 7](STAGE7.md) — safety-first alarm, joint applicability и усиленный action gate.
 - [Stage 8](STAGE8.md) — диагностика drift, режимов, ПАК–ЛИМС и устойчивости признаков.
 - [Stage 9](STAGE9.md) — эпизодный multi-horizon shadow-прогноз и отложенный LIMS-контроль.
+<<<<<<< HEAD
 >>>>>>> f0ad14f (Complete ML stages and safety diagnostics)
+=======
+- [Stage 10](STAGE10.md) — исторический модельный эффект P8/F19 без совета оператору.
+>>>>>>> f3eefd7 (Add historical action effects and stage 10 report)
 - [Code walkthrough](CODE_WALKTHROUGH.md) — папки, файлы и хронология вызовов почти построчно.
 - [ML system design](DESIGN.md#8-ml-неопределённость-и-модель-последствий) — обучение, метрики, анализ ошибок и жизненный цикл модели; общие контракты и данные описаны в том же документе.
 - [Материалы задания](materials/README.md) — ТЗ, схемы и исходные данные.
@@ -202,6 +206,9 @@ python -m source.main train --dataset data/processed/<dataset_id> --with-uncerta
 
 # Эпизодный прогноз 10/20/30/60 минут; создаёт только shadow-артефакт schema 1.2.
 python -m source.main train-v2-shadow --dataset data/processed/<dataset_id>
+
+# Оценить исторический модельный эффект P8/F19; рекомендации не включает.
+python -m source.main evaluate-action-shadow --dataset data/processed/<dataset_id>
 ```
 
 Контракт и ограничения ML v2 описаны в [STAGE9.md](STAGE9.md). Test 2026 служит

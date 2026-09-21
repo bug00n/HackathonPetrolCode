@@ -367,6 +367,30 @@ def train_v2_shadow_command(
     }
 
 
+def train_action_shadow_command(
+    dataset: str | Path,
+    *,
+    config_path: str | Path = "config/runtime.toml",
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Fit the matched historical action study without enabling recommendations."""
+    from source.ml.action_effects import (
+        build_historical_action_dataset,
+        fit_historical_action_model,
+    )
+
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    research = build_historical_action_dataset(data)
+    model = fit_historical_action_model(research, seed=config.seed)
+    return {
+        "dataset_id": data.manifest.dataset_id,
+        "supports_actions": False,
+        "evidence_gate_passed": model.report["evidence_gate_passed"],
+        "report": dict(model.report),
+    }
+
+
 def _load_trusted_model(model_path: str | Path, data: PreparedData, root: Path) -> ModelBundle:
     from source.ml.artifacts import load_model
 
@@ -581,6 +605,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     v2.add_argument("--dataset", required=True, help="prepared dataset directory")
     v2.add_argument("--output", default=None, help="model artifacts root")
     v2.add_argument("--config", default="config/runtime.toml", help="runtime config path")
+    action_shadow = subparsers.add_parser(
+        "evaluate-action-shadow", help="evaluate matched P8/F19 sulfur effects"
+    )
+    action_shadow.add_argument("--dataset", required=True, help="prepared dataset directory")
+    action_shadow.add_argument(
+        "--config", default="config/runtime.toml", help="runtime config path"
+    )
     evaluate = subparsers.add_parser(
         "evaluate", help="compare a frozen model with persistence on one temporal split"
     )
@@ -668,6 +699,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "train-v2-shadow":
             v2_result = train_v2_shadow_command(args.dataset, args.output, config_path=args.config)
             print(json.dumps(v2_result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "evaluate-action-shadow":
+            action_result = train_action_shadow_command(args.dataset, config_path=args.config)
+            print(json.dumps(action_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "evaluate":
             evaluation_result = evaluate_command(
