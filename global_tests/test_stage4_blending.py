@@ -157,4 +157,4 @@ def test_gas_tags_are_context_only_not_action_controls() -> None:
     assert all(not item.action_enabled for item in context)
     assert all(item.reason == GAS_CONTEXT_REASON for item in context)
     assert all(tags[item.signal_id].controllable is False for item in context)
-    assert {item.unit for item in context} == {"unknown"}
+    assert {item.unit for item in context} == {"Nm3/h"}

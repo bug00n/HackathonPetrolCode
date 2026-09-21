@@ -30,7 +30,17 @@ from source.ml.safety import JointApplicabilityModel, fit_joint_applicability
 
 HISTORICAL_ACTION_CONTROLS = ("ht:P8", "ht:F19")
 HISTORICAL_CONTEXT_SIGNALS = ("ht:T11", "ht:F26")
+ACTION_CONTROL_UNITS = {"ht:P8": "MPa", "ht:F19": "t/h"}
+HISTORICAL_SIGNAL_MEANINGS = {
+    "ht:P8": "R-202 differential pressure, MPa",
+    "ht:F19": "gasoline flow to K-201, t/h",
+    "ht:T11": "R-202 outlet product temperature, degC",
+    "ht:F26": "hydrotreated diesel volumetric output, m3/h; context only",
+}
 ACTION_HORIZONS = (60, 120, 180)
+# Allowed process-to-quality observation lags from the physical review.  These
+# are metadata for the study, not a licence to search arbitrary offsets.
+PHYSICAL_LAG_MINUTES = (0, 60, 120, 180)
 LEGACY_ACTION_STATE_FEATURES = (
     "baseline_sulfur",
     "sulfur_slope_60m",
@@ -101,6 +111,7 @@ class HistoricalActionEstimate:
             "title": "Модельный эффект по историческим эпизодам",
             "disclaimer": "Оценка не является советом по изменению уставки.",
             "control_id": self.control_id,
+            "control_unit": ACTION_CONTROL_UNITS.get(self.control_id, "unknown"),
             "proposed_delta": self.proposed_delta,
             "sulfur_change": {
                 str(horizon): self.effect_by_horizon[horizon] for horizon in ACTION_HORIZONS
@@ -231,8 +242,10 @@ def save_historical_action_model(
             "model_sha256": _artifact_sha256(model_path),
             "supports_actions": False,
             "controls": list(model.report.get("controls", HISTORICAL_ACTION_CONTROLS)),
+            "signal_meanings": HISTORICAL_SIGNAL_MEANINGS,
             "outcomes": [f"sulfur_{horizon}m" for horizon in ACTION_HORIZONS],
             "horizons_minutes": list(ACTION_HORIZONS),
+            "physical_lag_minutes": list(PHYSICAL_LAG_MINUTES),
             "state_features": list(
                 model.report.get("state_features", LEGACY_ACTION_STATE_FEATURES)
             ),
@@ -547,6 +560,7 @@ def fit_historical_action_model(
         "basis": "matched_historical_episodes_not_causal_guarantee",
         "controls": list(HISTORICAL_ACTION_CONTROLS),
         "context_only": list(HISTORICAL_CONTEXT_SIGNALS),
+        "physical_lag_minutes": list(PHYSICAL_LAG_MINUTES),
         "thresholds": dataset.thresholds,
         "state_features": list(ACTION_STATE_FEATURES),
         "model_features": list(ACTION_MODEL_FEATURES),
@@ -869,11 +883,14 @@ def rank_linear_actions(
 
 __all__ = [
     "ACTION_HORIZONS",
+    "PHYSICAL_LAG_MINUTES",
     "ACTION_MODEL_FEATURES",
     "ActionModelBundle",
     "ActionOutcome",
     "HISTORICAL_ACTION_CONTROLS",
+    "ACTION_CONTROL_UNITS",
     "HISTORICAL_CONTEXT_SIGNALS",
+    "HISTORICAL_SIGNAL_MEANINGS",
     "HistoricalActionDataset",
     "HistoricalActionEffectModel",
     "HistoricalActionEstimate",

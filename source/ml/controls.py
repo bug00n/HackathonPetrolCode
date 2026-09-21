@@ -25,14 +25,16 @@ from source.contracts import (
 )
 
 CONTROL_IDS = ("ht:P8", "ht:T11", "ht:F19")
+# The only signals currently studied as historical interventions.  CONTROL_IDS
+# remains the legacy stage-3 observational vector for artifact compatibility;
+# action_effects.py uses this explicit two-signal set.
+ACTION_RESEARCH_CONTROLS = ("ht:P8", "ht:F19")
 CONTROL_MEANINGS = {
-    "ht:P8": "Polisep reactor R-202 inlet gas/feed temperature",
-    "ht:T11": "Hydrotreatment unit mass feed rate",
-    "ht:F19": "Polisep reactor R-202 inlet pressure",
+    "ht:P8": "R-202 reactor differential pressure (MPa)",
+    "ht:T11": "R-202 outlet product temperature (degC), context only",
+    "ht:F19": "Gasoline flow to K-201 (t/h)",
 }
-CONTROL_EVIDENCE = (
-    "materials/Теги_хакатон.xlsx#КИП;DESIGN.md#16-подтверждения-экспертов-от-10092026"
-)
+CONTROL_EVIDENCE = "materials/теги АВТ_24-2000.xlsx#24-2000;QA_2026-09-15"
 ACTION_HORIZONS_MINUTES = (15, 30, 60, 120, 180)
 
 
@@ -426,6 +428,7 @@ __all__ = [
     "ActionEffectEvidence",
     "CONTROL_EVIDENCE",
     "CONTROL_IDS",
+    "ACTION_RESEARCH_CONTROLS",
     "CONTROL_MEANINGS",
     "JointControlDomain",
     "ObservedControlStats",

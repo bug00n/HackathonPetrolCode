@@ -128,6 +128,7 @@ def _display_unit(unit: str | None) -> str:
         "mg/kg": "мг/кг",
         "degC": "°C",
         "cetane_number": "ед.",
+        "kg/m3": "кг/м³",
         "t": "т",
         "1": "доля",
     }.get(unit or "", unit or "")
@@ -265,6 +266,7 @@ def format_action_shadow_payload(payload: dict[str, object]) -> str:
     state = payload.get("state", {})
     baseline = state.get("baseline_sulfur") if isinstance(state, dict) else None
     control = str(payload.get("control_id", "—"))
+    control_unit = str(payload.get("control_unit", ""))
     delta = payload.get("proposed_delta")
     point = payload.get("predicted_sulfur", {})
     upper = payload.get("sulfur_upper", {})
@@ -274,7 +276,7 @@ def format_action_shadow_payload(payload: dict[str, object]) -> str:
         "Не является советом по изменению уставки.",
         "",
         f"Текущая сера ПАК: {_format_value(baseline if isinstance(baseline, float) else None)}",
-        f"Сценарий: {control} на {delta}",
+        f"Сценарий: {control} на {delta} {control_unit}".rstrip(),
         "",
         "Горизонт | Сера | Изменение к hold | Верхняя граница",
     ]
@@ -1277,9 +1279,9 @@ class PetrolCodeApp(tk.Tk):
         self._secondary_button(row, "Контроль ПАК–ЛИМС", self.open_lims_correction_dialog).pack(
             side="left", padx=(10, 0)
         )
-        self._secondary_button(row, "Исследовать P8/F19", self.open_action_shadow_dialog).pack(
-            side="left", padx=(10, 0)
-        )
+        self._secondary_button(
+            row, "Исторический эффект P8/F19 (не совет)", self.open_action_shadow_dialog
+        ).pack(side="left", padx=(10, 0))
 
     def _view(self) -> DashboardView | None:
         if self._result is None or self._scenario is None:
@@ -1454,8 +1456,9 @@ class PetrolCodeApp(tk.Tk):
         tk.Label(
             fields,
             text=(
-                "Расчёт показывает модельный эффект в истории. Он не является советом "
-                "по изменению уставки и не включает управление оборудованием."
+                "Расчёт показывает модельный эффект по наблюдавшимся эпизодам. P8 — "
+                "перепад давления реактора Р-202 (МПа), F19 — расход бензина в К-201 (т/ч). "
+                "Это не совет по изменению уставки и не команда оборудованию."
             ),
             bg=BG,
             fg=MUTED,
@@ -1503,9 +1506,24 @@ class PetrolCodeApp(tk.Tk):
         fields.pack(fill="both", expand=True, padx=26, pady=22)
         datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
         artifacts = sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json"))
-        forecast_artifacts = [
-            path for path in artifacts if not path.parent.name.startswith("action-shadow-")
-        ]
+        forecast_artifacts: list[Path] = []
+        for path in artifacts:
+            if path.parent.name.startswith("action-shadow-"):
+                continue
+            try:
+                metadata = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            capabilities = metadata.get("capabilities")
+            # LIMS correction consumes the ordinary PAK feature schema.  A v2
+            # episode artifact has derived features and is deliberately not a
+            # drop-in replacement for this delayed control layer.
+            if (
+                metadata.get("schema_version") == "1.0"
+                and isinstance(capabilities, dict)
+                and not capabilities.get("supports_multi_horizon", False)
+            ):
+                forecast_artifacts.append(path)
         forecast_artifacts.sort(key=lambda path: path.stat().st_mtime)
         dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
         model_var = tk.StringVar(
@@ -1639,9 +1657,21 @@ class PetrolCodeApp(tk.Tk):
         fields.pack(fill="both", expand=True, padx=26, pady=22)
         datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
         artifacts = sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json"))
-        forecast_artifacts = [
-            path for path in artifacts if not path.parent.name.startswith("action-shadow-")
-        ]
+        forecast_artifacts: list[Path] = []
+        for path in artifacts:
+            if path.parent.name.startswith("action-shadow-"):
+                continue
+            try:
+                metadata = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            capabilities = metadata.get("capabilities")
+            if (
+                metadata.get("schema_version") == "1.0"
+                and isinstance(capabilities, dict)
+                and not capabilities.get("supports_multi_horizon", False)
+            ):
+                forecast_artifacts.append(path)
         forecast_artifacts.sort(key=lambda path: path.stat().st_mtime)
         dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
         model_var = tk.StringVar(

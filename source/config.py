@@ -66,6 +66,31 @@ def load_tag_dictionary(path: str | Path) -> dict[str, TagMeta]:
     return result
 
 
+def load_telemetry_rules(path: str | Path) -> dict[str, dict[str, object]]:
+    """Load explicit telemetry cleaning rules without changing raw source files.
+
+    Rules are keyed by canonical signal id.  The deliberately small schema keeps
+    sentinel handling auditable; at present only exact-value ``missing`` rules
+    are accepted.
+    """
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("rules"), list):
+        raise ValueError("telemetry rules must contain a rules list")
+    result: dict[str, dict[str, object]] = {}
+    for item in payload["rules"]:
+        if not isinstance(item, dict):
+            raise ValueError("telemetry rule must be an object")
+        signal_id = str(item.get("signal_id", "")).strip()
+        action = str(item.get("action", "")).strip()
+        values = item.get("exact_values")
+        if not signal_id or action != "missing" or not isinstance(values, list):
+            raise ValueError("telemetry rule needs signal_id, action=missing and exact_values")
+        if signal_id in result:
+            raise ValueError(f"duplicate telemetry rule: {signal_id}")
+        result[signal_id] = dict(item)
+    return result
+
+
 def config_fingerprint(config: RuntimeConfig) -> str:
     """Stable JSON used by the preparation manifest hash."""
     return json.dumps(
@@ -84,4 +109,5 @@ __all__ = [
     "load_runtime_config",
     "load_scenario",
     "load_tag_dictionary",
+    "load_telemetry_rules",
 ]
