@@ -17,6 +17,8 @@ from source.contracts import (
     Severity,
     SignalSnapshot,
     SourceKind,
+    Stage,
+    Unit,
     Validity,
 )
 from source.data.prepare import PreparedData
@@ -46,6 +48,46 @@ def _observation(row: pd.Series) -> Observation:
     )
 
 
+def _stage_from_signal_id(signal_id: str) -> Stage:
+    if signal_id.startswith("avt:"):
+        return Stage.AVT
+    if signal_id.startswith("ht:"):
+        return Stage.HYDROTREATMENT
+    return Stage.HYDROTREATMENT
+
+
+def _telemetry_candidates(
+    frame: pd.DataFrame,
+    signal_id: str,
+    as_of: datetime,
+    unit: str,
+    dataset_id: str,
+) -> list[Observation]:
+    if signal_id not in frame.columns or "timestamp" not in frame.columns:
+        return []
+    visible = frame[frame["timestamp"] <= pd.Timestamp(as_of)]
+    values = pd.to_numeric(visible[signal_id], errors="coerce")
+    valid = visible[values.notna()].copy()
+    if valid.empty:
+        return []
+    row = valid.iloc[-1]
+    measured_at = pd.Timestamp(row["timestamp"]).to_pydatetime()
+    return [
+        Observation(
+            id=f"telemetry:{signal_id}:{measured_at.isoformat()}",
+            signal_id=signal_id,
+            stage=_stage_from_signal_id(signal_id),
+            source=SourceKind.TELEMETRY,
+            measured_at=measured_at,
+            available_at=measured_at,
+            value=float(row[signal_id]),
+            unit=unit,
+            validity=Validity.VALID,
+            source_ref=f"prepared:{dataset_id}:telemetry.csv.gz",
+        )
+    ]
+
+
 def build_state(
     data: PreparedData,
     as_of: datetime,
@@ -60,6 +102,10 @@ def build_state(
     frame["measured_at"] = pd.to_datetime(frame["measured_at"], utc=True)
     frame["available_at"] = pd.to_datetime(frame["available_at"], utc=True)
     visible = frame[(frame["measured_at"] <= as_of) & (frame["available_at"] <= as_of)]
+    telemetry = data.telemetry.copy()
+    if "timestamp" in telemetry.columns:
+        telemetry["timestamp"] = pd.to_datetime(telemetry["timestamp"], utc=True)
+    control_units = {control.signal_id: control.unit for control in scenario.controls}
 
     snapshots: dict[str, SignalSnapshot] = {}
     state_issues: list[Issue] = []
@@ -67,6 +113,15 @@ def build_state(
         candidates = [
             _observation(row) for _, row in visible[visible["signal_id"] == signal_id].iterrows()
         ]
+        candidates.extend(
+            _telemetry_candidates(
+                telemetry,
+                signal_id,
+                as_of,
+                control_units.get(signal_id, Unit.UNKNOWN.value),
+                data.manifest.dataset_id,
+            )
+        )
         usable = [
             item
             for item in candidates
@@ -128,7 +183,9 @@ def build_state(
         "as_of": as_of.isoformat(),
         "dataset_id": data.manifest.dataset_id,
         "mode": scenario.mode.value,
-        "signals": {key: value.model_dump(mode="json") for key, value in sorted(snapshots.items())},
+        "signals": {
+            key: value.model_dump(mode="json") for key, value in sorted(snapshots.items())
+        },
         "issues": [item.model_dump(mode="json") for item in state_issues],
     }
     state_id = hashlib.sha256(

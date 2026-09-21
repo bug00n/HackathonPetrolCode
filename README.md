@@ -187,6 +187,19 @@ python -m source.ui --smoke --scenario blend_risk
 python -m source.ui --history-smoke --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --as-of 2026-01-15T09:00:00Z
 ```
 
+Стартовую вкладку можно выбрать явно: `overview`, `avt`, `hydrotreating`, `blend`,
+`history`, `journal`; legacy `recommendation` остаётся алиасом на `blend`.
+
+Текущий UI stage-aware: обзор показывает карточки АВТ, гидроочистки и History/ML;
+вкладки `АВТ` и `Гидроочистка` строят read-only таблицы сигналов из prepared dataset
+с единицами, источником, возрастом, freshness и причиной, почему сигнал не является
+управляющей уставкой. Вкладка `Смесь` сохраняет synthetic model-demo и добавляет
+hybrid-панель: компонент A заполняется только history forecast гидроочистки, иначе
+показывается `forecast unavailable`. Вкладка `История/ML` выполняет `replay` с
+forecast artifact и optional verified action artifact, показывает point/upper серы,
+reason codes, issues, journal path и явно разделяет `не совет` от actionable
+recommendation.
+
 ## Stage 2: подготовка реальных данных
 
 Подготовить оригинальные материалы в локальный производный датасет:
@@ -258,10 +271,12 @@ python -m source.main evaluate-action-residualization \
 Контракт и ограничения ML v2 описаны в [STAGE9.md](STAGE9.md). Test 2026 служит
 только audit-набором; production требует нового shadow-периода.
 
-В UI на вкладке «Инструменты данных» доступны отдельные «Прогноз серы» (legacy
-replay) и «Эпизодный прогноз v2» (schema 1.2 shadow). Последний показывает
-multi-horizon риск, upper-bound и причины неприменимости, но не является советом и
-не подключён к изменению уставок.
+В UI history replay доступен на вкладке `История/ML`, а диагностические операции
+`prepare`, `build-state`, `v2 shadow`, LIMS-контроль и action-shadow остаются в
+блоке данных на обзоре. History replay остаётся forecast-only, если поле verified
+action artifact пустое. Actionable-рекомендация возможна только для отдельного
+artifact `artifact_kind=action_effect`, прошедшего hash/gate-проверки; shadow
+artifacts и v2-прогноз не являются советом и не меняют уставки.
 
 Сравнить frozen point model с persistence baseline на одинаковых timestamp:
 
@@ -274,6 +289,7 @@ python -m source.main evaluate --dataset data/processed/<dataset_id> --model art
 
 ```bash
 python -m source.main replay --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --scenario history --at 2026-01-15T12:00:00+03:00
+python -m source.main replay --dataset data/processed/<dataset_id> --model artifacts/models/<model_id> --action-model artifacts/models/<action_model_id> --scenario history --at 2026-01-15T12:00:00+03:00
 python -m source.main acceptance --output reports/full-quality-acceptance
 python -m source.main verify-model-freeze
 ```
@@ -281,6 +297,9 @@ python -m source.main verify-model-freeze
 `config/model_freeze.json` относится к артефактам, обученным на указанном в нём
 `training_git_commit`. Модели не коммитятся; для точного воспроизведения нужно обучить их
 на этом commit, затем вернуться в финальную ветку и выполнить проверку хешей.
+Для action artifacts `verify-model-freeze` дополнительно проверяет `supports_actions=true`,
+enabled controls только для `ht:P8`/`ht:F19`, horizons `60/120/180`, dataset/config/tag/rules
+hashes, gate report hashes и все production gates.
 
 `acceptance` создаёт `summary.json`, каталоги полных запусков и `journals.zip`. Повторный
 запуск требует нового output-каталога, поэтому ранее полученное доказательство не

@@ -11,12 +11,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, Self, Sequence
 
-import joblib
 import numpy as np
 import pandas as pd
-import sklearn
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sklearn.base import BaseEstimator, RegressorMixin
+
+try:
+    from sklearn.base import BaseEstimator, RegressorMixin
+except ModuleNotFoundError:
+
+    class BaseEstimator:  # type: ignore[no-redef]
+        pass
+
+    class RegressorMixin:  # type: ignore[no-redef]
+        pass
+
 
 MODEL_METADATA_VERSION: Literal["1.2"] = "1.2"
 SUPPORTED_MODEL_METADATA_VERSIONS = frozenset({"1.0", "1.1", "1.2"})
@@ -137,7 +145,8 @@ class ModelBundle:
         actual = tuple(str(name) for name in features.columns)
         if actual != self.metadata.feature_names:
             raise ValueError(
-                f"feature order mismatch: expected {self.metadata.feature_names}, received {actual}"
+                "feature order mismatch: expected "
+                f"{self.metadata.feature_names}, received {actual}"
             )
         prediction = np.asarray(self.predictor.predict(features), dtype=float)
         if prediction.shape != (len(features),):
@@ -153,7 +162,8 @@ class ModelBundle:
         actual = tuple(str(name) for name in features.columns)
         if actual != self.metadata.feature_names:
             raise ValueError(
-                f"feature order mismatch: expected {self.metadata.feature_names}, received {actual}"
+                "feature order mismatch: expected "
+                f"{self.metadata.feature_names}, received {actual}"
             )
         predict_upper = getattr(self.predictor, "predict_upper", None)
         if not callable(predict_upper):
@@ -285,7 +295,8 @@ class ModelBundle:
         actual = tuple(str(name) for name in features.columns)
         if actual != self.metadata.feature_names:
             raise ValueError(
-                f"feature order mismatch: expected {self.metadata.feature_names}, received {actual}"
+                "feature order mismatch: expected "
+                f"{self.metadata.feature_names}, received {actual}"
             )
 
     def check_applicability(self, features: pd.DataFrame) -> object:
@@ -356,7 +367,7 @@ def save_model(
     temporary = Path(tempfile.mkdtemp(prefix=f".{directory.name}.", dir=directory.parent))
     try:
         model_path = temporary / "model.joblib"
-        joblib.dump(predictor, model_path, compress=3)
+        _joblib().dump(predictor, model_path, compress=3)
         payload = dict(metadata)
         payload["model_sha256"] = sha256_file(model_path)
         validated = ModelMetadata.model_validate(payload)
@@ -399,7 +410,7 @@ def load_model(
         raise ValueError("model schema version is incompatible")
     if _python_major_minor(metadata.python_version) != platform.python_version_tuple()[:2]:
         raise ValueError("model Python version is incompatible")
-    if metadata.sklearn_version != sklearn.__version__:
+    if metadata.sklearn_version != _sklearn_version():
         raise ValueError("model scikit-learn version is incompatible")
     if sha256_file(model_path) != metadata.model_sha256:
         raise ValueError("model checksum mismatch")
@@ -421,8 +432,20 @@ def load_model(
     _check_expected("target_signal", metadata.target_signal, expected_target_signal)
     _check_expected("target_source", metadata.target_source, expected_target_source)
     _check_expected("target_unit", metadata.target_unit, expected_target_unit)
-    predictor = joblib.load(model_path)
+    predictor = _joblib().load(model_path)
     return ModelBundle(predictor=predictor, metadata=metadata)
+
+
+def _joblib() -> Any:
+    import joblib
+
+    return joblib
+
+
+def _sklearn_version() -> str:
+    import sklearn
+
+    return str(sklearn.__version__)
 
 
 def _python_major_minor(version: str) -> tuple[str, str]:

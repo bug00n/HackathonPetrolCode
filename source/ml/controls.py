@@ -8,6 +8,7 @@ separate temporal action-effect validation.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from itertools import product
 from typing import Any
@@ -29,6 +30,18 @@ CONTROL_IDS = ("ht:P8", "ht:T11", "ht:F19")
 # remains the legacy stage-3 observational vector for artifact compatibility;
 # action_effects.py uses this explicit two-signal set.
 ACTION_RESEARCH_CONTROLS = ("ht:P8", "ht:F19")
+ACTION_EFFECT_HORIZONS_MINUTES = (60, 120, 180)
+ACTION_ARTIFACT_GATE_KEYS = (
+    "minimum_episodes",
+    "per_control_episodes",
+    "mae_gain_10_percent",
+    "validation_upper_coverage",
+    "audit_upper_coverage",
+    "sign_stability",
+    "engineering_bounds",
+    "shadow_replay",
+    "technologist_pilot",
+)
 CONTROL_MEANINGS = {
     "ht:P8": "R-202 reactor differential pressure (MPa)",
     "ht:T11": "R-202 outlet product temperature (degC), context only",
@@ -339,6 +352,97 @@ def assess_action_capability(
     )
 
 
+def _fingerprint(metadata: Mapping[str, Any], name: str) -> str | None:
+    raw = metadata.get(name)
+    if raw is None:
+        fingerprints = metadata.get("dataset_fingerprints")
+        if isinstance(fingerprints, Mapping):
+            raw = fingerprints.get(name)
+    return None if raw is None else str(raw)
+
+
+def _check_fingerprint(
+    metadata: Mapping[str, Any],
+    name: str,
+    expected: str | None,
+) -> None:
+    actual = _fingerprint(metadata, name)
+    if actual is None:
+        raise ValueError(f"action artifact {name} is missing")
+    if expected is not None and actual != expected:
+        raise ValueError(f"action artifact {name} is incompatible")
+    if len(actual) != 64 or any(ch not in "0123456789abcdef" for ch in actual):
+        raise ValueError(f"action artifact {name} must be a SHA-256 hex digest")
+
+
+def _action_controls_from_metadata(metadata: Mapping[str, Any]) -> tuple[ControlSpec, ...]:
+    raw_controls = metadata.get("controls")
+    if not isinstance(raw_controls, list) or not raw_controls:
+        raise ValueError("action artifact needs enabled controls")
+    controls = tuple(ControlSpec.model_validate(item) for item in raw_controls)
+    control_ids = tuple(control.signal_id for control in controls)
+    if set(control_ids) != set(ACTION_RESEARCH_CONTROLS) or len(control_ids) != len(
+        set(control_ids)
+    ):
+        raise ValueError("action artifact may enable only ht:P8 and ht:F19")
+    if any(not control.enabled for control in controls):
+        raise ValueError("action artifact controls must be enabled")
+    if any(control.unit == Unit.UNKNOWN.value for control in controls):
+        raise ValueError("action artifact controls need confirmed units")
+    if any(control.basis is ConstraintBasis.MODEL_ASSUMPTION for control in controls):
+        raise ValueError("action artifact controls cannot use model-assumption limits")
+    return controls
+
+
+def validate_action_artifact_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    expected_dataset_id: str | None = None,
+    expected_config_sha256: str | None = None,
+    expected_tag_dictionary_sha256: str | None = None,
+    expected_telemetry_rules_sha256: str | None = None,
+) -> tuple[ControlSpec, ...]:
+    """Validate the JSON contract before an action artifact can enable controls."""
+    if metadata.get("artifact_kind") != "action_effect":
+        raise ValueError("artifact is not a production action-effect model")
+    if metadata.get("supports_actions") is not True:
+        raise ValueError("production action artifact must declare supports_actions=true")
+    if (
+        expected_dataset_id is not None
+        and metadata.get("training_dataset_id") != expected_dataset_id
+    ):
+        raise ValueError("action artifact was trained on a different prepared dataset")
+    _check_fingerprint(metadata, "config_sha256", expected_config_sha256)
+    _check_fingerprint(metadata, "tag_dictionary_sha256", expected_tag_dictionary_sha256)
+    _check_fingerprint(metadata, "telemetry_rules_sha256", expected_telemetry_rules_sha256)
+    controls = _action_controls_from_metadata(metadata)
+
+    horizons = metadata.get("horizons_minutes")
+    if tuple(horizons or ()) != ACTION_EFFECT_HORIZONS_MINUTES:
+        raise ValueError("action artifact horizons must be 60/120/180 minutes")
+    lag_evidence = metadata.get("lag_evidence")
+    if not isinstance(lag_evidence, Mapping):
+        raise ValueError("action artifact needs lag evidence")
+    selected_lag = lag_evidence.get("selected_lag_minutes")
+    if not isinstance(selected_lag, int) or not 0 <= selected_lag <= 180:
+        raise ValueError("action artifact selected lag is invalid")
+
+    gate_report = metadata.get("gate_report")
+    if not isinstance(gate_report, Mapping):
+        raise ValueError("action artifact needs a gate report")
+    for gate in ACTION_ARTIFACT_GATE_KEYS:
+        if gate_report.get(gate) is not True:
+            raise ValueError(f"action gate failed: {gate}")
+    report_hashes = metadata.get("gate_report_hashes")
+    if not isinstance(report_hashes, Mapping) or not report_hashes:
+        raise ValueError("action artifact needs gate report hashes")
+    for name, value in report_hashes.items():
+        text = str(value)
+        if len(text) != 64 or any(ch not in "0123456789abcdef" for ch in text):
+            raise ValueError(f"action gate report hash is invalid: {name}")
+    return controls
+
+
 def _selected_value(state: ProcessState, signal_id: str) -> float:
     snapshot = state.signals.get(signal_id)
     if snapshot is None or snapshot.selected is None or snapshot.selected.value is None:
@@ -425,6 +529,8 @@ def generate_setpoint_candidates(
 __all__ = [
     "ActionCapabilityReport",
     "ACTION_HORIZONS_MINUTES",
+    "ACTION_EFFECT_HORIZONS_MINUTES",
+    "ACTION_ARTIFACT_GATE_KEYS",
     "ActionEffectEvidence",
     "CONTROL_EVIDENCE",
     "CONTROL_IDS",
@@ -436,6 +542,7 @@ __all__ = [
     "extract_change_episodes",
     "fit_joint_control_domain",
     "generate_setpoint_candidates",
+    "validate_action_artifact_metadata",
     "summarize_observed_controls",
     "unconfirmed_real_controls",
 ]

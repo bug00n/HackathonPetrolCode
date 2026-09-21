@@ -9,24 +9,21 @@ import tempfile
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import TYPE_CHECKING, Any, Mapping, cast
 
-import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_absolute_error
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.neighbors import NearestNeighbors
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-
-from source.contracts import CandidateAction, CandidateKind, ControlSpec, Validity
+from source.contracts import CandidateAction, CandidateKind, ControlSpec, ProcessState, Validity
 from source.data.prepare import PreparedData
-from source.ml.controls import ActionEffectEvidence, JointControlDomain
-from source.ml.safety import JointApplicabilityModel, fit_joint_applicability
+from source.ml.controls import (
+    ACTION_EFFECT_HORIZONS_MINUTES,
+    ActionEffectEvidence,
+    JointControlDomain,
+    assess_action_capability,
+    validate_action_artifact_metadata,
+)
+if TYPE_CHECKING:
+    from source.ml.safety import JointApplicabilityModel
 
 HISTORICAL_ACTION_CONTROLS = ("ht:P8", "ht:F19")
 HISTORICAL_CONTEXT_SIGNALS = ("ht:T11", "ht:F26")
@@ -37,7 +34,7 @@ HISTORICAL_SIGNAL_MEANINGS = {
     "ht:T11": "R-202 outlet product temperature, degC",
     "ht:F26": "hydrotreated diesel volumetric output, m3/h; context only",
 }
-ACTION_HORIZONS = (60, 120, 180)
+ACTION_HORIZONS = ACTION_EFFECT_HORIZONS_MINUTES
 # Allowed process-to-quality observation lags from the physical review.  These
 # are metadata for the study, not a licence to search arbitrary offsets.
 PHYSICAL_LAG_MINUTES = (0, 60, 120, 180)
@@ -233,7 +230,7 @@ def save_historical_action_model(
     temporary = Path(tempfile.mkdtemp(prefix=f".{directory.name}.", dir=directory.parent))
     try:
         model_path = temporary / "model.joblib"
-        joblib.dump(model, model_path, compress=3)
+        _joblib().dump(model, model_path, compress=3)
         metadata = {
             "schema_version": "1.0",
             "artifact_kind": "historical_action_effect_shadow",
@@ -296,10 +293,54 @@ def load_historical_action_model(
         raise ValueError("action artifact must not enable actions")
     if metadata.get("model_sha256") != _artifact_sha256(model_path):
         raise ValueError("action artifact checksum mismatch")
-    model = joblib.load(model_path)
+    model = _joblib().load(model_path)
     if not isinstance(model, HistoricalActionEffectModel) or model.supports_actions:
         raise ValueError("action artifact has incompatible capability")
     return model
+
+
+def load_verified_action_model(
+    directory: Path,
+    *,
+    trusted: bool = False,
+    expected_dataset_id: str | None = None,
+    expected_config_sha256: str | None = None,
+    expected_tag_dictionary_sha256: str | None = None,
+    expected_telemetry_rules_sha256: str | None = None,
+) -> VerifiedActionEffectModel:
+    """Load a production action artifact only after full metadata gate validation."""
+    if not trusted:
+        raise ValueError("action artifacts may be loaded only from an explicitly trusted path")
+    directory = Path(directory)
+    metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
+    if metadata.get("model_id") != directory.name:
+        raise ValueError("action metadata model_id does not match the artifact directory")
+    controls = validate_action_artifact_metadata(
+        metadata,
+        expected_dataset_id=expected_dataset_id,
+        expected_config_sha256=expected_config_sha256,
+        expected_tag_dictionary_sha256=expected_tag_dictionary_sha256,
+        expected_telemetry_rules_sha256=expected_telemetry_rules_sha256,
+    )
+    model_path = directory / "model.joblib"
+    if metadata.get("model_sha256") != _artifact_sha256(model_path):
+        raise ValueError("action artifact checksum mismatch")
+    model = _joblib().load(model_path)
+    if not isinstance(model, VerifiedActionEffectModel) or not model.supports_actions:
+        raise ValueError("action artifact has incompatible capability")
+    if model.model_id != metadata.get("model_id"):
+        raise ValueError("action model_id does not match metadata")
+    loaded_controls = tuple(sorted(control.signal_id for control in model.controls))
+    metadata_controls = tuple(sorted(control.signal_id for control in controls))
+    if loaded_controls != metadata_controls:
+        raise ValueError("action model controls do not match metadata")
+    return model
+
+
+def _joblib() -> Any:
+    import joblib
+
+    return joblib
 
 
 def _pak_sulfur(data: PreparedData) -> pd.DataFrame:
@@ -356,6 +397,9 @@ def build_historical_action_dataset(
     threshold_quantile: float = 0.95,
 ) -> HistoricalActionDataset:
     """Extract isolated P8/F19 changes and pair them with similar calm states."""
+    from sklearn.neighbors import NearestNeighbors
+    from sklearn.preprocessing import StandardScaler
+
     if not 0.5 < threshold_quantile < 1.0:
         raise ValueError("action threshold quantile must be between 0.5 and 1")
     frame = _action_timeline(data)
@@ -373,7 +417,12 @@ def build_historical_action_dataset(
         {signal: changes[signal].abs().ge(threshold) for signal, threshold in thresholds.items()}
     )
     stable_before = (
-        changes.abs().rolling(6, min_periods=6).max().shift(1).lt(pd.Series(thresholds)).all(axis=1)
+        changes.abs()
+        .rolling(6, min_periods=6)
+        .max()
+        .shift(1)
+        .lt(pd.Series(thresholds))
+        .all(axis=1)
     )
     quiet_after = (
         notable.iloc[::-1].rolling(18, min_periods=18).sum().iloc[::-1].shift(-1).fillna(1).eq(0)
@@ -452,6 +501,15 @@ def fit_historical_action_model(
     seed: int = 42,
 ) -> HistoricalActionEffectModel:
     """Fit shadow-only matched action models and evaluate 2026 without selection."""
+    from sklearn.ensemble import GradientBoostingRegressor
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics import mean_absolute_error
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    from source.ml.safety import fit_joint_applicability
+
     frame = dataset.frame
     timestamp = pd.to_datetime(frame["timestamp"], utc=True)
     train = timestamp < pd.Timestamp(train_end, tz="UTC")
@@ -525,7 +583,9 @@ def fit_historical_action_model(
         values["mae"] <= 0.90 * values["hold_mae"] for values in validation_metrics.values()
     )
     coverage_gate = all(values["upper_coverage"] >= 0.95 for values in validation_metrics.values())
-    audit_coverage_gate = all(values["upper_coverage"] >= 0.95 for values in audit_metrics.values())
+    audit_coverage_gate = all(
+        values["upper_coverage"] >= 0.95 for values in audit_metrics.values()
+    )
     episode_count_gate = all(count >= 100 for count in per_control_pairs.values())
     # These are deliberately false until engineering limits and temporal sign stability
     # are confirmed outside this observational benchmark.
@@ -608,6 +668,13 @@ def evaluate_temporal_residualization(
     separate from ``HistoricalActionEffectModel`` because residualization alone does
     not establish a causal action effect.
     """
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import Ridge
+    from sklearn.metrics import mean_absolute_error
+    from sklearn.model_selection import TimeSeriesSplit
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
     frame = dataset.frame.sort_values("timestamp", kind="stable").reset_index(drop=True)
     timestamp = pd.to_datetime(frame["timestamp"], utc=True)
     train = frame.loc[timestamp < pd.Timestamp(train_end, tz="UTC")].reset_index(drop=True)
@@ -737,6 +804,173 @@ class LinearActionEffectModel:
     throughput_coefficients: dict[str, float]
     cost_coefficients: dict[str, float]
     evidence_ref: str
+
+
+@dataclass(frozen=True)
+class VerifiedActionEffectModel:
+    """Production action-effect model; construction is gated by external evidence."""
+
+    model_id: str
+    controls: tuple[ControlSpec, ...]
+    joint_domain: JointControlDomain
+    evidence: ActionEffectEvidence
+    sulfur_coefficients: Mapping[str, float]
+    risk_coefficients: Mapping[str, float]
+    throughput_coefficients: Mapping[str, float]
+    cost_coefficients: Mapping[str, float]
+    evidence_ref: str
+    baseline_risk_index: float = 0.5
+    baseline_throughput: float = 1.0
+    baseline_cost_proxy: float = 1.0
+    horizons_minutes: tuple[int, ...] = ACTION_HORIZONS
+    supports_actions: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.supports_actions:
+            raise ValueError("verified action model must declare supports_actions=true")
+        control_ids = tuple(control.signal_id for control in self.controls)
+        if set(control_ids) != set(HISTORICAL_ACTION_CONTROLS) or len(control_ids) != len(
+            set(control_ids)
+        ):
+            raise ValueError("verified action model may enable only ht:P8 and ht:F19")
+        if set(self.joint_domain.signal_ids) != set(control_ids):
+            raise ValueError("verified action domain must match enabled controls")
+        if self.horizons_minutes != ACTION_HORIZONS:
+            raise ValueError("verified action model horizons must be 60/120/180 minutes")
+        report = assess_action_capability(self.controls, self.evidence)
+        if not report.supports_actions:
+            raise ValueError(f"action capability gates failed: {report.reason_codes}")
+        if not self.evidence_ref:
+            raise ValueError("verified action model needs evidence_ref")
+
+    def evaluate(
+        self,
+        state: ProcessState,
+        candidate: CandidateAction,
+        *,
+        baseline_sulfur: float,
+        baseline_sulfur_upper: float | None,
+        sulfur_upper_limit: float = 10.0,
+    ) -> "ActionOutcome":
+        current_setpoints = _current_setpoints(state, self.controls)
+        linear = LinearActionEffectModel(
+            current_setpoints=current_setpoints,
+            baseline_sulfur=baseline_sulfur,
+            baseline_sulfur_upper=baseline_sulfur_upper,
+            baseline_risk_index=self.baseline_risk_index,
+            baseline_throughput=self.baseline_throughput,
+            baseline_cost_proxy=self.baseline_cost_proxy,
+            sulfur_coefficients=dict(self.sulfur_coefficients),
+            risk_coefficients=dict(self.risk_coefficients),
+            throughput_coefficients=dict(self.throughput_coefficients),
+            cost_coefficients=dict(self.cost_coefficients),
+            evidence_ref=self.evidence_ref,
+        )
+        return evaluate_linear_action(
+            candidate,
+            linear,
+            self.controls,
+            self.joint_domain,
+            sulfur_upper_limit=sulfur_upper_limit,
+        )
+
+
+@dataclass(frozen=True)
+class CombinedModelCapabilities:
+    supports_forecast: bool
+    supports_actions: bool
+    supports_uncertainty: bool = False
+    supports_exceedance_probability: bool = False
+    supports_multi_horizon: bool = False
+
+
+@dataclass(frozen=True)
+class ActionEnabledMetadata:
+    """Forecast metadata view with action capability supplied by a separate artifact."""
+
+    forecast_metadata: object
+    action_model_id: str
+    model_id: str
+    capabilities: CombinedModelCapabilities
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.forecast_metadata, name)
+
+
+@dataclass(frozen=True)
+class ActionEnabledForecastModel:
+    """Runtime wrapper combining a forecast artifact and a verified action artifact."""
+
+    forecast_model: object
+    action_model: VerifiedActionEffectModel
+    metadata: ActionEnabledMetadata
+
+    @property
+    def feature_names(self) -> tuple[str, ...]:
+        return tuple(getattr(self.forecast_model, "feature_names"))
+
+    def predict(self, features: pd.DataFrame) -> np.ndarray:
+        return self.forecast_model.predict(features)
+
+    def predict_upper(self, features: pd.DataFrame) -> np.ndarray:
+        return self.forecast_model.predict_upper(features)
+
+    def predict_exceedance_probability(self, features: pd.DataFrame) -> np.ndarray:
+        return self.forecast_model.predict_exceedance_probability(features)
+
+    def predict_alarm(self, features: pd.DataFrame) -> np.ndarray:
+        return self.forecast_model.predict_alarm(features)
+
+    def check_applicability(self, features: pd.DataFrame) -> object:
+        return self.forecast_model.check_applicability(features)
+
+
+def _capability_bool(capabilities: object, name: str) -> bool:
+    if isinstance(capabilities, Mapping):
+        return capabilities.get(name) is True
+    return getattr(capabilities, name, False) is True
+
+
+def combine_forecast_action_model(
+    forecast_model: object,
+    action_model: VerifiedActionEffectModel,
+) -> ActionEnabledForecastModel:
+    """Attach a separately verified action artifact to a trusted forecast bundle."""
+    forecast_metadata = getattr(forecast_model, "metadata", None)
+    if forecast_metadata is None:
+        raise ValueError("forecast model needs metadata before action attachment")
+    capabilities = getattr(forecast_metadata, "capabilities", {})
+    combined = CombinedModelCapabilities(
+        supports_forecast=_capability_bool(capabilities, "supports_forecast"),
+        supports_actions=True,
+        supports_uncertainty=_capability_bool(capabilities, "supports_uncertainty"),
+        supports_exceedance_probability=_capability_bool(
+            capabilities, "supports_exceedance_probability"
+        ),
+        supports_multi_horizon=_capability_bool(capabilities, "supports_multi_horizon"),
+    )
+    if not combined.supports_forecast:
+        raise ValueError("action attachment requires a forecast-capable model")
+    metadata = ActionEnabledMetadata(
+        forecast_metadata=forecast_metadata,
+        action_model_id=action_model.model_id,
+        model_id=f"{getattr(forecast_metadata, 'model_id')}+{action_model.model_id}",
+        capabilities=combined,
+    )
+    return ActionEnabledForecastModel(forecast_model, action_model, metadata)
+
+
+def _current_setpoints(
+    state: ProcessState,
+    controls: tuple[ControlSpec, ...],
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for control in controls:
+        snapshot = state.signals.get(control.signal_id)
+        if snapshot is None or snapshot.selected is None or snapshot.selected.value is None:
+            raise ValueError(f"current setpoint is unavailable for {control.signal_id}")
+        values[control.signal_id] = float(snapshot.selected.value)
+    return values
 
 
 @dataclass(frozen=True)
@@ -887,6 +1121,9 @@ __all__ = [
     "ACTION_MODEL_FEATURES",
     "ActionModelBundle",
     "ActionOutcome",
+    "ActionEnabledForecastModel",
+    "ActionEnabledMetadata",
+    "CombinedModelCapabilities",
     "HISTORICAL_ACTION_CONTROLS",
     "ACTION_CONTROL_UNITS",
     "HISTORICAL_CONTEXT_SIGNALS",
@@ -895,11 +1132,14 @@ __all__ = [
     "HistoricalActionEffectModel",
     "HistoricalActionEstimate",
     "LinearActionEffectModel",
+    "VerifiedActionEffectModel",
     "build_historical_action_dataset",
+    "combine_forecast_action_model",
     "evaluate_linear_action",
     "evaluate_temporal_residualization",
     "fit_historical_action_model",
     "rank_linear_actions",
     "save_historical_action_model",
     "load_historical_action_model",
+    "load_verified_action_model",
 ]

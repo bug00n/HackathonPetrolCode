@@ -10,11 +10,26 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import source.data.prepare as prepare_module
 from source.contracts import DatasetManifest, ProcessState
 from source.data.prepare import PreparedData, load_prepared_dataset, write_prepared_dataset
 from source.main import main
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _fixture_prepared_data() -> PreparedData:
+    return PreparedData(
+        telemetry=pd.read_csv(FIXTURES / "data/telemetry.csv"),
+        quality=pd.read_csv(FIXTURES / "data/quality.csv"),
+        issues=pd.read_csv(FIXTURES / "data/issues.csv"),
+        manifest=DatasetManifest.model_validate_json(
+            (FIXTURES / "data/manifest.json").read_text(encoding="utf-8")
+        ),
+        feature_order=tuple(
+            json.loads((FIXTURES / "data/feature_order.json").read_text(encoding="utf-8"))
+        ),
+    )
 
 
 def _write_minimal_materials(root: Path) -> None:
@@ -56,17 +71,7 @@ def _write_minimal_materials(root: Path) -> None:
 
 def test_prepared_dataset_roundtrip(tmp_path: Path) -> None:
     """Verify a written prepared dataset can be loaded back without contract drift."""
-    data = PreparedData(
-        telemetry=pd.read_csv(FIXTURES / "data/telemetry.csv"),
-        quality=pd.read_csv(FIXTURES / "data/quality.csv"),
-        issues=pd.read_csv(FIXTURES / "data/issues.csv"),
-        manifest=DatasetManifest.model_validate_json(
-            (FIXTURES / "data/manifest.json").read_text(encoding="utf-8")
-        ),
-        feature_order=tuple(
-            json.loads((FIXTURES / "data/feature_order.json").read_text(encoding="utf-8"))
-        ),
-    )
+    data = _fixture_prepared_data()
 
     dataset_path = write_prepared_dataset(data, tmp_path)
     loaded = load_prepared_dataset(dataset_path)
@@ -76,6 +81,28 @@ def test_prepared_dataset_roundtrip(tmp_path: Path) -> None:
     pd.testing.assert_frame_equal(loaded.telemetry, data.telemetry, check_dtype=False)
     pd.testing.assert_frame_equal(loaded.quality, data.quality, check_dtype=False)
     pd.testing.assert_frame_equal(loaded.issues, data.issues, check_dtype=False)
+
+
+def test_prepared_dataset_publish_retries_transient_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify Windows-style transient locks do not fail prepared dataset publication."""
+    calls = 0
+    original_replace = prepare_module._replace_path
+
+    def flaky_replace(source: Path, target: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("temporary Windows directory lock")
+        original_replace(source, target)
+
+    monkeypatch.setattr(prepare_module, "_replace_path", flaky_replace)
+
+    dataset_path = write_prepared_dataset(_fixture_prepared_data(), tmp_path)
+
+    assert calls == 2
+    assert (dataset_path / "manifest.json").is_file()
 
 
 def test_prepare_and_build_state_cli_on_small_materials(
@@ -144,3 +171,16 @@ def test_build_state_cli_reports_missing_dataset(capsys: pytest.CaptureFixture[s
         == 1
     )
     assert "missing prepared dataset files" in capsys.readouterr().err
+
+
+def test_cli_rejects_stale_prepared_dataset_before_ml_diagnostics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify stale manifest hashes fail before downstream ML diagnostics."""
+    dataset_path = write_prepared_dataset(_fixture_prepared_data(), tmp_path)
+
+    assert main(["diagnose-ml", "--dataset", str(dataset_path)]) == 1
+
+    error = capsys.readouterr().err
+    assert "prepared dataset is not current" in error
+    assert "config_sha256" in error

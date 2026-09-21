@@ -281,11 +281,24 @@ def verify_model_freeze(root: Path, manifest_path: Path) -> dict[str, Any]:
             raise ValueError("frozen model uses another Python version")
         if metadata.get("sklearn_version") != payload.get("sklearn_version"):
             raise ValueError("frozen model uses another scikit-learn version")
-        if metadata.get("capabilities", {}).get("supports_actions") is not False:
+        if metadata.get("artifact_kind") == "action_effect":
+            from source.ml.controls import validate_action_artifact_metadata
+
+            validate_action_artifact_metadata(
+                metadata,
+                expected_dataset_id=str(payload.get("training_dataset_id")),
+                expected_config_sha256=payload.get("config_sha256"),
+                expected_tag_dictionary_sha256=payload.get("tag_dictionary_sha256"),
+                expected_telemetry_rules_sha256=payload.get("telemetry_rules_sha256"),
+            )
+        elif metadata.get("capabilities", {}).get("supports_actions") is not False:
             raise ValueError("Stage-6 forecast artifacts must not enable action control")
         if str(metadata.get("git_commit", "")).endswith("-dirty"):
             raise ValueError("frozen model was trained from a dirty worktree")
-        if "test_used_for_selection" in metrics and metrics["test_used_for_selection"] is not False:
+        if (
+            "test_used_for_selection" in metrics
+            and metrics["test_used_for_selection"] is not False
+        ):
             raise ValueError("point model used final test for selection")
         if "test_used_for_tuning" in metrics and metrics["test_used_for_tuning"] is not False:
             raise ValueError("upper model used final test for tuning")

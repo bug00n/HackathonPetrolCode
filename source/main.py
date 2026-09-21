@@ -19,8 +19,19 @@ from typing import TYPE_CHECKING, Literal, Sequence
 
 import pandas as pd
 
-from source.config import load_runtime_config, load_scenario, load_tag_dictionary
-from source.contracts import DecisionContext, ProcessState, Recommendation, SourceKind
+from source.config import (
+    config_fingerprint,
+    load_runtime_config,
+    load_scenario,
+    load_tag_dictionary,
+)
+from source.contracts import (
+    DecisionContext,
+    ProcessState,
+    Recommendation,
+    RuntimeConfig,
+    SourceKind,
+)
 from source.data import (
     PreparedData,
     build_state,
@@ -100,7 +111,9 @@ def validate_stage0(root: Path = PROJECT_ROOT) -> dict[str, int]:
     """Validate shared configs and serialized contract fixtures."""
     load_runtime_config(root / "config/runtime.toml")
     tags = load_tag_dictionary(root / "config/tags.csv")
-    scenarios = [load_scenario(path) for path in sorted((root / "config/scenarios").glob("*.json"))]
+    scenarios = [
+        load_scenario(path) for path in sorted((root / "config/scenarios").glob("*.json"))
+    ]
     contract_dir = root / "global_tests/fixtures/contracts"
     ProcessState.model_validate_json(
         (contract_dir / "process_state.json").read_text(encoding="utf-8")
@@ -151,6 +164,55 @@ def _resolve_path(path: str | Path, root: Path = PROJECT_ROOT) -> Path:
     return value if value.is_absolute() else root / value
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_current_prepared_dataset(
+    data: PreparedData,
+    config: RuntimeConfig,
+    root: Path,
+) -> None:
+    """Fail early when a prepared dataset was built from older runtime inputs."""
+    expected = {
+        "config_sha256": hashlib.sha256(config_fingerprint(config).encode()).hexdigest(),
+        "tag_dictionary_sha256": _sha256_file(_resolve_path(config.tag_dictionary_path, root)),
+        "telemetry_rules_sha256": _sha256_file(
+            _resolve_path(config.telemetry_rules_path, root)
+        ),
+    }
+    actual = {
+        "config_sha256": data.manifest.config_sha256,
+        "tag_dictionary_sha256": data.manifest.tag_dictionary_sha256,
+        "telemetry_rules_sha256": data.manifest.telemetry_rules_sha256,
+    }
+    mismatches = [
+        f"{name}: manifest={actual[name] or '<missing>'}, current={expected[name]}"
+        for name in expected
+        if actual[name] != expected[name]
+    ]
+    if mismatches:
+        details = "; ".join(mismatches)
+        raise ValueError(
+            "prepared dataset is not current for this runtime/tags/rules: "
+            f"{details}. Run `python -m source.main prepare` and use the new dataset_id."
+        )
+
+
+def _load_current_prepared_dataset(
+    dataset: str | Path,
+    config: RuntimeConfig,
+    root: Path,
+) -> PreparedData:
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    _validate_current_prepared_dataset(data, config, root)
+    return data
+
+
 def _parse_as_of(value: str) -> datetime:
     """Parse an ISO datetime and accept a trailing Z as UTC."""
     try:
@@ -198,7 +260,7 @@ def build_state_command(
     if not scenario_path.suffix:
         scenario_path = Path("config/scenarios") / f"{scenario}.json"
     scenario_config = load_scenario(_resolve_path(scenario_path, root))
-    data = load_prepared_dataset(_resolve_path(dataset, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     return build_state(data, as_of, scenario_config, config)
 
 
@@ -336,10 +398,16 @@ def train_command(
 
 >>>>>>> f0ad14f (Complete ML stages and safety diagnostics)
     config = load_runtime_config(_resolve_path(config_path, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     revision = _git_revision(root)
+<<<<<<< HEAD
     data = load_prepared_dataset(_resolve_path(dataset, root))
     supervised = _supervised_dataset(data, source, target_signal)
     models_root = _resolve_path(target_output if target_output is not None else config.models_dir, root)
+=======
+    supervised = _supervised_dataset(data, SourceKind.PAK)
+    models_root = _resolve_path(output if output is not None else config.models_dir, root)
+>>>>>>> e70cafe (fix)
     point = train_model(
         supervised,
         models_root=models_root,
@@ -406,12 +474,14 @@ def train_command(
 def diagnose_ml_command(
     dataset: str | Path,
     *,
+    config_path: str | Path = "config/runtime.toml",
     root: Path = PROJECT_ROOT,
 ) -> dict[str, object]:
     """Run read-only alignment, drift and telemetry diagnostics."""
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     from source.ml.diagnostics import build_diagnostic_report
 
-    data = load_prepared_dataset(_resolve_path(dataset, root))
     supervised = _supervised_dataset(data, SourceKind.PAK)
     return build_diagnostic_report(data, supervised)
 
@@ -428,8 +498,8 @@ def train_v2_shadow_command(
     from source.ml.v2 import save_episode_safety_model
 
     config = load_runtime_config(_resolve_path(config_path, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     revision = _shadow_git_revision(root, allow_dirty=allow_dirty_shadow)
-    data = load_prepared_dataset(_resolve_path(dataset, root))
     supervised = _supervised_dataset(data, SourceKind.PAK)
     models_root = _resolve_path(output if output is not None else config.models_dir, root)
     recipe = f"{data.manifest.dataset_id}:episode-multihorizon:1.2:{revision}"
@@ -459,6 +529,7 @@ def replay_v2_shadow_command(
     model_path: str | Path,
     as_of: datetime,
     *,
+    config_path: str | Path = "config/runtime.toml",
     root: Path = PROJECT_ROOT,
 ) -> dict[str, object]:
     """Serve one schema-1.2 PAK episode forecast without enabling controls."""
@@ -466,7 +537,8 @@ def replay_v2_shadow_command(
     from source.ml.features import SupervisedDataset, _feature_matrix
     from source.ml.v2 import build_episode_dataset
 
-    data = load_prepared_dataset(_resolve_path(dataset, root))
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     bundle = load_model(
         _resolve_path(model_path, root),
         trusted=True,
@@ -556,7 +628,7 @@ def train_action_shadow_command(
     )
 
     config = load_runtime_config(_resolve_path(config_path, root))
-    data = load_prepared_dataset(_resolve_path(dataset, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     research = build_historical_action_dataset(data)
     model = fit_historical_action_model(research, seed=config.seed)
     models_root = _resolve_path(output if output is not None else config.models_dir, root)
@@ -583,12 +655,14 @@ def action_shadow_estimate_command(
     delta: float,
     as_of: datetime,
     *,
+    config_path: str | Path = "config/runtime.toml",
     root: Path = PROJECT_ROOT,
 ) -> dict[str, object]:
     """Calculate one research-only historical action scenario at an available time."""
     from source.ml.action_effects import _action_timeline, load_historical_action_model
 
-    data = load_prepared_dataset(_resolve_path(dataset, root))
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     model = load_historical_action_model(
         _resolve_path(model_path, root),
         trusted=True,
@@ -638,7 +712,7 @@ def evaluate_lims_correction_command(
     from source.ml.safety import fit_lims_correction
 
     config = load_runtime_config(_resolve_path(config_path, root))
-    data = load_prepared_dataset(_resolve_path(dataset, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     pak_model = _load_trusted_model(pak_model_path, data, root)
     correction = fit_lims_correction(
         _supervised_dataset(data, SourceKind.LIMS),
@@ -664,6 +738,7 @@ def evaluate_action_residualization_command(
     dataset: str | Path,
     *,
     output: str | Path | None = None,
+    config_path: str | Path = "config/runtime.toml",
     root: Path = PROJECT_ROOT,
 ) -> dict[str, object]:
     """Run the cross-fitted historical action association benchmark."""
@@ -672,7 +747,8 @@ def evaluate_action_residualization_command(
         evaluate_temporal_residualization,
     )
 
-    data = load_prepared_dataset(_resolve_path(dataset, root))
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     report = evaluate_temporal_residualization(build_historical_action_dataset(data))
     result: dict[str, object] = {
         "dataset_id": data.manifest.dataset_id,
@@ -689,12 +765,14 @@ def ablate_v2_features_command(
     *,
     groups: tuple[str, ...],
     output: str | Path | None = None,
+    config_path: str | Path = "config/runtime.toml",
     root: Path = PROJECT_ROOT,
 ) -> dict[str, object]:
     """Run the fixed 2024 PAK/HT/AVT feature ablation without audit selection."""
     from source.ml.v2 import ablate_episode_features
 
-    data = load_prepared_dataset(_resolve_path(dataset, root))
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     report = ablate_episode_features(data, groups=groups)
     result = {"dataset_id": data.manifest.dataset_id, **report}
     if output is not None:
@@ -741,7 +819,7 @@ def evaluate_command(
     from source.ml.evaluate import evaluate_model, write_evaluation
 
     config = load_runtime_config(_resolve_path(config_path, root))
-    data = load_prepared_dataset(_resolve_path(dataset, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     model = _load_trusted_model(model_path, data, root)
     source, selected_split = _coerce_split_or_source(target_source, split)
     evaluation_source = source or SourceKind(model.metadata.target_source)
@@ -780,6 +858,7 @@ def replay_command(
     scenario: str | Path,
     as_of: datetime,
     *,
+    action_model_path: str | Path | None = None,
     config_path: str | Path = "config/runtime.toml",
     run_dir: str | Path | None = None,
     root: Path = PROJECT_ROOT,
@@ -788,8 +867,23 @@ def replay_command(
     from source.orchestrator import run_cycle
 
     config = load_runtime_config(_resolve_path(config_path, root))
-    data = load_prepared_dataset(_resolve_path(dataset, root))
+    data = _load_current_prepared_dataset(dataset, config, root)
     model = _load_trusted_model(model_path, data, root)
+    if action_model_path is not None:
+        from source.ml.action_effects import (
+            combine_forecast_action_model,
+            load_verified_action_model,
+        )
+
+        action_model = load_verified_action_model(
+            _resolve_path(action_model_path, root),
+            trusted=True,
+            expected_dataset_id=data.manifest.dataset_id,
+            expected_config_sha256=data.manifest.config_sha256,
+            expected_tag_dictionary_sha256=data.manifest.tag_dictionary_sha256,
+            expected_telemetry_rules_sha256=data.manifest.telemetry_rules_sha256,
+        )
+        model = combine_forecast_action_model(model, action_model)
     scenario_path = Path(scenario)
     if not scenario_path.suffix:
         scenario_path = Path("config/scenarios") / f"{scenario}.json"
@@ -910,6 +1004,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "diagnose-ml", help="inspect sulfur alignment, temporal drift and candidate signals"
     )
     diagnose.add_argument("--dataset", required=True, help="prepared dataset directory")
+    diagnose.add_argument("--config", default="config/runtime.toml", help="runtime config path")
     v2 = subparsers.add_parser(
         "train-v2-shadow", help="train the episode-aware schema-1.2 shadow artifact"
     )
@@ -926,7 +1021,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     v2_replay.add_argument("--dataset", required=True, help="prepared dataset directory")
     v2_replay.add_argument("--model", required=True, help="schema-1.2 shadow artifact")
-    v2_replay.add_argument("--at", required=True, type=_parse_as_of, help="timezone-aware ISO time")
+    v2_replay.add_argument(
+        "--at", required=True, type=_parse_as_of, help="timezone-aware ISO time"
+    )
+    v2_replay.add_argument("--config", default="config/runtime.toml", help="runtime config path")
     action_shadow = subparsers.add_parser(
         "evaluate-action-shadow", help="evaluate matched P8/F19 sulfur effects"
     )
@@ -939,11 +1037,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "action-shadow-estimate", help="calculate one non-advisory P8/F19 historical scenario"
     )
     action_estimate.add_argument("--dataset", required=True, help="prepared dataset directory")
-    action_estimate.add_argument("--model", required=True, help="trusted action artifact directory")
+    action_estimate.add_argument(
+        "--model", required=True, help="trusted action artifact directory"
+    )
     action_estimate.add_argument("--control", choices=("ht:P8", "ht:F19"), required=True)
     action_estimate.add_argument("--delta", type=float, required=True)
     action_estimate.add_argument(
         "--at", required=True, type=_parse_as_of, help="timezone-aware ISO time"
+    )
+    action_estimate.add_argument(
+        "--config", default="config/runtime.toml", help="runtime config path"
     )
     lims_correction = subparsers.add_parser(
         "evaluate-lims-correction", help="evaluate a delayed PAK-to-LIMS correction"
@@ -960,11 +1063,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     residualization.add_argument("--dataset", required=True, help="prepared dataset directory")
     residualization.add_argument("--output", default=None, help="new JSON report path")
+    residualization.add_argument(
+        "--config", default="config/runtime.toml", help="runtime config path"
+    )
     ablation = subparsers.add_parser(
         "ablate-v2-features", help="compare PAK/HT/AVT groups on 2024 temporal folds"
     )
     ablation.add_argument("--dataset", required=True, help="prepared dataset directory")
     ablation.add_argument("--output", default=None, help="new JSON report path")
+    ablation.add_argument("--config", default="config/runtime.toml", help="runtime config path")
     ablation.add_argument(
         "--group",
         action="append",
@@ -984,6 +1091,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     replay = subparsers.add_parser("replay", help="replay one historical forecast point")
     replay.add_argument("--dataset", required=True, help="prepared dataset directory")
     replay.add_argument("--model", required=True, help="trusted local model directory")
+    replay.add_argument(
+        "--action-model",
+        default=None,
+        help="optional verified production action artifact directory",
+    )
     replay.add_argument("--scenario", default="history", help="scenario id or JSON path")
     replay.add_argument("--at", required=True, type=_parse_as_of, help="timezone-aware ISO time")
     replay.add_argument("--config", default="config/runtime.toml", help="runtime config path")
@@ -1037,7 +1149,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(preparation_result, ensure_ascii=False, sort_keys=True))
             return 0
         if args.command == "build-state":
-            state_result = build_state_command(args.dataset, args.scenario, args.as_of, args.config)
+            state_result = build_state_command(
+                args.dataset, args.scenario, args.as_of, args.config
+            )
             print(state_result.model_dump_json(indent=2))
             return 0
         if args.command == "train":
@@ -1053,7 +1167,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(training_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "diagnose-ml":
-            diagnostic_result = diagnose_ml_command(args.dataset)
+            diagnostic_result = diagnose_ml_command(args.dataset, config_path=args.config)
             print(json.dumps(diagnostic_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "train-v2-shadow":
@@ -1066,7 +1180,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(v2_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "replay-v2-shadow":
-            v2_replay_result = replay_v2_shadow_command(args.dataset, args.model, args.at)
+            v2_replay_result = replay_v2_shadow_command(
+                args.dataset, args.model, args.at, config_path=args.config
+            )
             print(json.dumps(v2_replay_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "evaluate-action-shadow":
@@ -1077,7 +1193,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "action-shadow-estimate":
             action_result = action_shadow_estimate_command(
-                args.dataset, args.model, args.control, args.delta, args.at
+                args.dataset,
+                args.model,
+                args.control,
+                args.delta,
+                args.at,
+                config_path=args.config,
             )
             print(json.dumps(action_result, ensure_ascii=False, indent=2))
             return 0
@@ -1089,13 +1210,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "evaluate-action-residualization":
             residual_result = evaluate_action_residualization_command(
-                args.dataset, output=args.output
+                args.dataset, output=args.output, config_path=args.config
             )
             print(json.dumps(residual_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "ablate-v2-features":
             ablation_result = ablate_v2_features_command(
-                args.dataset, groups=tuple(args.group), output=args.output
+                args.dataset,
+                groups=tuple(args.group),
+                output=args.output,
+                config_path=args.config,
             )
             print(json.dumps(ablation_result, ensure_ascii=False, indent=2))
             return 0
@@ -1116,6 +1240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.model,
                 args.scenario,
                 args.at,
+                action_model_path=args.action_model,
                 config_path=args.config,
                 run_dir=args.run_dir,
             )

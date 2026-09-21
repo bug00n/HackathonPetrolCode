@@ -6,7 +6,9 @@ import json
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from source.acceptance import (
@@ -18,6 +20,8 @@ from source.acceptance import (
 )
 from source.config import load_runtime_config, load_scenario
 from source.contracts import (
+    ConstraintBasis,
+    ControlSpec,
     DecisionContext,
     Observation,
     OperationMode,
@@ -27,6 +31,12 @@ from source.contracts import (
     Stage,
     Validity,
 )
+<<<<<<< HEAD
+=======
+from source.ml.artifacts import sha256_file
+from source.ml.action_effects import VerifiedActionEffectModel, combine_forecast_action_model
+from source.ml.controls import ActionEffectEvidence, JointControlDomain
+>>>>>>> e70cafe (fix)
 from source.orchestrator import run_cycle
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -145,6 +155,111 @@ def test_model_freeze_verifies_hashes_and_rejects_tampering(tmp_path: Path) -> N
         verify_model_freeze(tmp_path, freeze)
 
 
+def test_model_freeze_accepts_only_fully_gated_action_artifact(tmp_path: Path) -> None:
+    artifact = tmp_path / "artifacts/models/action-effect-test"
+    artifact.mkdir(parents=True)
+    model = artifact / "model.joblib"
+    metadata_path = artifact / "metadata.json"
+    metrics = artifact / "metrics.json"
+    model.write_bytes(b"trusted-local-action-model")
+    model_hash = sha256_file(model)
+    digest = "f" * 64
+    gates = {
+        "minimum_episodes": True,
+        "per_control_episodes": True,
+        "mae_gain_10_percent": True,
+        "validation_upper_coverage": True,
+        "audit_upper_coverage": True,
+        "sign_stability": True,
+        "engineering_bounds": True,
+        "shadow_replay": True,
+        "technologist_pilot": True,
+    }
+    metadata = {
+        "model_id": "action-effect-test",
+        "model_sha256": model_hash,
+        "training_dataset_id": "dataset00001",
+        "git_commit": "a" * 40,
+        "python_version": "3.12.3",
+        "sklearn_version": "1.9.0",
+        "artifact_kind": "action_effect",
+        "supports_actions": True,
+        "dataset_fingerprints": {
+            "config_sha256": digest,
+            "tag_dictionary_sha256": digest,
+            "telemetry_rules_sha256": digest,
+        },
+        "controls": [
+            {
+                "signal_id": "ht:P8",
+                "unit": "MPa",
+                "lower": 0.1,
+                "upper": 0.2,
+                "max_step": 0.01,
+                "step": 0.005,
+                "evidence_ref": "engineering-bounds.md#P8",
+                "basis": "confirmed",
+                "enabled": True,
+            },
+            {
+                "signal_id": "ht:F19",
+                "unit": "t/h",
+                "lower": 180.0,
+                "upper": 230.0,
+                "max_step": 5.0,
+                "step": 2.5,
+                "evidence_ref": "engineering-bounds.md#F19",
+                "basis": "confirmed",
+                "enabled": True,
+            },
+        ],
+        "horizons_minutes": [60, 120, 180],
+        "lag_evidence": {"selected_lag_minutes": 60},
+        "gate_report": gates,
+        "gate_report_hashes": {"validation": digest, "audit": digest},
+    }
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    metrics.write_text(json.dumps({"test_used_for_selection": False}), encoding="utf-8")
+    freeze = tmp_path / "freeze.json"
+
+    def write_freeze() -> None:
+        freeze.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "training_dataset_id": "dataset00001",
+                    "training_git_commit": "a" * 40,
+                    "python_version": "3.12.3",
+                    "sklearn_version": "1.9.0",
+                    "config_sha256": digest,
+                    "tag_dictionary_sha256": digest,
+                    "telemetry_rules_sha256": digest,
+                    "artifacts": [
+                        {
+                            "model_id": "action-effect-test",
+                            "path": "artifacts/models/action-effect-test",
+                            "model_sha256": model_hash,
+                            "metadata_sha256": sha256_file(metadata_path),
+                            "metrics_sha256": sha256_file(metrics),
+                        }
+                    ],
+                    "evaluation_reports": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write_freeze()
+    assert verify_model_freeze(tmp_path, freeze)["verified_models"] == ["action-effect-test"]
+
+    metadata["gate_report"]["technologist_pilot"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    write_freeze()
+
+    with pytest.raises(ValueError, match="action gate failed: technologist_pilot"):
+        verify_model_freeze(tmp_path, freeze)
+
+
 def test_failed_acceptance_does_not_publish_partial_directory(tmp_path: Path) -> None:
     bad_catalog = tmp_path / "episodes.json"
     payload = json.loads((PROJECT_ROOT / "config/demo_episodes.json").read_text(encoding="utf-8"))
@@ -205,3 +320,163 @@ def test_history_forecast_without_action_capability_abstains_explicitly(
     assert result.status.value == "abstain"
     assert result.selected is None
     assert "ACTION_MODEL_UNAVAILABLE" in result.reason_codes
+
+
+class _ForecastModel:
+    def __init__(self) -> None:
+        self.metadata = SimpleNamespace(
+            model_id="forecast-fixture",
+            capabilities=SimpleNamespace(
+                supports_forecast=True,
+                supports_actions=False,
+                supports_uncertainty=True,
+                supports_exceedance_probability=False,
+                supports_multi_horizon=False,
+            ),
+            target_signal="ht:2:Mg.Sulfur",
+            target_source="pak",
+            target_unit="mg/kg",
+            horizon_minutes=60,
+            feature_names=("baseline",),
+            processing={},
+        )
+        self.feature_names = ("baseline",)
+
+    def predict(self, features: pd.DataFrame) -> list[float]:
+        _ = features
+        return [9.8]
+
+    def predict_upper(self, features: pd.DataFrame) -> list[float]:
+        _ = features
+        return [11.0]
+
+    def check_applicability(self, features: pd.DataFrame) -> SimpleNamespace:
+        _ = features
+        return SimpleNamespace(available=True, reason_code=None)
+
+
+def _history_action_state(as_of: datetime) -> ProcessState:
+    def observation(signal_id: str, value: float, unit: str) -> Observation:
+        return Observation(
+            id=f"obs:{signal_id}",
+            signal_id=signal_id,
+            stage=Stage.HYDROTREATMENT,
+            source=SourceKind.TELEMETRY if signal_id != "ht:2:Mg.Sulfur" else SourceKind.PAK,
+            measured_at=as_of,
+            available_at=as_of,
+            value=value,
+            unit=unit,
+            validity=Validity.VALID,
+            source_ref="fixture",
+        )
+
+    observations = {
+        "ht:2:Mg.Sulfur": observation("ht:2:Mg.Sulfur", 9.8, "mg/kg"),
+        "ht:P8": observation("ht:P8", 0.15, "MPa"),
+        "ht:F19": observation("ht:F19", 200.0, "t/h"),
+    }
+    return ProcessState(
+        state_id="history-action-state",
+        as_of=as_of,
+        dataset_id="dataset00001",
+        mode=OperationMode.HISTORY,
+        signals={
+            signal_id: SignalSnapshot(
+                selected=item,
+                alternatives=(),
+                age_seconds=0,
+                fresh=True,
+                issues=(),
+            )
+            for signal_id, item in observations.items()
+        },
+        issues=(),
+    )
+
+
+def _verified_action_model() -> VerifiedActionEffectModel:
+    controls = (
+        ControlSpec(
+            signal_id="ht:P8",
+            unit="MPa",
+            lower=0.1,
+            upper=0.2,
+            max_step=0.01,
+            step=0.005,
+            evidence_ref="engineering-bounds.md#P8",
+            basis=ConstraintBasis.CONFIRMED,
+            enabled=True,
+        ),
+        ControlSpec(
+            signal_id="ht:F19",
+            unit="t/h",
+            lower=180.0,
+            upper=230.0,
+            max_step=5.0,
+            step=2.5,
+            evidence_ref="engineering-bounds.md#F19",
+            basis=ConstraintBasis.CONFIRMED,
+            enabled=True,
+        ),
+    )
+    evidence = ActionEffectEvidence(
+        "2025-01-01",
+        "2026-01-01",
+        240,
+        60,
+        1.0,
+        0.8,
+        per_control_episode_counts={"ht:P8": 120, "ht:F19": 120},
+        conservative_coverage=0.96,
+        sign_stable_folds=3,
+        shadow_replay_passed=True,
+        pilot_approved=True,
+    )
+    domain = JointControlDomain(
+        signal_ids=("ht:P8", "ht:F19"),
+        center=(0.15, 200.0),
+        scale=(1.0, 100.0),
+        inverse_correlation=((1.0, 0.0), (0.0, 1.0)),
+        max_distance_squared=100.0,
+    )
+    return VerifiedActionEffectModel(
+        model_id="action-fixture",
+        controls=controls,
+        joint_domain=domain,
+        evidence=evidence,
+        sulfur_coefficients={"ht:P8": -200.0},
+        risk_coefficients={"ht:P8": -10.0},
+        throughput_coefficients={},
+        cost_coefficients={},
+        evidence_ref="reports/action/fixture-gates.json",
+    )
+
+
+def test_history_with_verified_action_artifact_can_recommend_setpoints(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    as_of = datetime(2026, 1, 15, 9, tzinfo=UTC)
+    model = combine_forecast_action_model(_ForecastModel(), _verified_action_model())
+    monkeypatch.setattr(
+        "source.orchestrator._build_cycle_state",
+        lambda *_: _history_action_state(as_of),
+    )
+    monkeypatch.setattr(
+        "source.orchestrator.build_features",
+        lambda *_: pd.DataFrame({"baseline": [9.8]}),
+    )
+
+    result = run_cycle(
+        data=SimpleNamespace(manifest=SimpleNamespace(dataset_id="dataset00001")),
+        as_of=as_of,
+        model=model,
+        scenario=load_scenario(PROJECT_ROOT / "config/scenarios/history.json"),
+        config=load_runtime_config(PROJECT_ROOT / "config/runtime.toml"),
+        context=DecisionContext(),
+        run_dir=tmp_path,
+    )
+
+    assert result.status.value == "recommend"
+    assert result.selected is not None
+    assert result.selected.candidate.kind.value == "setpoints"
+    assert "ACTION_MODEL_UNAVAILABLE" not in result.reason_codes

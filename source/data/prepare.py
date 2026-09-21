@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +32,8 @@ from source.contracts import (
 
 PREPARATION_VERSION = "1"
 _ARCHIVE_MEMBERS = {"data/avt_tags.csv", "data/242000_tags.csv"}
+_PUBLISH_ATTEMPTS = 5
+_PUBLISH_RETRY_SECONDS = 0.05
 
 RAW_UNIT_MAP: dict[str, Unit] = {
     "°С": Unit.CELSIUS,
@@ -146,6 +149,23 @@ def _source_artifact(path: Path, root: Path) -> SourceArtifact:
     except ValueError:
         artifact_path = path.as_posix()
     return SourceArtifact(path=artifact_path, sha256=_sha256(path), size_bytes=path.stat().st_size)
+
+
+def _replace_path(source: Path, target: Path) -> None:
+    """Wrap platform-specific atomic replace for retry tests."""
+    source.replace(target)
+
+
+def _publish_directory(temporary: Path, target: Path) -> None:
+    """Publish a prepared directory with a bounded retry for transient Windows locks."""
+    for attempt in range(_PUBLISH_ATTEMPTS):
+        try:
+            _replace_path(temporary, target)
+            return
+        except PermissionError:
+            if attempt == _PUBLISH_ATTEMPTS - 1:
+                raise
+            time.sleep(_PUBLISH_RETRY_SECONDS * (2**attempt))
 
 
 def _extract_telemetry(archive: Path, destination: Path) -> Path:
@@ -364,7 +384,7 @@ def write_prepared_dataset(data: PreparedData, output_root: Path) -> Path:
         )
         if any(not path.is_file() for path in required):
             raise OSError("prepared dataset publication is incomplete")
-        temporary.replace(target)
+        _publish_directory(temporary, target)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise

@@ -1,7 +1,7 @@
-"""Tkinter desktop interface for model-demo and read-only research artifacts.
+"""Tkinter desktop interface for model-demo, forecasts and gated action artifacts.
 
-The UI never implies that real setpoint or product-quality action models are
-available: historical effects and schema-1.2 forecasts are explicitly shadow-only.
+Historical effects and schema-1.2 forecasts are shadow-only. History replay can
+show an actionable recommendation only when a verified action artifact is supplied.
 """
 
 from __future__ import annotations
@@ -33,13 +33,27 @@ from source.main import (
     evaluate_lims_correction_command,
     prepare_command,
 <<<<<<< HEAD
+<<<<<<< HEAD
     run_history_command,
 =======
     replay_command,
+=======
+>>>>>>> e70cafe (fix)
     replay_v2_shadow_command,
 >>>>>>> 1527107 (Extend UI and ML analysis materials)
     run_model_demo,
     validate_stage0,
+)
+from source.ui_data import (
+    UiHistoryReplayView,
+    UiHybridBlendView,
+    UiStageSnapshot,
+    default_as_of_for_dataset,
+    discover_ui_context,
+    history_replay_to_view,
+    ui_history_snapshot,
+    ui_hybrid_snapshot,
+    ui_stage_snapshot,
 )
 
 BG = "#F5F7F7"
@@ -63,6 +77,17 @@ SCENARIO_LABELS = {
     "Низкое цетановое число": "blend_cetane_risk",
     "Недостающие данные": "blend_missing",
 }
+
+PAGE_ALIASES = {"recommendation": "blend"}
+PAGE_CHOICES = (
+    "overview",
+    "avt",
+    "hydrotreating",
+    "blend",
+    "history",
+    "journal",
+    "recommendation",
+)
 
 
 @dataclass(frozen=True)
@@ -205,7 +230,9 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         proposed_additive = result.selected.candidate.additive_mass_fraction
 
     if result.status is RecommendationStatus.RECOMMEND:
-        changed = [key for key in proposed if proposed.get(key, 0.0) > current.get(key, 0.0) + 1e-9]
+        changed = [
+            key for key in proposed if proposed.get(key, 0.0) > current.get(key, 0.0) + 1e-9
+        ]
         component = changed[0] if changed else "смеси"
         banner_title = "Доступен модельный вариант"
         banner_detail = "Расчёт относится только к синтетическому сценарию блендинга."
@@ -348,6 +375,56 @@ def format_v2_forecast_payload(payload: dict[str, object]) -> str:
     return "\n".join(rows)
 
 
+def format_history_replay_view(view: UiHistoryReplayView) -> str:
+    """Render a history replay result without hiding the raw journal payload."""
+    rows = [
+        "Исторический forecast серы",
+        view.message,
+        "",
+        f"Status: {view.recommendation_status or view.status}",
+        f"Model: {view.model_id or '—'}",
+        f"As of: {view.as_of or '—'}",
+        f"Сера point: {_format_value(view.sulfur_point)}",
+        f"Сера upper: {_format_value(view.sulfur_upper)}",
+        f"Upper status: {view.upper_status}",
+        f"Action state: {view.action_state}",
+        f"Selected kind: {view.selected_kind or '—'}",
+        f"Reason codes: {', '.join(view.reason_codes) if view.reason_codes else '—'}",
+    ]
+    if view.issues:
+        rows.append("Issues: " + " | ".join(view.issues))
+    if view.journal_path:
+        rows.append(f"Journal: {view.journal_path}")
+    if view.raw is not None:
+        rows.extend(
+            ("", "Raw recommendation JSON:", json.dumps(view.raw, ensure_ascii=False, indent=2))
+        )
+    return "\n".join(rows)
+
+
+def format_hybrid_blend_view(view: UiHybridBlendView) -> str:
+    """Render the hybrid sulfur-only blend panel in a compact form."""
+    rows = [
+        "Hybrid sulfur-only blend",
+        view.message,
+        "",
+        f"Status: {view.status}",
+        f"Scenario: {view.scenario_id}",
+        f"Model: {view.model_id or '—'}",
+        f"State: {view.source_state_id or '—'}",
+        f"Component A sulfur point: {_format_value(view.component_sulfur_point)}",
+        f"Component A sulfur upper: {_format_value(view.component_sulfur_upper)}",
+        f"Blend sulfur point: {_format_value(view.blend_sulfur_point)}",
+        f"Blend sulfur upper: {_format_value(view.blend_sulfur_upper)}",
+        f"Constraint: {view.constraint_status}",
+    ]
+    if view.reason_codes:
+        rows.append("Reason codes: " + ", ".join(view.reason_codes))
+    if view.assumptions:
+        rows.append("Assumptions: " + " | ".join(view.assumptions))
+    return "\n".join(rows)
+
+
 class PetrolCodeApp(tk.Tk):
     """Resizable operator desktop shell backed by the existing Python API."""
 
@@ -426,8 +503,15 @@ class PetrolCodeApp(tk.Tk):
         tk.Frame(self.header, bg="#65727A", width=1, height=26).pack(side="left", padx=(0, 14))
         for key, label in (
             ("overview", "Обзор"),
+<<<<<<< HEAD
             ("recommendation", "Рекомендации"),
             ("history", "История"),
+=======
+            ("avt", "АВТ"),
+            ("hydrotreating", "Гидроочистка"),
+            ("blend", "Смесь"),
+            ("history", "История/ML"),
+>>>>>>> e70cafe (fix)
             ("journal", "Журнал"),
         ):
             button = tk.Button(
@@ -465,17 +549,28 @@ class PetrolCodeApp(tk.Tk):
             button.configure(fg="white" if key == page else "#C0C8CD")
 
     def show_page(self, page: str) -> None:
+        page = PAGE_ALIASES.get(page, page)
         self._page = page
         self._set_nav(page)
         self._clear_body()
         if page == "overview":
             self._render_overview()
-        elif page == "recommendation":
+        elif page == "avt":
+            self._render_stage_page("avt")
+        elif page == "hydrotreating":
+            self._render_stage_page("hydrotreating")
+        elif page == "blend":
             self._render_recommendation()
         elif page == "history":
             self._render_history()
+<<<<<<< HEAD
         else:
+=======
+        elif page == "journal":
+>>>>>>> e70cafe (fix)
             self._render_journal()
+        else:
+            self._render_overview()
 
     def _page_container(self) -> tk.Frame:
         canvas = tk.Canvas(self.body, bg=BG, bd=0, highlightthickness=0)
@@ -542,6 +637,183 @@ class PetrolCodeApp(tk.Tk):
             pady=10,
             cursor="hand2",
         )
+
+    @staticmethod
+    def _field(
+        parent: tk.Misc, label: str, variable: tk.StringVar, width: int | None = None
+    ) -> None:
+        tk.Label(parent, text=label, bg=BG, fg=TEXT, font=("Segoe UI", 10, "bold")).pack(
+            anchor="w"
+        )
+        entry = tk.Entry(parent, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1, width=width)
+        entry.pack(fill="x", pady=(4, 10), ipady=6)
+
+    @staticmethod
+    def _stage_tone(status: str) -> str:
+        return {"fresh": "ok", "stale": "unknown", "missing": "bad"}.get(status, "unknown")
+
+    def _render_stage_cards(self, parent: tk.Misc) -> None:
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", pady=(16, 12))
+        context = discover_ui_context()
+        for page, label in (("avt", "АВТ"), ("hydrotreating", "Гидроочистка")):
+            snapshot = ui_stage_snapshot(page)
+            card = self._surface(row)
+            card.pack(side="left", fill="x", expand=True, padx=(0, 12), ipady=8)
+            tk.Label(card, text=label, bg=SURFACE, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(
+                anchor="w", padx=18, pady=(14, 4)
+            )
+            tk.Label(
+                card,
+                text=(
+                    f"fresh {snapshot.fresh_count} · stale {snapshot.stale_count} · "
+                    f"missing {snapshot.missing_count}"
+                ),
+                bg=SURFACE,
+                fg=TEXT,
+                font=("Segoe UI", 11, "bold"),
+            ).pack(anchor="w", padx=18)
+            tk.Label(
+                card,
+                text=snapshot.message,
+                bg=SURFACE,
+                fg=MUTED,
+                wraplength=360,
+                justify="left",
+            ).pack(anchor="w", padx=18, pady=(6, 14))
+            self._secondary_button(card, "Открыть", partial(self.show_page, page)).pack(
+                anchor="w", padx=18, pady=(0, 14)
+            )
+        card = self._surface(row)
+        card.pack(side="left", fill="x", expand=True, ipady=8)
+        tk.Label(card, text="История/ML", bg=SURFACE, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(
+            anchor="w", padx=18, pady=(14, 4)
+        )
+        forecast_count = len(context.forecast_artifacts)
+        action_count = len(context.action_artifacts)
+        dataset_text = "dataset найден" if context.latest_dataset else "dataset отсутствует"
+        tk.Label(
+            card,
+            text=f"{dataset_text} · forecast {forecast_count} · action {action_count}",
+            bg=SURFACE,
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w", padx=18)
+        tk.Label(
+            card,
+            text=(
+                "Forecast работает read-only; actionable совет включается только "
+                "verified action artifact."
+            ),
+            bg=SURFACE,
+            fg=MUTED,
+            wraplength=360,
+            justify="left",
+        ).pack(anchor="w", padx=18, pady=(6, 14))
+        self._secondary_button(card, "Открыть", partial(self.show_page, "history")).pack(
+            anchor="w", padx=18, pady=(0, 14)
+        )
+
+    def _render_stage_page(self, page_key: str) -> None:
+        page = self._page_container()
+        title = "АВТ" if page_key == "avt" else "Гидроочистка"
+        subtitle = (
+            "Read-only контекст установки АВТ: значения, единицы, источник и свежесть."
+            if page_key == "avt"
+            else "Read-only контекст гидроочистки: качество, P8/F19 readiness и газовый контур."
+        )
+        tk.Label(page, text=title, bg=BG, fg=TEXT, font=("Segoe UI", 28, "bold")).pack(anchor="w")
+        tk.Label(page, text=subtitle, bg=BG, fg=MUTED, font=("Segoe UI", 11)).pack(
+            anchor="w", pady=(2, 18)
+        )
+
+        context = discover_ui_context()
+        dataset_var = tk.StringVar(value=context.latest_dataset or "")
+        as_of_var = tk.StringVar(value=default_as_of_for_dataset(dataset_var.get() or None))
+        controls = self._surface(page)
+        controls.pack(fill="x", pady=(0, 14), padx=0)
+        inner = tk.Frame(controls, bg=SURFACE)
+        inner.pack(fill="x", padx=20, pady=16)
+        left = tk.Frame(inner, bg=SURFACE)
+        left.pack(side="left", fill="x", expand=True, padx=(0, 14))
+        right = tk.Frame(inner, bg=SURFACE)
+        right.pack(side="left", fill="x", expand=True)
+        self._field(left, "Prepared dataset", dataset_var)
+        self._field(right, "As of (ISO timezone)", as_of_var)
+        content = tk.Frame(page, bg=BG)
+        content.pack(fill="both", expand=True)
+
+        def draw() -> None:
+            for child in content.winfo_children():
+                child.destroy()
+            snapshot = ui_stage_snapshot(page_key, dataset_var.get() or None, as_of_var.get())
+            self._render_stage_snapshot(content, snapshot)
+
+        self._primary_button(inner, "Обновить", draw).pack(side="right", padx=(14, 0), pady=20)
+        draw()
+
+    def _render_stage_snapshot(self, parent: tk.Misc, snapshot: UiStageSnapshot) -> None:
+        summary = self._surface(parent)
+        summary.pack(fill="x", pady=(0, 14))
+        for label, value in (
+            ("Dataset", snapshot.dataset_id or "—"),
+            ("As of", snapshot.as_of or "—"),
+            ("Fresh", str(snapshot.fresh_count)),
+            ("Stale", str(snapshot.stale_count)),
+            ("Missing", str(snapshot.missing_count)),
+        ):
+            cell = tk.Frame(summary, bg=SURFACE)
+            cell.pack(side="left", fill="x", expand=True, padx=18, pady=16)
+            tk.Label(cell, text=label, bg=SURFACE, fg=MUTED, font=("Segoe UI", 9, "bold")).pack(
+                anchor="w"
+            )
+            tk.Label(cell, text=value, bg=SURFACE, fg=TEXT, font=("Segoe UI", 14, "bold")).pack(
+                anchor="w", pady=(3, 0)
+            )
+        if snapshot.status != "ready":
+            self._text_content(parent, snapshot.message)
+            return
+        table = ttk.Treeview(
+            parent,
+            columns=("group", "signal", "label", "value", "source", "age", "status", "reason"),
+            show="headings",
+            height=max(8, min(18, len(snapshot.rows))),
+            style="Petrol.Treeview",
+        )
+        for key, title, width in (
+            ("group", "Группа", 150),
+            ("signal", "Signal", 120),
+            ("label", "Смысл", 310),
+            ("value", "Значение", 120),
+            ("source", "Источник", 95),
+            ("age", "Возраст", 95),
+            ("status", "Статус", 95),
+            ("reason", "Ограничение", 280),
+        ):
+            table.heading(key, text=title)
+            table.column(key, width=width, anchor="w", stretch=True)
+        table.tag_configure("ok", foreground=GREEN)
+        table.tag_configure("bad", foreground=RED)
+        table.tag_configure("unknown", foreground=AMBER)
+        for row in snapshot.rows:
+            age = "—" if row.age_minutes is None else f"{row.age_minutes:.0f} мин"
+            issue = row.issue or row.read_only_reason
+            table.insert(
+                "",
+                "end",
+                values=(
+                    row.group,
+                    row.signal_id,
+                    row.label,
+                    row.value_text,
+                    row.source,
+                    age,
+                    row.freshness,
+                    issue,
+                ),
+                tags=(self._stage_tone(row.freshness),),
+            )
+        table.pack(fill="both", expand=True)
 
     def _render_overview(self) -> None:
         page = self._page_container()
@@ -630,22 +902,23 @@ class PetrolCodeApp(tk.Tk):
         self._render_kpis(chart_side, view)
         self._render_chart(chart_side, view)
         self._render_info(info, view)
+        self._render_stage_cards(page)
 
         stages = tk.Frame(page, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1)
         stages.pack(fill="x", pady=(16, 12), ipady=4)
-        for text, enabled in (("АВТ", False), ("Гидроочистка", False), ("Смесь", True)):
-            command = (
-                partial(self.show_page, "recommendation")
-                if enabled
-                else self._show_stage_placeholder
-            )
+        for text, target in (
+            ("АВТ", "avt"),
+            ("Гидроочистка", "hydrotreating"),
+            ("Смесь", "blend"),
+        ):
+            command = partial(self.show_page, target)
             button = tk.Button(
                 stages,
                 text=text,
                 command=command,
-                bg=TEAL if enabled else SOFT,
-                fg="white" if enabled else TEXT,
-                activebackground=TEAL_HOVER if enabled else SOFT,
+                bg=TEAL,
+                fg="white",
+                activebackground=TEAL_HOVER,
                 bd=0,
                 pady=8,
                 font=("Segoe UI", 10, "bold"),
@@ -822,6 +1095,169 @@ class PetrolCodeApp(tk.Tk):
             side="right"
         )
 
+    def _render_history(self) -> None:
+        page = self._page_container()
+        tk.Label(page, text="История и ML", bg=BG, fg=TEXT, font=("Segoe UI", 28, "bold")).pack(
+            anchor="w"
+        )
+        tk.Label(
+            page,
+            text=(
+                "Исторический forecast read-only; actionable setpoints показываются "
+                "только с verified action artifact."
+            ),
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 11),
+        ).pack(anchor="w", pady=(2, 18))
+        context = discover_ui_context()
+        dataset_var = tk.StringVar(value=context.latest_dataset or "")
+        model_var = tk.StringVar(
+            value=context.forecast_artifacts[-1].path if context.forecast_artifacts else ""
+        )
+        action_var = tk.StringVar(
+            value=context.action_artifacts[-1].path if context.action_artifacts else ""
+        )
+        as_of_var = tk.StringVar(value=default_as_of_for_dataset(dataset_var.get() or None))
+        fields = self._surface(page)
+        fields.pack(fill="x", pady=(0, 14))
+        grid = tk.Frame(fields, bg=SURFACE)
+        grid.pack(fill="x", padx=20, pady=16)
+        for column in range(2):
+            grid.grid_columnconfigure(column, weight=1)
+        left = tk.Frame(grid, bg=SURFACE)
+        left.grid(row=0, column=0, sticky="ew", padx=(0, 12))
+        right = tk.Frame(grid, bg=SURFACE)
+        right.grid(row=0, column=1, sticky="ew", padx=(12, 0))
+        self._field(left, "Prepared dataset", dataset_var)
+        self._field(left, "Forecast artifact", model_var)
+        self._field(right, "As of (ISO timezone)", as_of_var)
+        self._field(right, "Verified action artifact (optional)", action_var)
+        output = tk.Text(page, height=24, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
+        output.pack(fill="both", expand=True)
+
+        def render(view: UiHistoryReplayView) -> None:
+            output.configure(state="normal")
+            output.delete("1.0", "end")
+            output.insert("1.0", format_history_replay_view(view))
+            output.configure(state="disabled")
+
+        def calculate() -> None:
+            view = ui_history_snapshot(
+                dataset_var.get().strip() or None,
+                model_var.get().strip() or None,
+                as_of_var.get(),
+                action_var.get().strip() or None,
+            )
+            self.after(0, lambda: render(view))
+
+        actions = tk.Frame(page, bg=BG)
+        actions.pack(fill="x", pady=(12, 0))
+        self._primary_button(
+            actions,
+            "Рассчитать history replay",
+            lambda: threading.Thread(target=calculate, daemon=True).start(),
+        ).pack(side="left")
+        self._secondary_button(actions, "Журнал", lambda: self.show_page("journal")).pack(
+            side="left", padx=12
+        )
+        render(
+            UiHistoryReplayView(
+                status="empty",
+                message="Выберите dataset/model и запустите расчёт.",
+                recommendation_status=None,
+                scenario_id=None,
+                model_id=None,
+                as_of=None,
+                sulfur_point=None,
+                sulfur_upper=None,
+                upper_status="unknown",
+                selected_kind=None,
+                action_state="unavailable",
+                reason_codes=(),
+                issues=(),
+                journal_path=None,
+                raw=None,
+            )
+        )
+
+    def _render_hybrid_panel(self, parent: tk.Misc) -> None:
+        panel = self._surface(parent)
+        panel.pack(fill="x", pady=(16, 0))
+        tk.Label(
+            panel,
+            text="Hybrid: АВТ → гидроочистка → смесь",
+            bg=SURFACE,
+            fg=TEXT,
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w", padx=26, pady=(16, 4))
+        tk.Label(
+            panel,
+            text=(
+                "Компонент A берётся только из history forecast. Если forecast недоступен, "
+                "UI не подставляет synthetic production-значение."
+            ),
+            bg=SURFACE,
+            fg=MUTED,
+            wraplength=1100,
+            justify="left",
+        ).pack(anchor="w", padx=26, pady=(0, 12))
+        context = discover_ui_context()
+        dataset_var = tk.StringVar(value=context.latest_dataset or "")
+        model_var = tk.StringVar(
+            value=context.forecast_artifacts[-1].path if context.forecast_artifacts else ""
+        )
+        as_of_var = tk.StringVar(value=default_as_of_for_dataset(dataset_var.get() or None))
+        form = tk.Frame(panel, bg=SURFACE)
+        form.pack(fill="x", padx=26)
+        left = tk.Frame(form, bg=SURFACE)
+        left.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        middle = tk.Frame(form, bg=SURFACE)
+        middle.pack(side="left", fill="x", expand=True, padx=10)
+        right = tk.Frame(form, bg=SURFACE)
+        right.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self._field(left, "Prepared dataset", dataset_var)
+        self._field(middle, "Forecast artifact", model_var)
+        self._field(right, "As of (ISO timezone)", as_of_var)
+        output = tk.Text(panel, height=10, bg="#FAFBFB", fg=TEXT, bd=0, wrap="word")
+        output.pack(fill="x", padx=26, pady=(4, 16))
+
+        def render(view: UiHybridBlendView) -> None:
+            output.configure(state="normal")
+            output.delete("1.0", "end")
+            output.insert("1.0", format_hybrid_blend_view(view))
+            output.configure(state="disabled")
+
+        def calculate() -> None:
+            view = ui_hybrid_snapshot(
+                dataset_var.get().strip() or None,
+                model_var.get().strip() or None,
+                as_of_var.get(),
+            )
+            self.after(0, lambda: render(view))
+
+        self._secondary_button(
+            panel,
+            "Рассчитать hybrid",
+            lambda: threading.Thread(target=calculate, daemon=True).start(),
+        ).pack(anchor="e", padx=26, pady=(0, 16))
+        render(
+            UiHybridBlendView(
+                status="empty",
+                message="Hybrid не рассчитан.",
+                scenario_id="hybrid_blend",
+                source_state_id=None,
+                model_id=None,
+                component_sulfur_point=None,
+                component_sulfur_upper=None,
+                blend_sulfur_point=None,
+                blend_sulfur_upper=None,
+                constraint_status="unknown",
+                assumptions=(),
+                reason_codes=(),
+            )
+        )
+
     def _render_recommendation(self) -> None:
         page = self._page_container()
         view = self._view()
@@ -950,6 +1386,7 @@ class PetrolCodeApp(tk.Tk):
             "Альтернативы и ход расчёта",
             self._alternatives_content,
         ).pack(fill="x")
+        self._render_hybrid_panel(page)
         footer = tk.Frame(page, bg=BG)
         footer.pack(fill="x", pady=(18, 0))
         self._primary_button(footer, "Скачать расчёт", self.export_result).pack(side="left")
@@ -1499,7 +1936,7 @@ class PetrolCodeApp(tk.Tk):
         """Replay a trusted local sulfur artifact at one historical timestamp."""
         dialog = tk.Toplevel(self)
         dialog.title("Исторический прогноз серы")
-        dialog.geometry("760x570")
+        dialog.geometry("760x640")
         dialog.configure(bg=BG)
         dialog.transient(self)
         fields = tk.Frame(dialog, bg=BG)
@@ -1507,12 +1944,18 @@ class PetrolCodeApp(tk.Tk):
         datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
         artifacts = sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json"))
         forecast_artifacts: list[Path] = []
+        action_artifacts: list[Path] = []
         for path in artifacts:
             if path.parent.name.startswith("action-shadow-"):
                 continue
             try:
                 metadata = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
+                continue
+            if metadata.get("artifact_kind") == "action_effect" and metadata.get(
+                "supports_actions"
+            ):
+                action_artifacts.append(path)
                 continue
             capabilities = metadata.get("capabilities")
             # LIMS correction consumes the ordinary PAK feature schema.  A v2
@@ -1525,14 +1968,20 @@ class PetrolCodeApp(tk.Tk):
             ):
                 forecast_artifacts.append(path)
         forecast_artifacts.sort(key=lambda path: path.stat().st_mtime)
+        action_artifacts.sort(key=lambda path: path.stat().st_mtime)
         dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
         model_var = tk.StringVar(
             value=str(forecast_artifacts[-1].parent) if forecast_artifacts else ""
         )
+        action_model_var = tk.StringVar(value="")
         at_var = tk.StringVar(value="2025-06-01T12:00:00+03:00")
         for label, variable in (
             ("Prepared dataset", dataset_var),
             ("Forecast artifact", model_var),
+            (
+                "Verified action artifact (optional)",
+                action_model_var,
+            ),
             ("Время состояния (ISO с timezone)", at_var),
         ):
             tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
@@ -1543,7 +1992,7 @@ class PetrolCodeApp(tk.Tk):
             fields,
             text=(
                 "Прогноз использует только доступные к выбранному времени данные. "
-                "Он предупреждает о риске качества, но не изменяет уставки."
+                "Без verified action artifact это предупреждение, а не совет по уставкам."
             ),
             bg=BG,
             fg=MUTED,
@@ -1562,8 +2011,14 @@ class PetrolCodeApp(tk.Tk):
                 at = datetime.fromisoformat(at_var.get().replace("Z", "+00:00"))
                 if at.tzinfo is None:
                     raise ValueError("время должно содержать timezone")
-                result = replay_command(dataset_var.get(), model_var.get(), "history", at)
-                text = result.model_dump_json(indent=2)
+                action_model = action_model_var.get().strip() or None
+                view = ui_history_snapshot(
+                    dataset_var.get(),
+                    model_var.get(),
+                    at,
+                    action_model,
+                )
+                text = format_history_replay_view(view)
             except Exception as exc:
                 text = f"Ошибка: {exc}"
             self.after(0, lambda: render(text))
@@ -1718,14 +2173,6 @@ class PetrolCodeApp(tk.Tk):
             lambda: threading.Thread(target=calculate, daemon=True).start(),
         ).pack(anchor="e", pady=(12, 0))
 
-    def _show_stage_placeholder(self, _: str | None = None) -> None:
-        messagebox.showinfo(
-            "Функция следующего этапа",
-            "Отдельный расчёт для этой стадии пока не подключён. Данные не подменяются заглушкой.",
-            parent=self,
-        )
-
-
 def smoke_snapshot(scenario_id: str) -> dict[str, Any]:
     """Headless smoke path used by CI and machines without a display."""
     scenario = load_scenario(PROJECT_ROOT / f"config/scenarios/{scenario_id}.json")
@@ -1769,10 +2216,12 @@ def history_smoke_snapshot(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="НЕФТЕКОД desktop interface")
-    parser.add_argument("--scenario", choices=tuple(SCENARIO_LABELS.values()), default="blend_risk")
+    parser.add_argument(
+        "--scenario", choices=tuple(SCENARIO_LABELS.values()), default="blend_risk"
+    )
     parser.add_argument(
         "--page",
-        choices=("overview", "recommendation", "journal"),
+        choices=PAGE_CHOICES,
         default="overview",
         help="initial screen",
     )
@@ -1818,10 +2267,19 @@ __all__ = [
     "history_smoke_snapshot",
 =======
     "format_action_shadow_payload",
+    "format_history_replay_view",
+    "format_hybrid_blend_view",
     "format_v2_forecast_payload",
+<<<<<<< HEAD
 >>>>>>> 1527107 (Extend UI and ML analysis materials)
+=======
+    "history_replay_to_view",
+>>>>>>> e70cafe (fix)
     "journal_entries",
     "main",
     "recommendation_to_view",
     "smoke_snapshot",
+    "ui_history_snapshot",
+    "ui_hybrid_snapshot",
+    "ui_stage_snapshot",
 ]

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Актуальные проблемы проекта
 
 Последнее обновление: 2026-09-14.
@@ -220,3 +221,51 @@ reason codes, model ID и доступный путь к журналу. Про�
 Эти результаты не закрывают AP-001--AP-008. Приоритет следующей работы:
 AP-001 и AP-002, затем history-экран и его обработка завершения, объяснения
 и корректная оценка модели.
+=======
+# Actual Problems
+
+Last reviewed: 2026-09-20.
+
+## Active blockers
+
+- `actual problems.md` was missing from the current branch and must stay part of acceptance evidence.
+- Frozen model artifacts referenced by `config/model_freeze.json` are not present locally, so `python -m source.main verify-model-freeze` fails before hash verification can complete.
+- Frozen evaluation reports referenced by `config/model_freeze.json` are not present locally.
+- The only local prepared dataset, `data/processed/d175aedffaba`, is stale relative to current `config/runtime.toml`, `config/tags.csv`, and telemetry rules. It was created with old hashes and a different LIMS delay assumption.
+- `python -m source.main diagnose-ml --dataset data/processed/d175aedffaba` fails on stale data with no valid PAK target rows; this should be reported as a dataset/runtime mismatch before ML diagnostics.
+- `write_prepared_dataset()` can hit a transient Windows `PermissionError` while atomically publishing a prepared dataset. Publication needs a bounded retry instead of flaky failure.
+- Current P8/F19 historical action artifacts remain shadow-only. `supports_actions=true` is blocked until engineering bounds, step/unit evidence, temporal gates, shadow replay, and technologist approval all pass.
+
+## Current implementation status
+
+- Model-demo acceptance is working: `blend_normal=hold`, risk scenarios recommend, and missing quality abstains.
+- History forecast is read-only unless a verified action artifact is supplied.
+- Tkinter UI is now stage-aware: `avt`, `hydrotreating`, `blend`, `history`, and `journal` have real screens or read-only projections instead of disabled placeholders.
+- Observed telemetry quantiles are research context only and must not become engineering limits.
+- `ht:P8` and `ht:F19` are the only first production-action candidates; `ht:T11` and `ht:F26` remain context-only.
+
+## Fixed in current working tree
+
+- Prepared dataset publication now retries transient Windows `PermissionError` during atomic directory replace.
+- CLI commands that consume prepared data now reject stale config/tag/rules hashes before ML diagnostics/training/replay.
+- `verify-model-freeze` now understands production action artifacts and checks controls, horizons, fingerprints and gate report hashes.
+- `replay` has an optional `--action-model` path. Without it, history remains forecast-only and abstains with `ACTION_MODEL_UNAVAILABLE`.
+- Tkinter history replay has a separate optional verified action artifact field and a dedicated `История/ML` screen.
+- Tkinter AVT and hydrotreatment buttons now open read-only stage dashboards with value/source/age/freshness instead of placeholders.
+- Tkinter blend screen now has a hybrid sulfur-only panel that refuses to invent component A when history forecast is unavailable.
+
+## Required evidence before full action capability
+
+- Fresh canonical prepared dataset from current materials/runtime/tags/rules.
+- Point, upper, and safety forecast artifacts trained from that canonical dataset.
+- PAK and LIMS test reports written under `reports/`.
+- Updated `config/model_freeze.json` after successful freeze verification.
+- Action-effect gate report for `ht:P8` and `ht:F19`:
+  - at least 100 change episodes per enabled control;
+  - validation MAE at least 10% better than hold;
+  - validation and audit upper coverage at least 95%;
+  - stable effect sign across 3 temporal folds;
+  - confirmed engineering units, bounds, step, and max_step;
+  - shadow replay passed;
+  - technologist pilot approved.
+>>>>>>> e70cafe (fix)
