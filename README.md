@@ -14,17 +14,10 @@
 - [Stage 4](STAGE4.md) — hybrid chain, model blending и газовые теги как context-only сигналы.
 - [Stage 5](STAGE5.md) — uncertainty, applicability, robustness и policy guardrails без action model.
 - [Stage 6](STAGE6.md) — чистый запуск, frozen models, исторические метрики и приёмочная демонстрация.
-<<<<<<< HEAD
-- [Stage 7](STAGE7.md) — trusted local history artifact serving через CLI/UI в forecast-only режиме.
-=======
-- [Stage 7](STAGE7.md) — safety-first alarm, joint applicability и усиленный action gate.
+- [Stage 7](STAGE7.md) — trusted history serving, safety-first alarm и усиленный action gate.
 - [Stage 8](STAGE8.md) — диагностика drift, режимов, ПАК–ЛИМС и устойчивости признаков.
 - [Stage 9](STAGE9.md) — эпизодный multi-horizon shadow-прогноз и отложенный LIMS-контроль.
-<<<<<<< HEAD
->>>>>>> f0ad14f (Complete ML stages and safety diagnostics)
-=======
 - [Stage 10](STAGE10.md) — исторический модельный эффект P8/F19 без совета оператору.
->>>>>>> f3eefd7 (Add historical action effects and stage 10 report)
 - [Code walkthrough](CODE_WALKTHROUGH.md) — папки, файлы и хронология вызовов почти построчно.
 - [ML system design](DESIGN.md#8-ml-неопределённость-и-модель-последствий) — обучение, метрики, анализ ошибок и жизненный цикл модели; общие контракты и данные описаны в том же документе.
 - [Материалы задания](materials/README.md) — ТЗ, схемы и исходные данные.
@@ -72,16 +65,10 @@ Stage 9 добавляет schema-1.2 эпизодный multi-horizon прог�
   неполном паспорте компонента.
 
 Полноценной промышленной ML-модели и управления реальными уставками пока нет. Доступен
-<<<<<<< HEAD
-локальный desktop UI на Python: он запускает model-demo сценарии, показывает
-`hold`/`recommend`/`abstain`, проверки и журнал. Исторический forecast с доверенным
-локальным artifact доступен через CLI и отдельный экран UI, но не выдаёт промышленную
-рекомендацию изменения уставок.
-=======
-локальный desktop UI на Python: он запускает model-demo, показывает проверки и журнал, а
-также открывает исследовательский сценарий P8/F19 по сохранённому historical artifact.
-Этот экран показывает оценку эффекта и её ограничения, но не выдаёт рекомендацию уставки.
->>>>>>> 1527107 (Extend UI and ML analysis materials)
+локальный desktop UI на Python: он запускает model-demo, показывает
+`hold`/`recommend`/`abstain`, проверки и журнал. Отдельный экран показывает
+исторический прогноз по доверенному локальному artifact и исследовательский
+эффект P8/F19 с явными ограничениями; реальную уставку он не рекомендует.
 
 Stage 4 показывает связанную цепочку и модельный блендинг. Газовые теги видны как
 технологический контекст, но не становятся action controls: нет подтверждённых единиц,
@@ -95,8 +82,8 @@ quality-agent сначала проверяет область применим�
 upper sulfur. Missing/OOD/отсутствующий upper не превращаются в pass. Это не action model:
 backend по-прежнему не рекомендует реальные setpoint-изменения и не управляет газом.
 
-Stage 6 упаковывает финальную приемку: команда `acceptance` прогоняет три
-зафиксированных model-demo эпизода, проверяет ожидаемый `abstain`, reason codes,
+Stage 6 упаковывает финальную приемку: команда `acceptance` прогоняет пять
+зафиксированных model-demo эпизодов, проверяет ожидаемый `abstain`, reason codes,
 сохраняет полный ZIP журналов и fingerprint решения.
 
 Stage 7/history path подключает artifact serving через CLI: `replay` и legacy

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import platform
 from pathlib import Path
@@ -10,6 +11,7 @@ import pandas as pd
 import pytest
 import sklearn
 
+from source.config import config_fingerprint, load_runtime_config
 from source.contracts import DatasetManifest, Recommendation
 from source.data.prepare import PreparedData, write_prepared_dataset
 from source.main import main, run_history_command
@@ -23,6 +25,18 @@ FEATURE_NAME = f"{TARGET_SIGNAL}__pak_last"
 def _prepared_data() -> PreparedData:
     manifest = DatasetManifest.model_validate_json(
         Path("global_tests/fixtures/data/manifest.json").read_text(encoding="utf-8")
+    )
+    config = load_runtime_config("config/runtime.toml")
+    manifest = manifest.model_copy(
+        update={
+            "config_sha256": hashlib.sha256(config_fingerprint(config).encode()).hexdigest(),
+            "tag_dictionary_sha256": hashlib.sha256(
+                config.tag_dictionary_path.read_bytes()
+            ).hexdigest(),
+            "telemetry_rules_sha256": hashlib.sha256(
+                config.telemetry_rules_path.read_bytes()
+            ).hexdigest(),
+        }
     )
     return PreparedData(
         telemetry=pd.DataFrame(

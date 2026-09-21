@@ -11,6 +11,7 @@ import pytest
 from source.config import load_runtime_config, load_scenario
 from source.contracts import AssessmentStatus, DecisionContext, RecommendationStatus
 from source.orchestrator import run_cycle
+from source.ui import recommendation_to_view
 
 AS_OF = datetime(2026, 1, 15, 9, tzinfo=UTC)
 
@@ -72,6 +73,22 @@ def test_stage3_cooldown_suppresses_repeat_when_baseline_is_feasible(
 
     assert result.status is RecommendationStatus.HOLD
     assert "ACTION_COOLDOWN" in result.reason_codes
+
+
+def test_material_improvement_does_not_claim_baseline_quality_failure(
+    runtime_config, tmp_path: Path
+) -> None:
+    scenario = _baseline_feasible_cost_scenario(cost_threshold=0.005)
+
+    result = _run(scenario, runtime_config, tmp_path)
+    view = recommendation_to_view(result, scenario)
+
+    assert result.status is RecommendationStatus.RECOMMEND
+    assert result.baseline is not None and result.baseline.feasible
+    assert "MATERIAL_IMPROVEMENT" in result.reason_codes
+    assert "текущий режим проходит ограничения" in result.explanation
+    assert "cost_proxy" in result.explanation
+    assert "проходит проверки" in view.action_detail
 
 
 def test_stage3_cooldown_does_not_hide_quality_violation(runtime_config, tmp_path: Path) -> None:

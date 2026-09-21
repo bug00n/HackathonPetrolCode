@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Mapping, cast
 
 import numpy as np
 import pandas as pd
+
 from source.contracts import CandidateAction, CandidateKind, ControlSpec, ProcessState, Validity
 from source.data.prepare import PreparedData
 from source.ml.controls import (
@@ -22,6 +23,7 @@ from source.ml.controls import (
     assess_action_capability,
     validate_action_artifact_metadata,
 )
+
 if TYPE_CHECKING:
     from source.ml.safety import JointApplicabilityModel
 
@@ -417,12 +419,7 @@ def build_historical_action_dataset(
         {signal: changes[signal].abs().ge(threshold) for signal, threshold in thresholds.items()}
     )
     stable_before = (
-        changes.abs()
-        .rolling(6, min_periods=6)
-        .max()
-        .shift(1)
-        .lt(pd.Series(thresholds))
-        .all(axis=1)
+        changes.abs().rolling(6, min_periods=6).max().shift(1).lt(pd.Series(thresholds)).all(axis=1)
     )
     quiet_after = (
         notable.iloc[::-1].rolling(18, min_periods=18).sum().iloc[::-1].shift(-1).fillna(1).eq(0)
@@ -583,9 +580,7 @@ def fit_historical_action_model(
         values["mae"] <= 0.90 * values["hold_mae"] for values in validation_metrics.values()
     )
     coverage_gate = all(values["upper_coverage"] >= 0.95 for values in validation_metrics.values())
-    audit_coverage_gate = all(
-        values["upper_coverage"] >= 0.95 for values in audit_metrics.values()
-    )
+    audit_coverage_gate = all(values["upper_coverage"] >= 0.95 for values in audit_metrics.values())
     episode_count_gate = all(count >= 100 for count in per_control_pairs.values())
     # These are deliberately false until engineering limits and temporal sign stability
     # are confirmed outside this observational benchmark.
@@ -901,25 +896,25 @@ class ActionEnabledMetadata:
 class ActionEnabledForecastModel:
     """Runtime wrapper combining a forecast artifact and a verified action artifact."""
 
-    forecast_model: object
+    forecast_model: Any
     action_model: VerifiedActionEffectModel
     metadata: ActionEnabledMetadata
 
     @property
     def feature_names(self) -> tuple[str, ...]:
-        return tuple(getattr(self.forecast_model, "feature_names"))
+        return tuple(self.forecast_model.feature_names)
 
     def predict(self, features: pd.DataFrame) -> np.ndarray:
-        return self.forecast_model.predict(features)
+        return cast(np.ndarray, self.forecast_model.predict(features))
 
     def predict_upper(self, features: pd.DataFrame) -> np.ndarray:
-        return self.forecast_model.predict_upper(features)
+        return cast(np.ndarray, self.forecast_model.predict_upper(features))
 
     def predict_exceedance_probability(self, features: pd.DataFrame) -> np.ndarray:
-        return self.forecast_model.predict_exceedance_probability(features)
+        return cast(np.ndarray, self.forecast_model.predict_exceedance_probability(features))
 
     def predict_alarm(self, features: pd.DataFrame) -> np.ndarray:
-        return self.forecast_model.predict_alarm(features)
+        return cast(np.ndarray, self.forecast_model.predict_alarm(features))
 
     def check_applicability(self, features: pd.DataFrame) -> object:
         return self.forecast_model.check_applicability(features)
@@ -954,7 +949,7 @@ def combine_forecast_action_model(
     metadata = ActionEnabledMetadata(
         forecast_metadata=forecast_metadata,
         action_model_id=action_model.model_id,
-        model_id=f"{getattr(forecast_metadata, 'model_id')}+{action_model.model_id}",
+        model_id=f"{forecast_metadata.model_id}+{action_model.model_id}",
         capabilities=combined,
     )
     return ActionEnabledForecastModel(forecast_model, action_model, metadata)

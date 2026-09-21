@@ -1,5 +1,4 @@
-<<<<<<< HEAD
-# Stage 7: trusted history artifact serving
+# Stage 7: trusted history serving и safety forecast
 
 > Current status: Stage 7 connects a trusted local forecast artifact to the
 > history backend path through CLI. It does not add an action model, train a new
@@ -62,8 +61,7 @@ python -m pytest
 python -m ruff check .
 python -m mypy source
 ```
-=======
-# Stage 7: constraint-aware safety forecast
+## Constraint-aware safety forecast
 
 ## Что реализовано
 
@@ -118,4 +116,3 @@ test MAE `1.781 mg/kg`, скорректированный -- `2.094 mg/kg`, cov
 Итог: schema 1.1 и весь safety pipeline реализованы, но новый artifact намеренно
 не публикуется. Runtime продолжает использовать frozen fallback. PyTorch и
 decision-focused loss откладываются до появления достоверных action outcomes.
->>>>>>> f0ad14f (Complete ML stages and safety diagnostics)

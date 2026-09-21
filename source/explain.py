@@ -49,6 +49,27 @@ def _checks_text(evaluation: CandidateEvaluation | None) -> str:
     return "; ".join(parts)
 
 
+def _improvement_text(
+    baseline: CandidateEvaluation, selected: CandidateEvaluation, scenario: ScenarioConfig
+) -> str:
+    def value(evaluation: CandidateEvaluation, name: str) -> float | None:
+        for assessment in evaluation.assessments:
+            metric = assessment.metrics.get(name)
+            if metric is not None:
+                return metric.value
+        return None
+
+    improved = []
+    for name in scenario.active_criteria:
+        before, after = value(baseline, name), value(selected, name)
+        if before is None or after is None:
+            continue
+        better = after > before if name == "throughput" else after < before
+        if better:
+            improved.append(f"{name}: {before:.3g} → {after:.3g}")
+    return ", ".join(improved) or "модельные критерии выбора"
+
+
 def build_explanation(
     status: RecommendationStatus,
     baseline: CandidateEvaluation | None,
@@ -70,6 +91,13 @@ def build_explanation(
             f"Проверки: {_checks_text(selected)}.{suffix}"
         )
     action = selected.candidate.id if selected else "unknown"
+    if baseline is not None and baseline.feasible and selected is not None:
+        return (
+            f"Рекомендуется вариант {action}: текущий режим проходит ограничения, "
+            f"но выбранный существенно улучшает {_improvement_text(baseline, selected, scenario)}. "
+            f"Качество выбранного варианта: {_quality_text(selected)}; "
+            f"проверки: {_checks_text(selected)}."
+        )
     return (
         f"Рекомендуется вариант {action}: текущий режим не проходит ограничения "
         f"({_quality_text(baseline)}; проверки: {_checks_text(baseline)}), "

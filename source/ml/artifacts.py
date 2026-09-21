@@ -145,8 +145,7 @@ class ModelBundle:
         actual = tuple(str(name) for name in features.columns)
         if actual != self.metadata.feature_names:
             raise ValueError(
-                "feature order mismatch: expected "
-                f"{self.metadata.feature_names}, received {actual}"
+                f"feature order mismatch: expected {self.metadata.feature_names}, received {actual}"
             )
         prediction = np.asarray(self.predictor.predict(features), dtype=float)
         if prediction.shape != (len(features),):
@@ -162,8 +161,7 @@ class ModelBundle:
         actual = tuple(str(name) for name in features.columns)
         if actual != self.metadata.feature_names:
             raise ValueError(
-                "feature order mismatch: expected "
-                f"{self.metadata.feature_names}, received {actual}"
+                f"feature order mismatch: expected {self.metadata.feature_names}, received {actual}"
             )
         predict_upper = getattr(self.predictor, "predict_upper", None)
         if not callable(predict_upper):
@@ -295,8 +293,7 @@ class ModelBundle:
         actual = tuple(str(name) for name in features.columns)
         if actual != self.metadata.feature_names:
             raise ValueError(
-                "feature order mismatch: expected "
-                f"{self.metadata.feature_names}, received {actual}"
+                f"feature order mismatch: expected {self.metadata.feature_names}, received {actual}"
             )
 
     def check_applicability(self, features: pd.DataFrame) -> object:

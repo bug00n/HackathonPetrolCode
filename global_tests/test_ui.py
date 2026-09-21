@@ -30,22 +30,19 @@ from source.contracts import (
 )
 from source.data.prepare import PreparedData, write_prepared_dataset
 from source.orchestrator import run_cycle
-<<<<<<< HEAD
-from source.ui import history_smoke_snapshot, journal_entries, recommendation_to_view
-=======
 from source.ui import (
     format_action_shadow_payload,
     format_history_replay_view,
     format_hybrid_blend_view,
-    history_replay_to_view,
     format_v2_forecast_payload,
+    history_replay_to_view,
+    history_smoke_snapshot,
     journal_entries,
     recommendation_to_view,
     ui_history_snapshot,
     ui_hybrid_snapshot,
     ui_stage_snapshot,
 )
->>>>>>> 1527107 (Extend UI and ML analysis materials)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 AS_OF = datetime(2026, 1, 15, 9, tzinfo=UTC)

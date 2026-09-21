@@ -78,42 +78,6 @@ def _additive_gain(spec: CetaneAdditiveSpec | None, dose: float) -> float:
     raise ValueError("additive response curve does not cover the requested dose")
 
 
-def _weighted_metric(
-    recipe: Mapping[str, float],
-    values: Mapping[str, MetricEstimate | None],
-    metric_name: str,
-) -> tuple[float | None, float | None, str, EstimateBasis, IntervalKind, str]:
-    positive = [component_id for component_id, weight in recipe.items() if weight > 0]
-    present_by_id: dict[str, MetricEstimate] = {}
-    for component_id in positive:
-        estimate = values[component_id]
-        if estimate is None:
-            return (
-                None,
-                None,
-                Unit.UNKNOWN.value,
-                EstimateBasis.FORMULA,
-                IntervalKind.NONE,
-                "missing",
-            )
-        present_by_id[component_id] = estimate
-    present = tuple(present_by_id.values())
-    units = {metric.unit for metric in present}
-    if len(units) != 1:
-        raise ValueError(f"all {metric_name} components must use one unit")
-    value = sum(recipe[key] * (present_by_id[key].value or 0.0) for key in positive)
-    upper = (
-        None
-        if any(present_by_id[key].upper is None for key in positive)
-        else sum(recipe[key] * (present_by_id[key].upper or 0.0) for key in positive)
-    )
-    interval = IntervalKind.SCENARIO_BOUND if upper is not None else IntervalKind.NONE
-    basis = EstimateBasis.FORMULA
-    if any(estimate.basis is EstimateBasis.PROXY for estimate in present):
-        basis = EstimateBasis.PROXY
-    return value, upper, present[0].unit, basis, interval, "DESIGN.md#9"
-
-
 def calculate_blend_metrics(
     candidate: CandidateAction, scenario: ScenarioConfig
 ) -> dict[str, MetricEstimate]:

@@ -32,15 +32,8 @@ from source.main import (
     build_state_command,
     evaluate_lims_correction_command,
     prepare_command,
-<<<<<<< HEAD
-<<<<<<< HEAD
-    run_history_command,
-=======
-    replay_command,
-=======
->>>>>>> e70cafe (fix)
     replay_v2_shadow_command,
->>>>>>> 1527107 (Extend UI and ML analysis materials)
+    run_history_command,
     run_model_demo,
     validate_stage0,
 )
@@ -230,14 +223,16 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         proposed_additive = result.selected.candidate.additive_mass_fraction
 
     if result.status is RecommendationStatus.RECOMMEND:
-        changed = [
-            key for key in proposed if proposed.get(key, 0.0) > current.get(key, 0.0) + 1e-9
-        ]
+        changed = [key for key in proposed if proposed.get(key, 0.0) > current.get(key, 0.0) + 1e-9]
         component = changed[0] if changed else "смеси"
         banner_title = "Доступен модельный вариант"
         banner_detail = "Расчёт относится только к синтетическому сценарию блендинга."
         action_title = f"Увеличить долю компонента {component}"
-        action_detail = "Текущая рецептура нарушает одно или несколько ограничений качества."
+        action_detail = (
+            "Текущая рецептура проходит проверки; вариант улучшает модельные критерии."
+            if result.baseline is not None and result.baseline.feasible
+            else "Текущая рецептура нарушает одно или несколько ограничений качества."
+        )
     elif result.status is RecommendationStatus.HOLD:
         banner_title = "Изменение режима не требуется"
         banner_detail = "Текущая модельная рецептура проходит доступные проверки."
@@ -445,6 +440,8 @@ class PetrolCodeApp(tk.Tk):
         self._result: Recommendation | None = None
         self._scenario: ScenarioConfig | None = None
         self._calculation_request_id = 0
+        self._history_request_id = 0
+        self._history_view: UiHistoryReplayView | None = None
         self._page = initial_page
         self._nav_buttons: dict[str, tk.Button] = {}
         self._build_styles()
@@ -503,15 +500,10 @@ class PetrolCodeApp(tk.Tk):
         tk.Frame(self.header, bg="#65727A", width=1, height=26).pack(side="left", padx=(0, 14))
         for key, label in (
             ("overview", "Обзор"),
-<<<<<<< HEAD
-            ("recommendation", "Рекомендации"),
-            ("history", "История"),
-=======
             ("avt", "АВТ"),
             ("hydrotreating", "Гидроочистка"),
             ("blend", "Смесь"),
             ("history", "История/ML"),
->>>>>>> e70cafe (fix)
             ("journal", "Журнал"),
         ):
             button = tk.Button(
@@ -563,11 +555,7 @@ class PetrolCodeApp(tk.Tk):
             self._render_recommendation()
         elif page == "history":
             self._render_history()
-<<<<<<< HEAD
-        else:
-=======
         elif page == "journal":
->>>>>>> e70cafe (fix)
             self._render_journal()
         else:
             self._render_overview()
@@ -642,10 +630,10 @@ class PetrolCodeApp(tk.Tk):
     def _field(
         parent: tk.Misc, label: str, variable: tk.StringVar, width: int | None = None
     ) -> None:
-        tk.Label(parent, text=label, bg=BG, fg=TEXT, font=("Segoe UI", 10, "bold")).pack(
-            anchor="w"
+        tk.Label(parent, text=label, bg=BG, fg=TEXT, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        entry = tk.Entry(
+            parent, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1, width=width or 20
         )
-        entry = tk.Entry(parent, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1, width=width)
         entry.pack(fill="x", pady=(4, 10), ipady=6)
 
     @staticmethod
@@ -1142,27 +1130,51 @@ class PetrolCodeApp(tk.Tk):
             output.insert("1.0", format_history_replay_view(view))
             output.configure(state="disabled")
 
-        def calculate() -> None:
-            view = ui_history_snapshot(
-                dataset_var.get().strip() or None,
-                model_var.get().strip() or None,
-                as_of_var.get(),
-                action_var.get().strip() or None,
-            )
-            self.after(0, lambda: render(view))
+        def calculate(
+            request_id: int,
+            dataset: str | None,
+            model: str | None,
+            as_of: str,
+            action_model: str | None,
+        ) -> None:
+            view = ui_history_snapshot(dataset, model, as_of, action_model)
+
+            def finish() -> None:
+                if request_id != self._history_request_id:
+                    return
+                self._history_view = view
+                if output.winfo_exists():
+                    render(view)
+
+            self.after(0, finish)
+
+        def start_calculation() -> None:
+            self._history_request_id += 1
+            threading.Thread(
+                target=calculate,
+                args=(
+                    self._history_request_id,
+                    dataset_var.get().strip() or None,
+                    model_var.get().strip() or None,
+                    as_of_var.get(),
+                    action_var.get().strip() or None,
+                ),
+                daemon=True,
+            ).start()
 
         actions = tk.Frame(page, bg=BG)
         actions.pack(fill="x", pady=(12, 0))
         self._primary_button(
             actions,
             "Рассчитать history replay",
-            lambda: threading.Thread(target=calculate, daemon=True).start(),
+            start_calculation,
         ).pack(side="left")
         self._secondary_button(actions, "Журнал", lambda: self.show_page("journal")).pack(
             side="left", padx=12
         )
         render(
-            UiHistoryReplayView(
+            self._history_view
+            or UiHistoryReplayView(
                 status="empty",
                 message="Выберите dataset/model и запустите расчёт.",
                 recommendation_status=None,
@@ -1529,103 +1541,6 @@ class PetrolCodeApp(tk.Tk):
             detail.insert("1.0", "Журнал пуст. Выполните модельный расчёт на экране «Обзор».")
             detail.configure(state="disabled")
 
-    def _render_history(self) -> None:
-        page = self._page_container()
-        tk.Label(
-            page,
-            text="Исторический прогноз",
-            bg=BG,
-            fg=TEXT,
-            font=("Segoe UI", 28, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
-            page,
-            text="Trusted local artifact serving; реальные уставки остаются выключены",
-            bg=BG,
-            fg=MUTED,
-            font=("Segoe UI", 11),
-        ).pack(anchor="w", pady=(2, 18))
-        panel = self._surface(page)
-        panel.pack(fill="x")
-        fields = tk.Frame(panel, bg=SURFACE)
-        fields.pack(fill="x", padx=24, pady=20)
-        datasets = sorted((PROJECT_ROOT / "data/processed").glob("*/manifest.json"))
-        models = sorted((PROJECT_ROOT / "artifacts/models").glob("*/metadata.json"))
-        dataset_var = tk.StringVar(value=str(datasets[-1].parent) if datasets else "")
-        model_var = tk.StringVar(value=str(models[-1].parent) if models else "")
-        as_of_var = tk.StringVar(value="2026-01-15T09:00:00Z")
-        trusted_var = tk.BooleanVar(value=True)
-
-        for label, variable in (
-            ("Prepared dataset", dataset_var),
-            ("Model artifact", model_var),
-            ("As of", as_of_var),
-        ):
-            tk.Label(fields, text=label, bg=SURFACE, fg=TEXT, font=("Segoe UI", 10, "bold")).pack(
-                anchor="w"
-            )
-            tk.Entry(fields, textvariable=variable, bg="#FAFBFB", fg=TEXT, bd=1).pack(
-                fill="x", pady=(4, 12), ipady=7
-            )
-        tk.Checkbutton(
-            fields,
-            text="Доверяю локальному joblib artifact",
-            variable=trusted_var,
-            bg=SURFACE,
-            fg=TEXT,
-            activebackground=SURFACE,
-            anchor="w",
-        ).pack(anchor="w", pady=(0, 12))
-        output = tk.Text(fields, height=14, bg="#FAFBFB", fg=TEXT, bd=1, wrap="word")
-        output.pack(fill="both", expand=True)
-        self._primary_button(
-            fields,
-            "Запустить history forecast",
-            lambda: self._run_history_from_ui(
-                dataset_var, model_var, as_of_var, trusted_var, output
-            ),
-        ).pack(anchor="e", pady=(14, 0))
-
-    def _run_history_from_ui(
-        self,
-        dataset_var: tk.StringVar,
-        model_var: tk.StringVar,
-        as_of_var: tk.StringVar,
-        trusted_var: tk.BooleanVar,
-        output: tk.Text,
-    ) -> None:
-        self.status_var.set("Исторический прогноз…")
-        output.delete("1.0", "end")
-        output.insert("1.0", "Выполняется расчёт…")
-
-        def work() -> None:
-            try:
-                timestamp = datetime.fromisoformat(as_of_var.get().replace("Z", "+00:00"))
-                result = run_history_command(
-                    dataset_var.get(),
-                    model_var.get(),
-                    timestamp,
-                    trusted_model=trusted_var.get(),
-                )
-                payload = {
-                    "status": result.status.value,
-                    "model_id": result.model_id,
-                    "reason_codes": result.reason_codes,
-                    "explanation": result.explanation,
-                    "run_id": result.run_id,
-                }
-                text = json.dumps(payload, ensure_ascii=False, indent=2)
-            except Exception as exc:
-                text = f"Ошибка: {exc}"
-            self.after(0, lambda: self._history_done(output, text))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _history_done(self, output: tk.Text, text: str) -> None:
-        self.status_var.set("Исторический прогноз завершён")
-        output.delete("1.0", "end")
-        output.insert("1.0", text)
-
     def _accordion(self, parent: tk.Misc, title: str, builder: Any) -> tk.Frame:
         shell = tk.Frame(parent, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1)
         content = tk.Frame(shell, bg=SURFACE)
@@ -1661,7 +1576,7 @@ class PetrolCodeApp(tk.Tk):
         return shell
 
     @staticmethod
-    def _text_content(parent: tk.Frame, text: str) -> None:
+    def _text_content(parent: tk.Misc, text: str) -> None:
         tk.Label(
             parent,
             text=text,
@@ -2173,6 +2088,7 @@ class PetrolCodeApp(tk.Tk):
             lambda: threading.Thread(target=calculate, daemon=True).start(),
         ).pack(anchor="e", pady=(12, 0))
 
+
 def smoke_snapshot(scenario_id: str) -> dict[str, Any]:
     """Headless smoke path used by CI and machines without a display."""
     scenario = load_scenario(PROJECT_ROOT / f"config/scenarios/{scenario_id}.json")
@@ -2216,9 +2132,7 @@ def history_smoke_snapshot(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="НЕФТЕКОД desktop interface")
-    parser.add_argument(
-        "--scenario", choices=tuple(SCENARIO_LABELS.values()), default="blend_risk"
-    )
+    parser.add_argument("--scenario", choices=tuple(SCENARIO_LABELS.values()), default="blend_risk")
     parser.add_argument(
         "--page",
         choices=PAGE_CHOICES,
@@ -2263,18 +2177,12 @@ __all__ = [
     "ConstraintRow",
     "DashboardView",
     "PetrolCodeApp",
-<<<<<<< HEAD
     "history_smoke_snapshot",
-=======
     "format_action_shadow_payload",
     "format_history_replay_view",
     "format_hybrid_blend_view",
     "format_v2_forecast_payload",
-<<<<<<< HEAD
->>>>>>> 1527107 (Extend UI and ML analysis materials)
-=======
     "history_replay_to_view",
->>>>>>> e70cafe (fix)
     "journal_entries",
     "main",
     "recommendation_to_view",

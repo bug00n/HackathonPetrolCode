@@ -218,9 +218,7 @@ def discover_ui_context(root: Path = PROJECT_ROOT) -> UiContext:
         if item.artifact_kind == "action_effect" and item.supports_actions
     )
     v2 = tuple(
-        item
-        for item in artifacts
-        if item.schema_version == "1.2" and item.supports_multi_horizon
+        item for item in artifacts if item.schema_version == "1.2" and item.supports_multi_horizon
     )
     latest = latest_prepared_dataset(root)
     return UiContext(
@@ -307,8 +305,7 @@ def ui_stage_snapshot(
         as_of=timestamp.isoformat(),
         status="ready",
         message=(
-            "Read-only process context. Real setpoint changes require a verified "
-            "action artifact."
+            "Read-only process context. Real setpoint changes require a verified action artifact."
         ),
         fresh_count=fresh,
         stale_count=stale,
@@ -485,6 +482,8 @@ def ui_hybrid_snapshot(
             evidence_ref="config/scenarios/hybrid_blend.json",
         )
         components = apply_hydrotreater_forecast(scenario.blend_components, forecast)
+        if scenario.total_mass_t is None:
+            raise ValueError("hybrid scenario needs a batch mass")
         blend = calculate_mass_blend(
             dict(scenario.current_blend_mass_fractions),
             components,
@@ -702,8 +701,7 @@ def _freshness_limit_minutes(config: Any, source: str) -> float:
 def _read_only_reason(signal_id: str, unit: str) -> str:
     if signal_id in ACTION_CONTROL_IDS:
         return (
-            "candidate control; disabled until a verified action artifact supplies bounds "
-            "and gates"
+            "candidate control; disabled until a verified action artifact supplies bounds and gates"
         )
     if signal_id in CONTEXT_ONLY_IDS:
         return "context-only signal; not an enabled action control"

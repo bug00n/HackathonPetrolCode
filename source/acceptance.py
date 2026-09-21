@@ -295,10 +295,7 @@ def verify_model_freeze(root: Path, manifest_path: Path) -> dict[str, Any]:
             raise ValueError("Stage-6 forecast artifacts must not enable action control")
         if str(metadata.get("git_commit", "")).endswith("-dirty"):
             raise ValueError("frozen model was trained from a dirty worktree")
-        if (
-            "test_used_for_selection" in metrics
-            and metrics["test_used_for_selection"] is not False
-        ):
+        if "test_used_for_selection" in metrics and metrics["test_used_for_selection"] is not False:
             raise ValueError("point model used final test for selection")
         if "test_used_for_tuning" in metrics and metrics["test_used_for_tuning"] is not False:
             raise ValueError("upper model used final test for tuning")

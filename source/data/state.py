@@ -183,9 +183,7 @@ def build_state(
         "as_of": as_of.isoformat(),
         "dataset_id": data.manifest.dataset_id,
         "mode": scenario.mode.value,
-        "signals": {
-            key: value.model_dump(mode="json") for key, value in sorted(snapshots.items())
-        },
+        "signals": {key: value.model_dump(mode="json") for key, value in sorted(snapshots.items())},
         "issues": [item.model_dump(mode="json") for item in state_issues],
     }
     state_id = hashlib.sha256(

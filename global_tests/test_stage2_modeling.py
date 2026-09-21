@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import platform
 from dataclasses import dataclass, replace
@@ -15,7 +16,7 @@ import sklearn
 
 import source.ml.train as training
 from source.agents.quality import predict_quality
-from source.config import load_scenario
+from source.config import config_fingerprint, load_runtime_config, load_scenario
 from source.contracts import DatasetManifest, EstimateBasis, ProcessState
 from source.data.prepare import PreparedData, write_prepared_dataset
 from source.main import main
@@ -489,12 +490,31 @@ def _prepared_training_data() -> PreparedData:
     manifest = DatasetManifest.model_validate_json(
         Path("global_tests/fixtures/data/manifest.json").read_text(encoding="utf-8")
     )
+    config = load_runtime_config("config/runtime.toml")
+    manifest = manifest.model_copy(
+        update={
+            "config_sha256": hashlib.sha256(config_fingerprint(config).encode()).hexdigest(),
+            "tag_dictionary_sha256": hashlib.sha256(
+                config.tag_dictionary_path.read_bytes()
+            ).hexdigest(),
+            "telemetry_rules_sha256": hashlib.sha256(
+                config.telemetry_rules_path.read_bytes()
+            ).hexdigest(),
+        }
+    )
     return PreparedData(
-        telemetry=pd.DataFrame({"timestamp": synthetic.frame["as_of"].astype(str)}),
+        telemetry=pd.DataFrame(
+            {
+                "timestamp": synthetic.frame["as_of"].astype(str),
+                "ht:P8": 0.15,
+                "ht:T11": 260.0,
+                "ht:F19": 205.0,
+            }
+        ),
         quality=quality,
         issues=pd.DataFrame(columns=["source_ref", "code", "detail"]),
         manifest=manifest,
-        feature_order=("ht:2:Mg.Sulfur",),
+        feature_order=("ht:F19", "ht:P8", "ht:T11", "ht:2:Mg.Sulfur"),
     )
 
 
@@ -502,6 +522,7 @@ def test_train_and_evaluate_cli_commands_wrap_existing_ml_workflow(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(training, "RIDGE_ALPHAS", (1.0,))
+    monkeypatch.setattr("source.main._git_revision", lambda _root: "test-commit")
     monkeypatch.setattr(
         training,
         "HGB_CONFIGS",
@@ -529,8 +550,10 @@ def test_train_and_evaluate_cli_commands_wrap_existing_ml_workflow(
             str(tmp_path / "models"),
         ]
     )
-    trained = json.loads(capsys.readouterr().out)
-    artifact_dir = Path(str(trained["artifact_dir"]))
+    train_output = capsys.readouterr()
+    assert train_exit == 0, train_output.err
+    trained = json.loads(train_output.out)
+    artifact_dir = Path(str(trained["point_model_path"]))
 
     evaluate_exit = main(
         [
@@ -539,6 +562,8 @@ def test_train_and_evaluate_cli_commands_wrap_existing_ml_workflow(
             str(dataset_path),
             "--model",
             str(artifact_dir),
+            "--source",
+            "pak",
             "--split",
             "test",
             "--output",
@@ -551,7 +576,7 @@ def test_train_and_evaluate_cli_commands_wrap_existing_ml_workflow(
     assert evaluate_exit == 0
     assert artifact_dir.is_dir()
     assert (artifact_dir / "metadata.json").is_file()
-    assert evaluated["model_id"] == trained["model_id"]
-    report_dir = Path(str(evaluated["report_dir"]))
+    assert evaluated["model_id"] == trained["point_model_id"]
+    report_dir = Path(str(evaluated["report_path"])).parent
     assert (report_dir / "metrics.json").is_file()
     assert (report_dir / "residuals.csv.gz").is_file()

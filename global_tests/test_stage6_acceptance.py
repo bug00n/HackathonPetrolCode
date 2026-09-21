@@ -31,12 +31,8 @@ from source.contracts import (
     Stage,
     Validity,
 )
-<<<<<<< HEAD
-=======
-from source.ml.artifacts import sha256_file
 from source.ml.action_effects import VerifiedActionEffectModel, combine_forecast_action_model
 from source.ml.controls import ActionEffectEvidence, JointControlDomain
->>>>>>> e70cafe (fix)
 from source.orchestrator import run_cycle
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

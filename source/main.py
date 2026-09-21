@@ -5,17 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-<<<<<<< HEAD
-import platform
-=======
 import os
->>>>>>> 1527107 (Extend UI and ML analysis materials)
+import platform
 import subprocess
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Sequence
+from typing import TYPE_CHECKING, Literal, Sequence, cast
 
 import pandas as pd
 
@@ -41,6 +38,7 @@ from source.data import (
 )
 
 if TYPE_CHECKING:
+    from source.ml.action_effects import ActionEnabledForecastModel
     from source.ml.artifacts import ModelBundle
     from source.ml.features import SupervisedDataset
 
@@ -48,14 +46,6 @@ SplitName = Literal["train", "validation", "test"]
 # Curated, dictionary-confirmed 24-2000 context.  P8/F19 remain historical
 # action candidates; no signal is enabled as a real setpoint control.
 TRAINING_TELEMETRY_SIGNALS = ("ht:P8", "ht:F19", "ht:T11")
-MODEL_DEMO_SCENARIOS = (
-    "blend_normal",
-    "blend_risk",
-    "blend_t95_risk",
-    "blend_cetane_risk",
-    "blend_missing",
-)
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DEMO_SCENARIOS: tuple[str, ...] = (
     "blend_normal",
@@ -111,9 +101,7 @@ def validate_stage0(root: Path = PROJECT_ROOT) -> dict[str, int]:
     """Validate shared configs and serialized contract fixtures."""
     load_runtime_config(root / "config/runtime.toml")
     tags = load_tag_dictionary(root / "config/tags.csv")
-    scenarios = [
-        load_scenario(path) for path in sorted((root / "config/scenarios").glob("*.json"))
-    ]
+    scenarios = [load_scenario(path) for path in sorted((root / "config/scenarios").glob("*.json"))]
     contract_dir = root / "global_tests/fixtures/contracts"
     ProcessState.model_validate_json(
         (contract_dir / "process_state.json").read_text(encoding="utf-8")
@@ -181,9 +169,7 @@ def _validate_current_prepared_dataset(
     expected = {
         "config_sha256": hashlib.sha256(config_fingerprint(config).encode()).hexdigest(),
         "tag_dictionary_sha256": _sha256_file(_resolve_path(config.tag_dictionary_path, root)),
-        "telemetry_rules_sha256": _sha256_file(
-            _resolve_path(config.telemetry_rules_path, root)
-        ),
+        "telemetry_rules_sha256": _sha256_file(_resolve_path(config.telemetry_rules_path, root)),
     }
     actual = {
         "config_sha256": data.manifest.config_sha256,
@@ -285,7 +271,6 @@ def _git_revision(root: Path) -> str:
     return revision
 
 
-<<<<<<< HEAD
 def _source_or_output(
     value: SourceKind | str | Path | None,
     output: str | Path | None,
@@ -293,6 +278,10 @@ def _source_or_output(
     """Keep the old positional train API while accepting the Stage-6 CLI shape."""
     if value is None:
         return SourceKind.PAK, output
+    if isinstance(value, Path):
+        if output is None:
+            return SourceKind.PAK, value
+        raise ValueError("output was provided twice")
     try:
         return SourceKind(value), output
     except ValueError:
@@ -301,12 +290,6 @@ def _source_or_output(
         raise
 
 
-def _supervised_dataset(
-    data: PreparedData,
-    target_source: SourceKind,
-    target_signal: str = "ht:2:Mg.Sulfur",
-) -> SupervisedDataset:
-=======
 def _shadow_git_revision(root: Path, *, allow_dirty: bool) -> str:
     """Return a reproducible label for a shadow fit, including an explicit dirty marker."""
     if not allow_dirty:
@@ -360,8 +343,11 @@ def _shadow_git_revision(root: Path, *, allow_dirty: bool) -> str:
     return f"working-tree:{revision}:{digest.hexdigest()[:12]}"
 
 
-def _supervised_dataset(data: PreparedData, target_source: SourceKind) -> SupervisedDataset:
->>>>>>> 1527107 (Extend UI and ML analysis materials)
+def _supervised_dataset(
+    data: PreparedData,
+    target_source: SourceKind,
+    target_signal: str = "ht:2:Mg.Sulfur",
+) -> SupervisedDataset:
     from source.ml.features import build_supervised_dataset
 
     return build_supervised_dataset(
@@ -390,24 +376,16 @@ def train_command(
     from source.ml.train import train_model
     from source.ml.uncertainty import save_stage5_model
 
-<<<<<<< HEAD
     source, target_output = _source_or_output(target_source, output)
-=======
     if with_safety and not with_uncertainty:
         raise ValueError("--with-safety requires --with-uncertainty")
-
->>>>>>> f0ad14f (Complete ML stages and safety diagnostics)
     config = load_runtime_config(_resolve_path(config_path, root))
     data = _load_current_prepared_dataset(dataset, config, root)
     revision = _git_revision(root)
-<<<<<<< HEAD
-    data = load_prepared_dataset(_resolve_path(dataset, root))
     supervised = _supervised_dataset(data, source, target_signal)
-    models_root = _resolve_path(target_output if target_output is not None else config.models_dir, root)
-=======
-    supervised = _supervised_dataset(data, SourceKind.PAK)
-    models_root = _resolve_path(output if output is not None else config.models_dir, root)
->>>>>>> e70cafe (fix)
+    models_root = _resolve_path(
+        target_output if target_output is not None else config.models_dir, root
+    )
     point = train_model(
         supervised,
         models_root=models_root,
@@ -799,7 +777,7 @@ def _coerce_split_or_source(
     split: SplitName,
 ) -> tuple[SourceKind | None, SplitName]:
     if isinstance(value, str) and value in {"train", "validation", "test"}:
-        return None, value
+        return None, cast(SplitName, value)
     if value is None:
         return None, split
     return SourceKind(value), split
@@ -868,7 +846,7 @@ def replay_command(
 
     config = load_runtime_config(_resolve_path(config_path, root))
     data = _load_current_prepared_dataset(dataset, config, root)
-    model = _load_trusted_model(model_path, data, root)
+    model: ModelBundle | ActionEnabledForecastModel = _load_trusted_model(model_path, data, root)
     if action_model_path is not None:
         from source.ml.action_effects import (
             combine_forecast_action_model,
@@ -1021,9 +999,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     v2_replay.add_argument("--dataset", required=True, help="prepared dataset directory")
     v2_replay.add_argument("--model", required=True, help="schema-1.2 shadow artifact")
-    v2_replay.add_argument(
-        "--at", required=True, type=_parse_as_of, help="timezone-aware ISO time"
-    )
+    v2_replay.add_argument("--at", required=True, type=_parse_as_of, help="timezone-aware ISO time")
     v2_replay.add_argument("--config", default="config/runtime.toml", help="runtime config path")
     action_shadow = subparsers.add_parser(
         "evaluate-action-shadow", help="evaluate matched P8/F19 sulfur effects"
@@ -1037,9 +1013,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "action-shadow-estimate", help="calculate one non-advisory P8/F19 historical scenario"
     )
     action_estimate.add_argument("--dataset", required=True, help="prepared dataset directory")
-    action_estimate.add_argument(
-        "--model", required=True, help="trusted action artifact directory"
-    )
+    action_estimate.add_argument("--model", required=True, help="trusted action artifact directory")
     action_estimate.add_argument("--control", choices=("ht:P8", "ht:F19"), required=True)
     action_estimate.add_argument("--delta", type=float, required=True)
     action_estimate.add_argument(
@@ -1149,9 +1123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(preparation_result, ensure_ascii=False, sort_keys=True))
             return 0
         if args.command == "build-state":
-            state_result = build_state_command(
-                args.dataset, args.scenario, args.as_of, args.config
-            )
+            state_result = build_state_command(args.dataset, args.scenario, args.as_of, args.config)
             print(state_result.model_dump_json(indent=2))
             return 0
         if args.command == "train":

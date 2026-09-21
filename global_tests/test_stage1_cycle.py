@@ -8,8 +8,16 @@ from pathlib import Path
 
 import pytest
 
+from source.agents.effects import calculate_blend_metrics
 from source.config import load_runtime_config, load_scenario
-from source.contracts import DecisionContext, RecommendationStatus, ScenarioConfig
+from source.contracts import (
+    CandidateAction,
+    CandidateKind,
+    DecisionContext,
+    RecommendationStatus,
+    ScenarioConfig,
+)
+from source.ml.blending import calculate_mass_blend
 from source.orchestrator import run_cycle
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -28,18 +36,6 @@ def _run_demo(
 ):
     scenario = load_scenario(f"config/scenarios/{scenario_name}.json")
     return _run_scenario(runtime_config, scenario, tmp_path)
-
-
-def _run_scenario(runtime_config, scenario, tmp_path: Path):
-    return run_cycle(
-        data=None,
-        as_of=datetime(2026, 1, 15, 9, tzinfo=UTC),
-        model=None,
-        scenario=scenario,
-        config=runtime_config,
-        context=DecisionContext(),
-        run_dir=tmp_path,
-    )
 
 
 def _run_scenario(runtime_config, scenario: ScenarioConfig, tmp_path: Path):
@@ -108,15 +104,32 @@ def test_stage1_abstains_when_required_component_quality_is_missing(
 
 
 @pytest.mark.parametrize("missing_field", ["t95", "cetane_number"])
+@pytest.mark.parametrize("missing_kind", ["object", "value"])
 def test_stage1_abstains_when_required_product_property_is_unassessed(
     runtime_config,
     tmp_path: Path,
     missing_field: str,
+    missing_kind: str,
 ) -> None:
     """Unknown T95 or cetane data must never be treated as a passed constraint."""
     payload = load_scenario("config/scenarios/blend_normal.json").model_dump(mode="json")
-    payload["blend_components"][0][missing_field] = None
+    if missing_kind == "object":
+        payload["blend_components"][0][missing_field] = None
+    else:
+        payload["blend_components"][0][missing_field]["value"] = None
     scenario = ScenarioConfig.model_validate(payload)
+
+    hold = CandidateAction(id="hold", kind=CandidateKind.HOLD, horizon_minutes=60)
+    direct = calculate_blend_metrics(hold, scenario)[missing_field]
+    blend = calculate_mass_blend(
+        dict(scenario.current_blend_mass_fractions),
+        scenario.blend_components,
+        scenario.total_mass_t,
+        additive_mass_fraction=scenario.current_additive_mass_fraction,
+        additive=scenario.cetane_additive,
+    )
+    assert direct.value is None
+    assert getattr(blend, missing_field).value is None
 
     result = _run_scenario(runtime_config, scenario, tmp_path)
 

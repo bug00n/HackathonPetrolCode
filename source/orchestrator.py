@@ -20,8 +20,8 @@ from source.contracts import (
     CandidateAction,
     CandidateEvaluation,
     CandidateKind,
-    ConstraintStatus,
     ConstraintResult,
+    ConstraintStatus,
     DecisionContext,
     EstimateBasis,
     IntervalKind,
@@ -39,9 +39,10 @@ from source.contracts import (
 )
 from source.explain import build_explanation
 from source.journal import write_run_journal
+from source.ml.action_effects import ActionOutcome, VerifiedActionEffectModel
+from source.ml.controls import generate_setpoint_candidates
 from source.ml.features import build_features
 from source.ml.policy import PolicyParameters, assess_change_policy
-from source.ml.controls import generate_setpoint_candidates
 
 
 def _model_demo_state(as_of: datetime, scenario: ScenarioConfig) -> ProcessState:
@@ -186,10 +187,11 @@ def _metric_estimate(
     )
 
 
-def _action_model(model: object | None) -> object | None:
+def _action_model(model: object | None) -> VerifiedActionEffectModel | None:
     if model is None:
         return None
-    return getattr(model, "action_model", None)
+    action_model = getattr(model, "action_model", None)
+    return action_model if isinstance(action_model, VerifiedActionEffectModel) else None
 
 
 def _scenario_with_action_controls(
@@ -199,7 +201,7 @@ def _scenario_with_action_controls(
     action_model = _action_model(model)
     if scenario.mode is not OperationMode.HISTORY or action_model is None:
         return scenario
-    controls = tuple(getattr(action_model, "controls"))
+    controls = tuple(action_model.controls)
     required = tuple(
         dict.fromkeys((*scenario.required_signals, *(item.signal_id for item in controls)))
     )
@@ -226,7 +228,7 @@ def _sulfur_upper_limit(scenario: ScenarioConfig) -> float:
 def _action_assessment(
     state: ProcessState,
     candidate: CandidateAction,
-    outcome: object,
+    outcome: ActionOutcome,
     model_id: str,
 ) -> AgentAssessment:
     reason_codes = tuple(str(item) for item in getattr(outcome, "reason_codes", ()))
@@ -240,7 +242,7 @@ def _action_assessment(
         )
         for code in reason_codes
     )
-    sulfur_upper = getattr(outcome, "sulfur_upper")
+    sulfur_upper = outcome.sulfur_upper
     return AgentAssessment(
         agent=AssessmentAgent.OPTIMIZER,
         state_id=state.state_id,
@@ -249,7 +251,7 @@ def _action_assessment(
         status=AssessmentStatus.DEGRADED if issues else AssessmentStatus.OK,
         metrics={
             "sulfur": _metric_estimate(
-                float(getattr(outcome, "sulfur")),
+                float(outcome.sulfur),
                 Unit.MG_KG.value,
                 EstimateBasis.FORECAST,
                 f"action_model:{model_id}",
@@ -261,25 +263,25 @@ def _action_assessment(
                 assumptions=("verified action-effect model", "upper <= 10 mg/kg is required"),
             ),
             "risk_index": _metric_estimate(
-                float(getattr(outcome, "risk_index")),
+                float(outcome.risk_index),
                 Unit.RISK_INDEX.value,
                 EstimateBasis.PROXY,
                 f"action_model:{model_id}",
             ),
             "throughput": _metric_estimate(
-                float(getattr(outcome, "throughput")),
+                float(outcome.throughput),
                 Unit.PROXY.value,
                 EstimateBasis.PROXY,
                 f"action_model:{model_id}",
             ),
             "cost_proxy": _metric_estimate(
-                float(getattr(outcome, "cost_proxy")),
+                float(outcome.cost_proxy),
                 Unit.PROXY.value,
                 EstimateBasis.PROXY,
                 f"action_model:{model_id}",
             ),
             "change_size": _metric_estimate(
-                float(getattr(outcome, "change_size")),
+                float(outcome.change_size),
                 Unit.DIMENSIONLESS.value,
                 EstimateBasis.FORMULA,
                 f"action_model:{model_id}",
@@ -308,7 +310,7 @@ def _history_action_evaluations(
         hold = tuple(item for item in candidates if item.kind is CandidateKind.HOLD)
         return evaluate_candidates(state, hold, scenario, features=features, model=model)
 
-    model_id = str(getattr(action_model, "model_id"))
+    model_id = str(action_model.model_id)
     evaluations: list[CandidateEvaluation] = []
     for candidate in candidates:
         outcome = action_model.evaluate(
@@ -327,7 +329,7 @@ def _history_action_evaluations(
             for assessment in assessments
         )
         feasible = (
-            bool(getattr(outcome, "feasible"))
+            bool(outcome.feasible)
             and bool(checks)
             and all(item.status is ConstraintStatus.PASS for item in checks)
             and assessments_available
@@ -466,9 +468,9 @@ def run_cycle(
     if effective_scenario.mode is OperationMode.HISTORY and action_model is not None:
         candidates = generate_setpoint_candidates(
             state,
-            tuple(getattr(action_model, "controls")),
+            tuple(action_model.controls),
             supports_actions=True,
-            joint_domain=getattr(action_model, "joint_domain"),
+            joint_domain=action_model.joint_domain,
             horizon_minutes=config.horizon_minutes,
             max_action_combinations=config.max_candidates,
         )
@@ -522,9 +524,7 @@ def run_cycle(
         selected=selected,
         alternatives=alternatives,
         reason_codes=reason_codes,
-        explanation=build_explanation(
-            status, baseline, selected, reason_codes, effective_scenario
-        ),
+        explanation=build_explanation(status, baseline, selected, reason_codes, effective_scenario),
         assumptions=tuple(
             dict.fromkeys((*effective_scenario.assumptions, "stage-3 deterministic backend cycle"))
         ),
