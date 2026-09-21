@@ -5,7 +5,7 @@ from __future__ import annotations
 import platform
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Any, Callable, Mapping, cast
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,7 @@ from sklearn.preprocessing import FunctionTransformer
 from source.contracts import SourceKind, Validity
 from source.data.prepare import PreparedData
 from source.ml.artifacts import ModelBundle, feature_schema_hash, save_model
-from source.ml.features import SupervisedDataset
+from source.ml.features import SupervisedDataset, build_supervised_dataset
 from source.ml.safety import (
     FALSE_ALARM_BUDGET,
     SULFUR_LIMIT,
@@ -33,6 +33,22 @@ from source.ml.safety import (
 HORIZONS = (10, 20, 30, 60)
 WINDOWS = (30, 60, 180)
 REGIME_LABELS = ("below_8", "8_to_10", "above_10")
+ABLATED_TELEMETRY_GROUPS = {
+    "pak_only": (),
+    "ht_context": ("ht:P8", "ht:T11", "ht:F19"),
+    "k2_state": ("avt:F65", "avt:T20", "avt:T33", "avt:P21", "avt:P22", "avt:P23", "avt:P67"),
+    "k2_circulation": (
+        "avt:F14",
+        "avt:T13",
+        "avt:T18",
+        "avt:F12",
+        "avt:T17",
+        "avt:F64",
+        "avt:T11",
+        "avt:T15",
+    ),
+    "diesel_cut": ("avt:T66", "avt:F28", "avt:F32", "avt:T71", "avt:F30", "avt:W70"),
+}
 
 
 @dataclass(frozen=True)
@@ -55,6 +71,7 @@ class EpisodeSafetyPredictor:
     calibrators: Mapping[int, PlattCalibrator]
     alarm_policy: AlarmPolicy
     applicability: JointApplicabilityModel
+    upper_delta_shift: float = 0.0
 
     def predict_delta(self, features: pd.DataFrame) -> np.ndarray:
         return np.asarray(self.delta_estimator.predict(features), dtype=float)
@@ -70,6 +87,7 @@ class EpisodeSafetyPredictor:
             dtype=float
         )
         upper = current + np.asarray(self.upper_delta_estimator.predict(features), dtype=float)
+        upper += float(self.upper_delta_shift)
         return np.maximum(self.predict(features), upper)
 
     def predict_horizon_probabilities(self, features: pd.DataFrame) -> dict[int, np.ndarray]:
@@ -101,10 +119,19 @@ class EpisodeSafetyPredictor:
         delta = self.predict_delta(features)
         horizons = self.predict_horizon_probabilities(features)
         alarm = self.predict_alarm(features)
+        current = pd.to_numeric(features[self.baseline_feature], errors="coerce").to_numpy(
+            dtype=float
+        )
         rows: list[dict[str, object]] = []
         for position in range(len(features)):
             applicable = self.applicability.assess(features.iloc[[position]])
-            reason = applicable.reason_code
+            reasons: list[str] = []
+            if current[position] > SULFUR_LIMIT:
+                reasons.append("CURRENT_SULFUR_LIMIT")
+            if alarm[position] and current[position] <= SULFUR_LIMIT:
+                reasons.append("EXCEEDANCE_PROBABILITY_THRESHOLD")
+            if applicable.reason_code is not None:
+                reasons.append(applicable.reason_code)
             rows.append(
                 {
                     "point": float(point[position]),
@@ -121,7 +148,7 @@ class EpisodeSafetyPredictor:
                     "point_60m": float(point[position]),
                     "upper_60m": float(upper[position]),
                     "applicable": applicable.available,
-                    "reason_codes": () if reason is None else (reason,),
+                    "reason_codes": tuple(dict.fromkeys(reasons)),
                 }
             )
         return rows
@@ -134,6 +161,122 @@ class EpisodeSafetyPredictor:
 class EpisodeFitResult:
     predictor: EpisodeSafetyPredictor
     report: dict[str, Any]
+
+
+def ablate_episode_features(
+    data: PreparedData, *, groups: tuple[str, ...] | None = None, seed: int = 42
+) -> dict[str, Any]:
+    """Compare fixed PAK/HT/AVT groups on 2024 folds without consulting audit 2026."""
+    selected_groups = tuple(ABLATED_TELEMETRY_GROUPS) if groups is None else groups
+    unknown = set(selected_groups).difference(ABLATED_TELEMETRY_GROUPS)
+    if not selected_groups or unknown:
+        raise ValueError(f"unknown or empty ablation groups: {sorted(unknown)}")
+    all_signals = tuple(
+        dict.fromkeys(
+            signal for group in selected_groups for signal in ABLATED_TELEMETRY_GROUPS[group]
+        )
+    )
+    base = build_supervised_dataset(
+        data,
+        target_signal_id="ht:2:Mg.Sulfur",
+        target_source=SourceKind.PAK,
+        feature_source=SourceKind.PAK,
+        horizon_minutes=60,
+        telemetry_signals=all_signals,
+    )
+    full_dataset = build_episode_dataset(data, base)
+    telemetry_prefixes = tuple(f"{signal}__" for signal in all_signals)
+    common_features = tuple(
+        name for name in base.feature_names if not name.startswith(telemetry_prefixes)
+    )
+    candidates: dict[str, dict[str, Any]] = {}
+    for group in selected_groups:
+        signals = ABLATED_TELEMETRY_GROUPS[group]
+        selected_features = tuple(
+            name
+            for name in base.feature_names
+            if name in common_features or any(name.startswith(f"{signal}__") for signal in signals)
+        )
+        frame = full_dataset.frame.copy()
+        frame["feature_missing_fraction"] = (
+            frame.loc[:, list(selected_features)].isna().mean(axis=1)
+        )
+        added_features = tuple(
+            name for name in full_dataset.feature_names if name.startswith("pak_")
+        )
+        dataset = EpisodeDataset(
+            frame,
+            tuple(dict.fromkeys([*selected_features, *added_features])),
+            full_dataset.baseline_feature,
+        )
+        family_results: dict[str, dict[str, Any]] = {}
+        for family in ("hgb", "lightgbm"):
+            frame, raw, delta, _ = _rolling_predictions(
+                dataset,
+                family,
+                "2024-01-01",
+                "2025-01-01",
+                seed,
+                include_upper=False,
+                estimator_factory=_ablation_estimator,
+                max_train_rows=20_000,
+                risk_horizons=(60,),
+            )
+            probabilities = raw[60]
+            policy, metrics = select_event_threshold(frame, probabilities)
+            point = frame["baseline"].to_numpy(dtype=float) + delta
+            family_results[family] = {
+                "event_fnr": metrics["event_false_negative_rate"],
+                "event_fpr": metrics["event_false_positive_rate"],
+                "row_fpr": metrics["row_false_positive_rate"],
+                "brier": float(brier_score_loss(frame["crossing_60m"], probabilities)),
+                "mae": float(np.mean(np.abs(frame["y_60m"].to_numpy(dtype=float) - point))),
+                "threshold": policy.threshold,
+            }
+        eligible = [
+            family
+            for family, result in family_results.items()
+            if result["event_fpr"] is not None
+            and result["event_fpr"] <= FALSE_ALARM_BUDGET
+            and result["row_fpr"] is not None
+            and result["row_fpr"] <= FALSE_ALARM_BUDGET
+        ]
+        selected = (
+            min(
+                eligible,
+                key=lambda family: (
+                    float(family_results[family]["event_fnr"]),
+                    float(family_results[family]["brier"]),
+                    float(family_results[family]["mae"]),
+                    0 if family == "hgb" else 1,
+                ),
+            )
+            if eligible
+            else None
+        )
+        candidates[group] = {
+            "telemetry_signals": list(signals),
+            "feature_count": len(dataset.feature_names),
+            "families": family_results,
+            "selected_family": selected,
+            "selected_metrics": family_results.get(selected) if selected is not None else None,
+        }
+    return {
+        "selection_period": "2024 rolling-origin monthly folds",
+        "audit_2026_used": False,
+        "false_alarm_budget": FALSE_ALARM_BUDGET,
+        "training_budget": {
+            "max_train_rows_per_fold": 20_000,
+            "risk_horizons": [60],
+            "hgb_max_iter": 8,
+            "hgb_max_leaf_nodes": 7,
+            "lightgbm_n_estimators": 20,
+            "lightgbm_num_leaves": 7,
+        },
+        "candidates": candidates,
+        "promotion_eligible": False,
+        "next_gate": "repeat the chosen ablation on 2025 before any shadow artifact",
+    }
 
 
 def _pak_rows(data: PreparedData, signal_id: str) -> pd.DataFrame:
@@ -239,21 +382,26 @@ def build_episode_dataset(data: PreparedData, base: SupervisedDataset) -> Episod
 
     exact_crossings: dict[int, np.ndarray] = {}
     future_episodes: dict[int, np.ndarray] = {}
+    future_values: dict[int, np.ndarray] = {}
+    future_steps = tuple(range(10, max(HORIZONS) + 1, 10))
+    for step in future_steps:
+        values, episode_ids = _exact_future_values(frame["as_of"], pak, step)
+        future_values[step] = values
+        exact_crossings[step] = values > SULFUR_LIMIT
+        future_episodes[step] = episode_ids
     for horizon in HORIZONS:
-        values, episode_ids = _exact_future_values(frame["as_of"], pak, horizon)
-        frame[f"y_{horizon}m"] = values
-        exact_crossings[horizon] = values > SULFUR_LIMIT
-        future_episodes[horizon] = episode_ids
-    for horizon in HORIZONS:
+        frame[f"y_{horizon}m"] = future_values[horizon]
         frame[f"crossing_{horizon}m"] = np.logical_or.reduce(
-            [exact_crossings[step] for step in HORIZONS if step <= horizon]
+            [exact_crossings[step] for step in future_steps if step <= horizon]
         )
     frame["crossing_60m"] = frame["crossing_60m"].fillna(False)
     episode_id = np.full(len(frame), np.nan)
-    for horizon in HORIZONS:
-        use = np.isnan(episode_id) & frame[f"crossing_{horizon}m"].to_numpy(dtype=bool)
-        episode_id[use] = future_episodes[horizon][use]
+    for step in future_steps:
+        use = np.isnan(episode_id) & exact_crossings[step]
+        episode_id[use] = future_episodes[step][use]
     frame["event_id"] = episode_id
+    episode_starts = pak.loc[starts, ["episode_id", "measured_at"]].set_index("episode_id")
+    frame["event_start_at"] = frame["event_id"].map(episode_starts["measured_at"])
     frame["delta_60m"] = pd.to_numeric(frame["y_60m"], errors="coerce") - pd.to_numeric(
         frame[base.baseline_feature], errors="coerce"
     )
@@ -313,14 +461,30 @@ def rolling_month_folds(
     return tuple(folds)
 
 
+def _event_lead_window(frame: pd.DataFrame) -> np.ndarray:
+    """Return rows 10–60 minutes before the first crossing of their episode."""
+    if "event_start_at" not in frame:
+        # Keep small synthetic fixtures/backward-compatible callers usable. Real v2
+        # datasets always carry event_start_at from build_episode_dataset().
+        return np.ones(len(frame), dtype=bool)
+    as_of = pd.to_datetime(frame["as_of"], utc=True)
+    event_start = pd.to_datetime(frame["event_start_at"], utc=True, errors="coerce")
+    return (
+        event_start.notna()
+        & (as_of >= event_start - pd.Timedelta(minutes=60))
+        & (as_of <= event_start - pd.Timedelta(minutes=10))
+    ).to_numpy(dtype=bool)
+
+
 def event_metrics(frame: pd.DataFrame, probability: np.ndarray, threshold: float) -> dict[str, Any]:
     """Evaluate unique exceedance episodes and ordinary false-alarm opportunities."""
     actual = frame["crossing_60m"].fillna(False).to_numpy(dtype=bool)
     current = pd.to_numeric(frame["baseline"], errors="coerce").to_numpy(dtype=float)
     alarm = (probability >= threshold) | (current > SULFUR_LIMIT)
+    event_alarm = alarm & _event_lead_window(frame)
     event_ids = frame.loc[actual, "event_id"].dropna().unique()
     detected = sum(
-        bool(alarm[frame["event_id"].eq(event_id).to_numpy()].any()) for event_id in event_ids
+        bool(event_alarm[frame["event_id"].eq(event_id).to_numpy()].any()) for event_id in event_ids
     )
     eligible_negative = (~actual) & (current <= SULFUR_LIMIT) & np.isfinite(current)
     false_positive_rate = (
@@ -441,6 +605,16 @@ def _estimator(family: str, task: str, seed: int) -> Any:
     raise ValueError(f"unknown v2 family: {family}")
 
 
+def _ablation_estimator(family: str, task: str, seed: int) -> Any:
+    """Use a fixed smaller budget for exploratory feature screening only."""
+    estimator = _estimator(family, task, seed)
+    if family == "hgb":
+        estimator.set_params(max_iter=8, max_leaf_nodes=7)
+    else:
+        estimator.set_params(model__n_estimators=20, model__num_leaves=7)
+    return estimator
+
+
 def _fit(estimator: Any, x: pd.DataFrame, y: np.ndarray, weights: np.ndarray, family: str) -> Any:
     valid = np.isfinite(y)
     if not valid.any():
@@ -462,20 +636,32 @@ def _rolling_predictions(
     *,
     include_regression: bool = True,
     include_upper: bool = True,
+    estimator_factory: Callable[[str, str, int], Any] = _estimator,
+    max_train_rows: int | None = None,
+    risk_horizons: tuple[int, ...] | None = None,
 ) -> tuple[pd.DataFrame, dict[int, np.ndarray], np.ndarray, np.ndarray]:
     frame = dataset.frame
     pieces: list[pd.DataFrame] = []
-    risk_parts: dict[int, list[np.ndarray]] = {horizon: [] for horizon in HORIZONS}
+    horizons = HORIZONS if risk_horizons is None else tuple(risk_horizons)
+    if not horizons or any(horizon not in HORIZONS for horizon in horizons):
+        raise ValueError(f"risk_horizons must be a non-empty subset of {HORIZONS}")
+    risk_parts: dict[int, list[np.ndarray]] = {horizon: [] for horizon in horizons}
     point_parts: list[np.ndarray] = []
     upper_parts: list[np.ndarray] = []
-    for train_indices, validation_indices in rolling_month_folds(frame, start, end):
+    for fold_number, (train_indices, validation_indices) in enumerate(
+        rolling_month_folds(frame, start, end)
+    ):
+        if max_train_rows is not None:
+            train_indices = _cap_training_rows(
+                frame, train_indices, max_train_rows, seed=seed, fold_number=fold_number
+            )
         train = frame.iloc[train_indices]
         validation = frame.iloc[validation_indices]
         features = list(dataset.feature_names)
         weights = episode_sample_weights(train)
-        for horizon in HORIZONS:
+        for horizon in horizons:
             estimator = _fit(
-                _estimator(family, "classifier", seed),
+                estimator_factory(family, "classifier", seed),
                 train.loc[:, features],
                 train[f"crossing_{horizon}m"].to_numpy(dtype=bool),
                 weights,
@@ -486,7 +672,7 @@ def _rolling_predictions(
             )
         if include_regression:
             delta = _fit(
-                _estimator(family, "delta", seed),
+                estimator_factory(family, "delta", seed),
                 train.loc[:, features],
                 train["delta_60m"].to_numpy(dtype=float),
                 weights,
@@ -495,7 +681,7 @@ def _rolling_predictions(
             point_parts.append(np.asarray(delta.predict(validation.loc[:, features]), dtype=float))
         if include_upper:
             upper = _fit(
-                _estimator(family, "upper", seed),
+                estimator_factory(family, "upper", seed),
                 train.loc[:, features],
                 train["delta_60m"].to_numpy(dtype=float),
                 weights,
@@ -511,6 +697,33 @@ def _rolling_predictions(
         np.concatenate(point_parts) if point_parts else np.asarray([], dtype=float),
         np.concatenate(upper_parts) if upper_parts else np.asarray([], dtype=float),
     )
+
+
+def _cap_training_rows(
+    frame: pd.DataFrame,
+    train_indices: np.ndarray,
+    max_rows: int,
+    *,
+    seed: int,
+    fold_number: int,
+) -> np.ndarray:
+    """Bound exploratory fit cost while retaining all positive event rows when possible."""
+    if max_rows <= 0 or len(train_indices) <= max_rows:
+        return train_indices
+    train = frame.iloc[train_indices]
+    positive = train.loc[:, [f"crossing_{horizon}m" for horizon in HORIZONS]].any(axis=1)
+    positive_indices = train_indices[positive.to_numpy()]
+    negative_indices = train_indices[~positive.to_numpy()]
+    rng = np.random.default_rng(seed + fold_number)
+    if len(positive_indices) >= max_rows:
+        selected = rng.choice(positive_indices, size=max_rows, replace=False)
+    else:
+        negative_count = max_rows - len(positive_indices)
+        sampled_negative = rng.choice(
+            negative_indices, size=min(negative_count, len(negative_indices)), replace=False
+        )
+        selected = np.concatenate([positive_indices, sampled_negative])
+    return np.sort(selected)
 
 
 def _monotone_probabilities(probabilities: Mapping[int, np.ndarray]) -> dict[int, np.ndarray]:
@@ -562,8 +775,33 @@ def _monthly_report(
                 if finite.any()
                 else None
             )
+            metrics.update(_upper_limit_metrics(actual[selected], upper[selected]))
         result[value] = metrics
     return result
+
+
+def _upper_limit_metrics(actual: np.ndarray, upper: np.ndarray) -> dict[str, float | int | None]:
+    """Measure misses and false alarms of the conservative ``upper > 10`` rule."""
+    finite = np.isfinite(actual) & np.isfinite(upper)
+    if not finite.any():
+        return {
+            "upper_limit_misses": 0,
+            "upper_limit_miss_rate": None,
+            "upper_limit_false_alarm_rate": None,
+        }
+    actual = actual[finite]
+    upper = upper[finite]
+    violation = actual > SULFUR_LIMIT
+    upper_alarm = upper > SULFUR_LIMIT
+    return {
+        "upper_limit_misses": int((violation & ~upper_alarm).sum()),
+        "upper_limit_miss_rate": float((violation & ~upper_alarm).sum() / violation.sum())
+        if violation.any()
+        else None,
+        "upper_limit_false_alarm_rate": float((~violation & upper_alarm).sum() / (~violation).sum())
+        if (~violation).any()
+        else None,
+    }
 
 
 def _lead_time_report(
@@ -585,8 +823,9 @@ def _bootstrap_event_fnr(
         return None
     current = pd.to_numeric(frame["baseline"], errors="coerce").to_numpy(dtype=float)
     alarm = (probability >= threshold) | (current > SULFUR_LIMIT)
+    event_alarm = alarm & _event_lead_window(frame)
     detected = np.asarray(
-        [alarm[frame["event_id"].eq(event_id).to_numpy()].any() for event_id in event_ids],
+        [event_alarm[frame["event_id"].eq(event_id).to_numpy()].any() for event_id in event_ids],
         dtype=bool,
     )
     rng = np.random.default_rng(seed)
@@ -616,9 +855,19 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
             "mae": float(np.mean(np.abs(actual - point))),
             "brier": float(brier_score_loss(frame_2024["crossing_60m"], probabilities)),
         }
+    eligible_families = tuple(
+        family
+        for family, values in family_reports.items()
+        if values["metrics"]["event_false_positive_rate"] is not None
+        and values["metrics"]["event_false_positive_rate"] <= FALSE_ALARM_BUDGET
+        and values["metrics"]["row_false_positive_rate"] is not None
+        and values["metrics"]["row_false_positive_rate"] <= FALSE_ALARM_BUDGET
+    )
+    selection_pool = eligible_families or tuple(family_reports)
     selected_family = min(
-        family_reports,
+        selection_pool,
         key=lambda family: (
+            0 if family in eligible_families else 1,
             float(family_reports[family]["metrics"]["event_false_negative_rate"]),
             float(family_reports[family]["brier"]),
             float(family_reports[family]["mae"]),
@@ -626,19 +875,41 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
         ),
     )
 
-    calibration_frame, calibration_raw, _, _ = _rolling_predictions(
+    calibration_frame, calibration_raw, _, calibration_upper_delta = _rolling_predictions(
         dataset,
         selected_family,
         "2025-01-01",
         "2025-07-01",
         seed,
         include_regression=False,
-        include_upper=False,
+        include_upper=True,
     )
     calibrators: dict[int, PlattCalibrator] = {}
     for horizon in HORIZONS:
         labels = calibration_frame[f"crossing_{horizon}m"].to_numpy(dtype=bool)
         calibrators[horizon] = _fit_calibrator(calibration_raw[horizon], labels, seed)
+    calibration_actual = calibration_frame["y_60m"].to_numpy(dtype=float)
+    calibration_baseline = calibration_frame["baseline"].to_numpy(dtype=float)
+    finite_upper = (
+        np.isfinite(calibration_actual)
+        & np.isfinite(calibration_baseline)
+        & np.isfinite(calibration_upper_delta)
+    )
+    upper_delta_shift = (
+        max(
+            0.0,
+            float(
+                np.quantile(
+                    calibration_actual[finite_upper]
+                    - calibration_baseline[finite_upper]
+                    - calibration_upper_delta[finite_upper],
+                    0.95,
+                )
+            ),
+        )
+        if finite_upper.any()
+        else 0.0
+    )
 
     policy_frame, policy_raw, _, _ = _rolling_predictions(
         dataset,
@@ -697,6 +968,7 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
         calibrators,
         policy,
         applicability,
+        upper_delta_shift,
     )
 
     audit = frame.loc[as_of >= pd.Timestamp("2026-01-01", tz="UTC")].reset_index(drop=True)
@@ -724,6 +996,7 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
             ),
         }
     )
+    audit_metrics.update(_upper_limit_metrics(actual, audit_upper))
     monthly = _monthly_report(
         audit,
         audit_probability,
@@ -737,6 +1010,11 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
     report = {
         "schema_version": "1.2",
         "selected_family": selected_family,
+        "selection_gate": {
+            "eligible_families": list(eligible_families),
+            "false_alarm_budget": FALSE_ALARM_BUDGET,
+            "passed": bool(eligible_families),
+        },
         "selection_2024": {
             family: {key: value for key, value in values.items() if key != "policy"}
             for family, values in family_reports.items()
@@ -745,6 +1023,7 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
         "threshold_period": "2025-07-01/2026-01-01",
         "threshold_metrics": policy_metrics,
         "alarm_threshold": policy.threshold,
+        "upper_delta_shift": upper_delta_shift,
         "audit_2026": audit_metrics,
         "audit_monthly": monthly,
         "audit_worst_month_event_fnr": max(
@@ -771,6 +1050,8 @@ def fit_episode_safety_model(dataset: EpisodeDataset, *, seed: int = 42) -> Epis
             and audit_metrics["row_false_positive_rate"] <= FALSE_ALARM_BUDGET
             and audit_metrics["upper_coverage"] is not None
             and audit_metrics["upper_coverage"] >= 0.95
+            and audit_metrics["upper_limit_miss_rate"] is not None
+            and audit_metrics["upper_limit_miss_rate"] <= 0.05
         ),
         "test_used_for_selection": False,
         "shadow_required": True,
@@ -803,6 +1084,7 @@ def save_episode_safety_model(
         "windows_minutes": list(WINDOWS),
         "target": "delta_60m and any crossing within horizon",
         "episode_weighting": "inverse episode length and equal month mass",
+        "upper_calibration": "nonnegative 0.95 residual shift on 2025-01/2025-07",
         "telemetry_signals": ["ht:P8", "ht:T11", "ht:F19"],
     }
     metadata = {
@@ -827,6 +1109,7 @@ def save_episode_safety_model(
             "calibration_period": fitted.report["calibration_period"],
             "threshold_period": fitted.report["threshold_period"],
             "alarm_threshold": fitted.report["alarm_threshold"],
+            "upper_delta_shift": fitted.report["upper_delta_shift"],
             "production_status": "shadow_only",
             "telemetry_semantics_status": "disputed_by_qa_2026_09_11",
             "pak_only_ablation_required": True,
@@ -839,6 +1122,21 @@ def save_episode_safety_model(
             "calibration_end": "2025-07-01",
         },
         "seed": seed,
+        "alarm_threshold": fitted.report["alarm_threshold"],
+        "false_alarm_budget": FALSE_ALARM_BUDGET,
+        "calibration": {
+            "method": "platt",
+            "period": fitted.report["calibration_period"],
+            "threshold_period": fitted.report["threshold_period"],
+        },
+        "metrics": {
+            "pak": {
+                "selection_2024": fitted.report["selection_2024"],
+                "threshold": fitted.report["threshold_metrics"],
+                "audit_2026": fitted.report["audit_2026"],
+            },
+            "lims": "separate_delayed_control_layer",
+        },
         "capabilities": {
             "supports_forecast": True,
             "supports_actions": False,
@@ -850,8 +1148,15 @@ def save_episode_safety_model(
             "method": "joint_pca_mahalanobis",
             "required_features": [dataset.baseline_feature],
             "coverage": 0.99,
+            "max_distance_squared": fitted.predictor.applicability.max_distance_squared,
             "purpose": "shadow-only PAK episode forecast",
             "action_comparison": "forbidden",
+        },
+        "ood": {
+            "method": "joint_pca_mahalanobis",
+            "coverage": 0.99,
+            "max_distance_squared": fitted.predictor.applicability.max_distance_squared,
+            "out_of_domain_behavior": "unavailable",
         },
         "reports": ("metrics.json",),
     }

@@ -5,12 +5,19 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+<<<<<<< HEAD
 import platform
+=======
+import os
+>>>>>>> 1527107 (Extend UI and ML analysis materials)
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Sequence
+
+import pandas as pd
 
 from source.config import load_runtime_config, load_scenario, load_tag_dictionary
 from source.contracts import DecisionContext, ProcessState, Recommendation, SourceKind
@@ -65,6 +72,26 @@ STAGE6_LIMITATIONS: tuple[str, ...] = (
     "Real setpoint recommendations remain disabled until a validated action model exists.",
     "Model-demo counterfactuals are synthetic; history artifact serving remains forecast-only.",
 )
+
+
+def _write_json_report(path: str | Path, payload: dict[str, object], root: Path) -> Path:
+    """Write a report atomically and refuse accidental overwrite."""
+    destination = _resolve_path(path, root)
+    if destination.exists():
+        raise FileExistsError(f"report already exists: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(destination)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return destination
 
 
 def validate_stage0(root: Path = PROJECT_ROOT) -> dict[str, int]:
@@ -194,6 +221,7 @@ def _git_revision(root: Path) -> str:
     return revision
 
 
+<<<<<<< HEAD
 def _source_or_output(
     value: SourceKind | str | Path | None,
     output: str | Path | None,
@@ -214,6 +242,62 @@ def _supervised_dataset(
     target_source: SourceKind,
     target_signal: str = "ht:2:Mg.Sulfur",
 ) -> SupervisedDataset:
+=======
+def _shadow_git_revision(root: Path, *, allow_dirty: bool) -> str:
+    """Return a reproducible label for a shadow fit, including an explicit dirty marker."""
+    if not allow_dirty:
+        return _git_revision(root)
+    revision = subprocess.run(
+        ["git", "-c", f"safe.directory={root.as_posix()}", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    status = subprocess.run(
+        ["git", "-c", f"safe.directory={root.as_posix()}", "status", "--porcelain"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=False,
+    ).stdout
+    diff = subprocess.run(
+        ["git", "-c", f"safe.directory={root.as_posix()}", "diff", "--binary", "HEAD", "--"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=False,
+    ).stdout
+    untracked = subprocess.run(
+        [
+            "git",
+            "-c",
+            f"safe.directory={root.as_posix()}",
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=False,
+    ).stdout
+    digest = hashlib.sha256()
+    digest.update(status)
+    digest.update(diff)
+    for encoded_path in sorted(path for path in untracked.split(b"\0") if path):
+        digest.update(b"\0" + encoded_path + b"\0")
+        candidate = root / os.fsdecode(encoded_path)
+        try:
+            digest.update(candidate.read_bytes())
+        except OSError:
+            digest.update(b"<unreadable>")
+    return f"working-tree:{revision}:{digest.hexdigest()[:12]}"
+
+
+def _supervised_dataset(data: PreparedData, target_source: SourceKind) -> SupervisedDataset:
+>>>>>>> 1527107 (Extend UI and ML analysis materials)
     from source.ml.features import build_supervised_dataset
 
     return build_supervised_dataset(
@@ -334,6 +418,7 @@ def train_v2_shadow_command(
     dataset: str | Path,
     output: str | Path | None = None,
     *,
+    allow_dirty_shadow: bool = False,
     config_path: str | Path = "config/runtime.toml",
     root: Path = PROJECT_ROOT,
 ) -> dict[str, object]:
@@ -341,7 +426,7 @@ def train_v2_shadow_command(
     from source.ml.v2 import save_episode_safety_model
 
     config = load_runtime_config(_resolve_path(config_path, root))
-    revision = _git_revision(root)
+    revision = _shadow_git_revision(root, allow_dirty=allow_dirty_shadow)
     data = load_prepared_dataset(_resolve_path(dataset, root))
     supervised = _supervised_dataset(data, SourceKind.PAK)
     models_root = _resolve_path(output if output is not None else config.models_dir, root)
@@ -367,9 +452,97 @@ def train_v2_shadow_command(
     }
 
 
+def replay_v2_shadow_command(
+    dataset: str | Path,
+    model_path: str | Path,
+    as_of: datetime,
+    *,
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Serve one schema-1.2 PAK episode forecast without enabling controls."""
+    from source.ml.artifacts import load_model
+    from source.ml.features import SupervisedDataset, _feature_matrix
+    from source.ml.v2 import build_episode_dataset
+
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    bundle = load_model(
+        _resolve_path(model_path, root),
+        trusted=True,
+        expected_schema_version="1.2",
+        expected_horizon_minutes=60,
+        expected_tag_dictionary_sha256=data.manifest.tag_dictionary_sha256,
+        expected_target_signal="ht:2:Mg.Sulfur",
+        expected_target_source="pak",
+        expected_target_unit="mg/kg",
+    )
+    definition = bundle.metadata.processing.get("feature_definition", {})
+    raw_signals = definition.get("telemetry_signals", ("ht:P8", "ht:T11", "ht:F19"))
+    if not isinstance(raw_signals, (list, tuple)):
+        raise ValueError("v2 artifact has invalid telemetry_signals definition")
+    cutoff = pd.Timestamp(as_of)
+    if cutoff.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    cutoff = cutoff.tz_convert("UTC")
+    signals = tuple(str(signal) for signal in raw_signals)
+    feature_matrix = _feature_matrix(
+        data,
+        pd.DatetimeIndex([cutoff]),
+        signals,
+        "ht:2:Mg.Sulfur",
+        SourceKind.PAK,
+        "mg/kg",
+    )
+    if feature_matrix.empty or pd.isna(feature_matrix.iloc[0][bundle.metadata.baseline_feature]):
+        raise ValueError("no PAK state is available at or before as_of")
+    base_frame = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "observation_id": ["serving-v2"],
+                    "as_of": [cutoff],
+                    "target_at": [pd.NaT],
+                    "target_available_at": [pd.NaT],
+                    "target_source": ["pak"],
+                    "target_signal": ["ht:2:Mg.Sulfur"],
+                    "target_unit": ["mg/kg"],
+                    "y": [float("nan")],
+                    "baseline": [float(feature_matrix.iloc[0][bundle.metadata.baseline_feature])],
+                }
+            ),
+            feature_matrix.reset_index(drop=True),
+        ],
+        axis="columns",
+    )
+    base = SupervisedDataset(
+        frame=base_frame,
+        feature_names=tuple(feature_matrix.columns),
+        target_signal_id="ht:2:Mg.Sulfur",
+        target_unit="mg/kg",
+        target_source=SourceKind.PAK,
+        feature_source=SourceKind.PAK,
+        baseline_feature=bundle.metadata.baseline_feature,
+        feature_definition=dict(definition),
+        excluded_counts={},
+    )
+    episode = build_episode_dataset(data, base)
+    features = episode.frame.loc[:, list(bundle.feature_names)]
+    row = episode.frame.iloc[[0]]
+    forecast = bundle.predict_v2(features)[0]
+    return {
+        "model_id": bundle.metadata.model_id,
+        "schema_version": bundle.metadata.schema_version,
+        "as_of": pd.Timestamp(row.iloc[0]["as_of"]).isoformat(),
+        "production_status": "shadow_only",
+        "git_revision_label": bundle.metadata.git_commit,
+        "supports_actions": False,
+        "forecast": forecast,
+    }
+
+
 def train_action_shadow_command(
     dataset: str | Path,
     *,
+    output: str | Path | None = None,
     config_path: str | Path = "config/runtime.toml",
     root: Path = PROJECT_ROOT,
 ) -> dict[str, object]:
@@ -377,18 +550,154 @@ def train_action_shadow_command(
     from source.ml.action_effects import (
         build_historical_action_dataset,
         fit_historical_action_model,
+        save_historical_action_model,
     )
 
     config = load_runtime_config(_resolve_path(config_path, root))
     data = load_prepared_dataset(_resolve_path(dataset, root))
     research = build_historical_action_dataset(data)
     model = fit_historical_action_model(research, seed=config.seed)
+    models_root = _resolve_path(output if output is not None else config.models_dir, root)
+    model_id = f"action-shadow-{data.manifest.dataset_id}-v2"
+    artifact_path = models_root / model_id
+    if not artifact_path.exists():
+        save_historical_action_model(
+            artifact_path, model, training_dataset_id=data.manifest.dataset_id
+        )
     return {
         "dataset_id": data.manifest.dataset_id,
+        "model_id": model_id,
+        "model_path": artifact_path.as_posix(),
         "supports_actions": False,
         "evidence_gate_passed": model.report["evidence_gate_passed"],
         "report": dict(model.report),
     }
+
+
+def action_shadow_estimate_command(
+    dataset: str | Path,
+    model_path: str | Path,
+    control: str,
+    delta: float,
+    as_of: datetime,
+    *,
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Calculate one research-only historical action scenario at an available time."""
+    from source.ml.action_effects import _action_timeline, load_historical_action_model
+
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    model = load_historical_action_model(
+        _resolve_path(model_path, root),
+        trusted=True,
+        expected_dataset_id=data.manifest.dataset_id,
+    )
+    timeline = _action_timeline(data)
+    timestamp = timeline["timestamp"]
+    cutoff = pd.Timestamp(as_of)
+    if cutoff.tzinfo is None:
+        raise ValueError("as_of must be timezone-aware")
+    selected = timeline.loc[timestamp <= cutoff.tz_convert("UTC")]
+    if selected.empty:
+        raise ValueError("no complete PAK/telemetry action state is available at as_of")
+    state_row = selected.iloc[-1]
+    state = {
+        name: float(state_row[name])
+        for name in (
+            "baseline_sulfur",
+            "sulfur_slope_60m",
+            "ht:P8",
+            "ht:F19",
+            "ht:T11",
+            "ht:F26",
+        )
+    }
+    estimate = model.estimate(state, control, delta)
+    payload = estimate.as_ui_payload()
+    payload.update(
+        {
+            "as_of": pd.Timestamp(state_row["timestamp"]).isoformat(),
+            "state": state,
+            "supports_actions": False,
+        }
+    )
+    return payload
+
+
+def evaluate_lims_correction_command(
+    dataset: str | Path,
+    pak_model_path: str | Path,
+    *,
+    output: str | Path | None = None,
+    config_path: str | Path = "config/runtime.toml",
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Evaluate the delayed LIMS correction as a separate, non-operational layer."""
+    from source.ml.safety import fit_lims_correction
+
+    config = load_runtime_config(_resolve_path(config_path, root))
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    pak_model = _load_trusted_model(pak_model_path, data, root)
+    correction = fit_lims_correction(
+        _supervised_dataset(data, SourceKind.LIMS),
+        pak_model,
+        data=data,
+        source_timezone=config.source_timezone,
+        seed=config.seed,
+    )
+    result: dict[str, object] = {
+        "dataset_id": data.manifest.dataset_id,
+        "pak_model_id": pak_model.metadata.model_id,
+        "production_status": (
+            "eligible_for_shadow" if correction.report["promotion_eligible"] else "research_only"
+        ),
+        "report": correction.report,
+    }
+    if output is not None:
+        result["report_path"] = _write_json_report(output, result, root).as_posix()
+    return result
+
+
+def evaluate_action_residualization_command(
+    dataset: str | Path,
+    *,
+    output: str | Path | None = None,
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Run the cross-fitted historical action association benchmark."""
+    from source.ml.action_effects import (
+        build_historical_action_dataset,
+        evaluate_temporal_residualization,
+    )
+
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    report = evaluate_temporal_residualization(build_historical_action_dataset(data))
+    result: dict[str, object] = {
+        "dataset_id": data.manifest.dataset_id,
+        "production_status": "research_only",
+        "report": report,
+    }
+    if output is not None:
+        result["report_path"] = _write_json_report(output, result, root).as_posix()
+    return result
+
+
+def ablate_v2_features_command(
+    dataset: str | Path,
+    *,
+    groups: tuple[str, ...],
+    output: str | Path | None = None,
+    root: Path = PROJECT_ROOT,
+) -> dict[str, object]:
+    """Run the fixed 2024 PAK/HT/AVT feature ablation without audit selection."""
+    from source.ml.v2 import ablate_episode_features
+
+    data = load_prepared_dataset(_resolve_path(dataset, root))
+    report = ablate_episode_features(data, groups=groups)
+    result = {"dataset_id": data.manifest.dataset_id, **report}
+    if output is not None:
+        result["report_path"] = _write_json_report(output, result, root).as_posix()
+    return result
 
 
 def _load_trusted_model(model_path: str | Path, data: PreparedData, root: Path) -> ModelBundle:
@@ -605,12 +914,61 @@ def main(argv: Sequence[str] | None = None) -> int:
     v2.add_argument("--dataset", required=True, help="prepared dataset directory")
     v2.add_argument("--output", default=None, help="model artifacts root")
     v2.add_argument("--config", default="config/runtime.toml", help="runtime config path")
+    v2.add_argument(
+        "--allow-dirty-shadow",
+        action="store_true",
+        help="allow a non-clean worktree; artifact remains shadow_only and cannot be frozen",
+    )
+    v2_replay = subparsers.add_parser(
+        "replay-v2-shadow", help="serve one schema-1.2 PAK episode forecast"
+    )
+    v2_replay.add_argument("--dataset", required=True, help="prepared dataset directory")
+    v2_replay.add_argument("--model", required=True, help="schema-1.2 shadow artifact")
+    v2_replay.add_argument("--at", required=True, type=_parse_as_of, help="timezone-aware ISO time")
     action_shadow = subparsers.add_parser(
         "evaluate-action-shadow", help="evaluate matched P8/F19 sulfur effects"
     )
     action_shadow.add_argument("--dataset", required=True, help="prepared dataset directory")
+    action_shadow.add_argument("--output", default=None, help="action artifact root")
     action_shadow.add_argument(
         "--config", default="config/runtime.toml", help="runtime config path"
+    )
+    action_estimate = subparsers.add_parser(
+        "action-shadow-estimate", help="calculate one non-advisory P8/F19 historical scenario"
+    )
+    action_estimate.add_argument("--dataset", required=True, help="prepared dataset directory")
+    action_estimate.add_argument("--model", required=True, help="trusted action artifact directory")
+    action_estimate.add_argument("--control", choices=("ht:P8", "ht:F19"), required=True)
+    action_estimate.add_argument("--delta", type=float, required=True)
+    action_estimate.add_argument(
+        "--at", required=True, type=_parse_as_of, help="timezone-aware ISO time"
+    )
+    lims_correction = subparsers.add_parser(
+        "evaluate-lims-correction", help="evaluate a delayed PAK-to-LIMS correction"
+    )
+    lims_correction.add_argument("--dataset", required=True, help="prepared dataset directory")
+    lims_correction.add_argument("--pak-model", required=True, help="trusted local PAK model")
+    lims_correction.add_argument(
+        "--config", default="config/runtime.toml", help="runtime config path"
+    )
+    lims_correction.add_argument("--output", default=None, help="new JSON report path")
+    residualization = subparsers.add_parser(
+        "evaluate-action-residualization",
+        help="cross-fitted residual P8/F19 association benchmark",
+    )
+    residualization.add_argument("--dataset", required=True, help="prepared dataset directory")
+    residualization.add_argument("--output", default=None, help="new JSON report path")
+    ablation = subparsers.add_parser(
+        "ablate-v2-features", help="compare PAK/HT/AVT groups on 2024 temporal folds"
+    )
+    ablation.add_argument("--dataset", required=True, help="prepared dataset directory")
+    ablation.add_argument("--output", default=None, help="new JSON report path")
+    ablation.add_argument(
+        "--group",
+        action="append",
+        choices=("pak_only", "ht_context", "k2_state", "k2_circulation", "diesel_cut"),
+        required=True,
+        help="one fixed group; repeat this argument for a deliberate comparison",
     )
     evaluate = subparsers.add_parser(
         "evaluate", help="compare a frozen model with persistence on one temporal split"
@@ -697,12 +1055,47 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(diagnostic_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "train-v2-shadow":
-            v2_result = train_v2_shadow_command(args.dataset, args.output, config_path=args.config)
+            v2_result = train_v2_shadow_command(
+                args.dataset,
+                args.output,
+                allow_dirty_shadow=args.allow_dirty_shadow,
+                config_path=args.config,
+            )
             print(json.dumps(v2_result, ensure_ascii=False, indent=2))
             return 0
+        if args.command == "replay-v2-shadow":
+            v2_replay_result = replay_v2_shadow_command(args.dataset, args.model, args.at)
+            print(json.dumps(v2_replay_result, ensure_ascii=False, indent=2))
+            return 0
         if args.command == "evaluate-action-shadow":
-            action_result = train_action_shadow_command(args.dataset, config_path=args.config)
+            action_result = train_action_shadow_command(
+                args.dataset, output=args.output, config_path=args.config
+            )
             print(json.dumps(action_result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "action-shadow-estimate":
+            action_result = action_shadow_estimate_command(
+                args.dataset, args.model, args.control, args.delta, args.at
+            )
+            print(json.dumps(action_result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "evaluate-lims-correction":
+            lims_result = evaluate_lims_correction_command(
+                args.dataset, args.pak_model, output=args.output, config_path=args.config
+            )
+            print(json.dumps(lims_result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "evaluate-action-residualization":
+            residual_result = evaluate_action_residualization_command(
+                args.dataset, output=args.output
+            )
+            print(json.dumps(residual_result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "ablate-v2-features":
+            ablation_result = ablate_v2_features_command(
+                args.dataset, groups=tuple(args.group), output=args.output
+            )
+            print(json.dumps(ablation_result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "evaluate":
             evaluation_result = evaluate_command(

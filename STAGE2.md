@@ -1,8 +1,8 @@
 # Stage 2: Real Data Preparation
 
 > Актуальный статус: pipeline `prepare`/`build-state` остаётся рабочей границей
-> данных. После Stage 5 он может снабжать history-расчёт признаками, но public CLI
-> всё ещё не обучает и не запускает historical ML-forecast.
+> данных. После Stage 5 он снабжает history-replay признаками; CLI `train` и
+> `replay`, а также UI «Прогноз серы» используют один и тот же подготовленный набор.
 
 Stage 2 делает первый практический мост от оригинальных материалов к backend-коду.
 

@@ -62,6 +62,11 @@ class ModelMetadata(BaseModel):
     capabilities: ModelCapabilities
     applicability: dict[str, Any]
     reports: tuple[str, ...]
+    alarm_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    false_alarm_budget: float | None = Field(default=None, ge=0.0, le=1.0)
+    calibration: dict[str, Any] | None = None
+    metrics: dict[str, Any] | None = None
+    ood: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def validate_features_and_capabilities(self) -> Self:
@@ -239,6 +244,41 @@ class ModelBundle:
         }
         if any(not isinstance(row, Mapping) or not required.issubset(row) for row in rows):
             raise ValueError("v2 predictor returned an incomplete safety contract")
+        expected_horizons = {"10", "20", "30", "60"}
+        for row in rows:
+            horizons = row["horizon_probabilities"]
+            normalized_horizons = (
+                {str(key): value for key, value in horizons.items()}
+                if isinstance(horizons, Mapping)
+                else {}
+            )
+            if set(normalized_horizons) != expected_horizons:
+                raise ValueError("v2 predictor returned invalid horizon probabilities")
+            try:
+                values = np.asarray(
+                    [float(normalized_horizons[key]) for key in expected_horizons], dtype=float
+                )
+                scalar_names = (
+                    "point",
+                    "upper",
+                    "predicted_delta",
+                    "point_60m",
+                    "upper_60m",
+                )
+                scalar_values = np.asarray(
+                    [float(row[key]) for key in scalar_names],
+                    dtype=float,
+                )
+            except (TypeError, ValueError, KeyError) as exc:
+                raise ValueError("v2 predictor returned non-numeric safety values") from exc
+            if (
+                not np.isfinite(values).all()
+                or np.any((values < 0.0) | (values > 1.0))
+                or not np.isfinite(scalar_values).all()
+                or scalar_values[1] < scalar_values[0]
+                or scalar_values[4] < scalar_values[3]
+            ):
+                raise ValueError("v2 predictor returned invalid safety values")
         return rows
 
     def _check_feature_order(self, features: pd.DataFrame) -> None:

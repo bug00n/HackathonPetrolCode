@@ -8,6 +8,21 @@ python -m source.main train-v2-shadow \
   --output artifacts/models
 ```
 
+Если рабочее дерево содержит незакоммиченные изменения (типичный режим разработки
+на хакатоне), fit можно запустить явно как исследовательский shadow:
+
+```bash
+python -m source.main train-v2-shadow \
+  --dataset data/processed/aacc7c1ab3d9 \
+  --output artifacts/models \
+  --allow-dirty-shadow
+```
+
+В этом случае `git_commit` получает метку `working-tree:<HEAD>:<status-hash>`. Это
+позволяет связать результат с конкретным состоянием файлов, но не превращает его в
+production freeze: `production_status=shadow_only`, `supports_actions=false` и
+promotion-gate остаются обязательными.
+
 Команда обучает schema `1.2`. Артефакт всегда получает статус `shadow_only` и
 `supports_actions=false`.
 
@@ -25,6 +40,45 @@ python -m source.main train-v2-shadow \
 30/60/180 минут, пересечения 8/9/10, длительность режима, missingness, возраст,
 а также `P8/T11/F19`. Остальные телеметрические сигналы не подключаются.
 
+Схемы АВТ от 14.09 не меняют этот frozen feature list. Они задают следующий
+train-only эксперимент после PAK-only baseline: отдельно проверить группы
+`k2_state={avt:F65,avt:T20,avt:T33,avt:P21,avt:P22,avt:P23,avt:P67}`,
+`k2_circulation={avt:F14,avt:T13,avt:T18,avt:F12,avt:T17,avt:F64,avt:T11,avt:T15}`
+и `diesel_cut={avt:T66,avt:F28,avt:F32,avt:T71,avt:F30,avt:W70}`. Группы нельзя
+объединять с одноимёнными `ht:*`; audit-2026 не используется для отбора.
+
+Для ablation запускается одна или несколько явно перечисленных групп, чтобы тяжёлый
+rolling-origin расчёт не начинался из UI случайно:
+
+```bash
+python -m source.main ablate-v2-features --dataset data/processed/aacc7c1ab3d9 \
+  --group pak_only --group ht_context
+```
+
+Отчёт содержит HGB и LightGBM, их event FNR/FPR, row FPR, Brier, MAE и порог;
+для exploratory ablation используется фиксированный малый бюджет
+`HGB(max_iter=8, max_leaf_nodes=7)` и `LightGBM(n_estimators=20, num_leaves=7)`;
+для ограничения времени fit берётся не более 20 000 train-строк на fold с сохранением
+положительных event-строк. Такой отчёт предназначен только для скрининга и всегда
+`promotion_eligible=false`. Только после выбора на 2024 выбранную группу
+проверяют на 2025 и затем фиксируют отдельный shadow artifact.
+
+Актуальный скрининг на `aacc7c1ab3d9` (2024, только горизонт 60 минут) выполнен
+командой `ablate-v2-features` 15.09.2026; audit-2026 в отборе не использовался:
+
+| Группа | Семейство | Event FNR | Event FPR | MAE, мг/кг |
+| --- | --- | ---: | ---: | ---: |
+| PAK-only | LightGBM | 41.17% | 19.99% | 1.008 |
+| HT context (P8/T11/F19) | LightGBM | 41.82% | 19.95% | 1.006 |
+| K-2 state | LightGBM | 41.37% | 19.99% | 1.007 |
+| K-2 circulation | LightGBM | 41.67% | 19.95% | 1.009 |
+| Diesel cut | LightGBM | 41.52% | 19.96% | 1.010 |
+
+Ни одна группа не даёт устойчивого выигрыша относительно PAK-only: HT-контекст и
+AVT-группы немного меняют MAE, но не улучшают event FNR. Поэтому текущий shadow-fit
+сохраняет HT только как именованный контекст, а AVT не подключает. Выбранную группу
+нужно отдельно повторить на 2025 до любого изменения production-признаков.
+
 ## Временная проверка
 
 - 2024: rolling-origin сравнение HGB и LightGBM;
@@ -35,7 +89,9 @@ python -m source.main train-v2-shadow \
 Порог обязан одновременно соблюдать row-level и event-opportunity FPR не выше
 20%. В отчёте сохраняются event/row FNR/FPR, Brier, PR-AUC, MAE, q95 coverage,
 срезы `<8`, `8–10`, `>10`, месяцы, bootstrap CI и предупреждения по каждому
-горизонту.
+горизонту. Для upper-bound отдельно считаются пропуски правила `upper > 10` и
+ложные тревоги этого правила; upper-gate требует coverage не ниже 95% и долю
+пропусков лимита не выше 5%.
 
 ## LIMS и продвижение
 
@@ -44,9 +100,40 @@ LIMS — отдельный отложенный слой. Признак дос
 `observation_id`, prepared data не меняется. Коррекция проходит собственный gate:
 MAE минимум на 5% лучше ПАК и coverage не ниже 95%.
 
+Команда `evaluate-lims-correction --dataset <dataset> --pak-model <artifact>`
+выполняет эту проверку и печатает отдельный отчёт. Она не меняет оперативный ПАК
+прогноз; UI «Контроль ПАК–ЛИМС» показывает тот же отчёт как исследовательский
+слой. На `aacc7c1ab3d9` текущая Ridge-коррекция не прошла validation gate:
+validation MAE `1.660` против `1.513 mg/kg` у ПАК и upper coverage `90.10%`.
+Test-аудит также хуже (`2.071` против `1.781 mg/kg`, coverage `84.98%`). Поэтому её
+статус `research_only`; test не участвует в решении о продвижении.
+
 Audit 2026 не разрешает production. После фиксации нужен новый shadow-период:
 100 независимых эпизодов или три полных месяца. Действия `P8/T11/F19` остаются
 запрещены до отдельной модели эффектов и инженерного gate.
+
+Для проверки зафиксированного shadow-артефакта в одной исторической точке используется
+отдельный read-only путь:
+
+```bash
+python -m source.main replay-v2-shadow \
+  --dataset data/processed/aacc7c1ab3d9 \
+  --model artifacts/models/sulfur-v2-shadow-<hash> \
+  --at 2025-06-01T12:00:00+03:00
+```
+Он возвращает вероятности пересечения лимита на 10/20/30/60 минут, point/upper на
+60 минут, `applicable`, `reason_codes` и `production_status=shadow_only`; никаких
+изменений уставок или рекомендаций этот путь не выполняет.
+
+## Текущий хакатонный fit
+
+Полный fit на закреплённом `aacc7c1ab3d9` выполнен 15.09.2026 в явном dirty-shadow
+режиме и сохранён как `artifacts/models/sulfur-v2-shadow-<latest-hash>`. После
+исправления lead-time в selection-2024 выбран LightGBM: event FNR `3.28%`, event FPR
+`19.99%`, row FPR `13.12%`. На audit-2026 event FNR `1.53%`, но event FPR `40.44%`,
+upper coverage `94.21%` и upper-limit miss rate `6.52%`. Поэтому artifact полезен для
+демонстрации ранних предупреждений, но не проходит safety/promotion gate; порог и
+test-набор после этого fit не меняются.
 
 ## Влияние Q&A 11.09
 
@@ -66,30 +153,37 @@ Audit 2026 не разрешает production. После фиксации ну�
 
 Ни один ответ Q&A не разрешает ослабить `FNR/FPR`, coverage или action gates.
 
-## Результат backtest на `aacc7c1ab3d9`
+## Влияние схем АВТ 14.09
 
-Выбран HGB: на rolling-origin 2024 event FNR `3.03%` при event-opportunity FPR
-`20.00%`. На периоде фиксации порога (июль–декабрь 2025) threshold `0.02768`
-получил event FNR `0%`, event FPR `20.00%` и row FPR `13.10%`.
+Схемы частично закрывают Q1: теперь известны аппараты и внутренние линии для
+многих `avt:*`. Они не закрывают Q2/Q5: на листах нет 24-2000, резервуаров между
+установками, времени пребывания или карты ЛИМС-точек. Поэтому новые признаки
+сначала проходят отдельную rolling-origin ablation; межустановочный lag остаётся
+исследовательским и не получает физического статуса по корреляции.
 
-Audit-2026 подтвердил сильное обнаружение, но не устойчивость ложных тревог:
+## Результат актуального backtest на `aacc7c1ab3d9`
+
+После исправления определения окна раннего предупреждения (alarm за 10–60 минут
+до первого превышения) выбран LightGBM. На 2024 selection event FNR `3.28%`,
+event-opportunity FPR `19.99%`, row FPR `13.12%`; threshold `0.029275` зафиксирован
+по июлю–декабрю 2025. Test 2026 используется только как audit:
 
 | Метрика | Результат |
 | --- | ---: |
 | Независимых эпизодов | 392 |
-| Event FNR | 0.26% |
-| Event-opportunity FPR | 38.84% |
-| Row FNR | 4.22% |
-| Row FPR | 25.83% |
-| PR-AUC | 0.909 |
-| Brier | 0.0496 |
-| Point MAE | 1.092 mg/kg |
-| q95 coverage | 93.80% |
+| Event FNR | 1.53% |
+| Event-opportunity FPR | 40.44% |
+| Row FNR | 4.47% |
+| Row FPR | 26.55% |
+| PR-AUC | 0.900 |
+| Brier | 0.0557 |
+| Point MAE | 0.699 mg/kg |
+| q95 coverage | 94.21% |
 
-По горизонтам event FNR равен `1.53% / 0.77% / 0.26% / 0.26%` для
-10/20/30/60 минут. Но event FPR растёт до `15.44% / 22.26% / 28.87% / 38.84%`.
-Старый persistence point на том же audit-периоде имел MAE `0.684 mg/kg`, поэтому
-delta-регрессор v2 численно хуже baseline.
+По горизонтам event FNR равен `8.16% / 3.57% / 2.55% / 1.53%` для
+10/20/30/60 минут, а event FPR — `15.15% / 22.26% / 29.07% / 40.44%`.
+Point MAE v2 на audit равен `0.699 mg/kg`; это отдельная от alarm метрика и не
+используется для ослабления safety-gate.
 
 Вывод: эпизодная постановка решила проблему пропуска начала событий, но не прошла
 production gate из-за drift ложных тревог и coverage ниже 95%. Артефакт остаётся
