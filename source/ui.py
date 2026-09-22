@@ -39,6 +39,7 @@ from source.main import (
     run_model_demo,
     validate_stage0,
 )
+from source.ui_charts import HistoryChart
 from source.ui_data import (
     UiContext,
     UiHistoryReplayView,
@@ -50,6 +51,7 @@ from source.ui_data import (
     ui_hybrid_snapshot,
     ui_stage_snapshot,
 )
+from source.ui_what_if import open_editor
 
 BG = "#F5F7F7"
 SURFACE = "#FFFFFF"
@@ -1014,6 +1016,9 @@ class PetrolCodeApp(tk.Tk):
         horizon.pack(side="left", padx=6)
         button = self._primary_button(controls, "Рассчитать", self.calculate)
         button.pack(side="left", padx=(8, 0))
+        self._secondary_button(page, "Синтетический what-if", self.open_what_if_dialog).pack(
+            anchor="w", pady=(10, 0)
+        )
 
         view = self._view()
         banner = tk.Frame(
@@ -1217,7 +1222,7 @@ class PetrolCodeApp(tk.Tk):
             anchor="w", padx=22, pady=(20, 12)
         )
         self._info_row(parent, "Режим", "Модельный")
-        self._info_row(parent, "Сценарий", SCENARIO_LABELS.get(self.scenario_var.get(), "—"))
+        self._info_row(parent, "Сценарий", self._scenario.id if self._scenario else "—")
         self._info_row(parent, "Горизонт", self.horizon_var.get())
         self._info_row(parent, "Последний расчёт", datetime.now().strftime("%H:%M"))
         tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=20, pady=18)
@@ -1287,12 +1292,26 @@ class PetrolCodeApp(tk.Tk):
         left.grid(row=0, column=0, sticky="ew", padx=(0, 12))
         right = tk.Frame(grid, bg=SURFACE)
         right.grid(row=0, column=1, sticky="ew", padx=(12, 0))
-        self._field(left, "Исторические данные", dataset_var)
-        self._field(left, "Прогноз серы", model_var)
-        self._field(right, "Момент данных (ISO с timezone)", as_of_var)
-        self._field(right, "Артефакт действий (не используется)", action_var)
+        self._field(left, "Момент данных (ISO с timezone)", as_of_var)
         self._field(right, "Конец исторического интервала (ISO с timezone)", interval_to_var)
-        output = tk.Text(page, height=24, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
+
+        def settings(parent: tk.Misc) -> None:
+            self._field(parent, "Исторические данные", dataset_var)
+            self._field(parent, "Прогноз серы", model_var)
+            self._field(parent, "Артефакт действий (не используется)", action_var)
+
+        self._accordion(page, "Дополнительные настройки данных и модели", settings).pack(
+            fill="x", pady=(0, 10)
+        )
+        summary = tk.StringVar(
+            value="Укажите время и запустите расчёт. Реальные действия отключены."
+        )
+        tk.Label(
+            page, textvariable=summary, bg=BG, fg=TEXT, anchor="w", justify="left", wraplength=1100
+        ).pack(fill="x", pady=8)
+        chart = HistoryChart(page)
+        chart.pack(fill="x", pady=(0, 10))
+        output = tk.Text(page, height=7, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
         output.pack(fill="both", expand=True)
 
         def render(view: UiHistoryReplayView) -> None:
@@ -1300,6 +1319,14 @@ class PetrolCodeApp(tk.Tk):
             output.delete("1.0", "end")
             output.insert("1.0", format_history_replay_view(view))
             output.configure(state="disabled")
+            chart.set_payload(view.raw)
+            summary.set(
+                f"Прогноз: {_format_value(view.sulfur_point)} · "
+                f"Верхняя оценка: {_format_value(view.sulfur_upper)}. "
+                "Реальные действия отключены."
+                if view.status == "ready"
+                else view.message
+            )
 
         def calculate(
             request_id: int,
@@ -1329,6 +1356,10 @@ class PetrolCodeApp(tk.Tk):
             self._history_request_id += 1
             self._interval_cancel.set()
             self._history_export_payload = None
+            self._history_view = None
+            self._history_interval_text = None
+            chart.set_payload(None)
+            summary.set("Расчёт исторического прогноза…")
             output.configure(state="normal")
             output.delete("1.0", "end")
             output.insert("1.0", "Расчёт исторического прогноза…")
@@ -1351,6 +1382,9 @@ class PetrolCodeApp(tk.Tk):
             cancel = threading.Event()
             self._interval_cancel = cancel
             self._history_export_payload = None
+            self._history_view = None
+            self._history_interval_text = None
+            chart.set_payload(None)
             request_id = self._history_request_id
             dataset = dataset_var.get().strip()
             model = model_var.get().strip()
@@ -1361,6 +1395,7 @@ class PetrolCodeApp(tk.Tk):
                     raise ValueError("обе границы интервала должны содержать timezone")
             except (TypeError, ValueError) as exc:
                 self._history_interval_text = f"Ошибка ввода интервала: {exc}"
+                summary.set(self._history_interval_text)
                 output.configure(state="normal")
                 output.delete("1.0", "end")
                 output.insert("1.0", self._history_interval_text)
@@ -1372,6 +1407,10 @@ class PetrolCodeApp(tk.Tk):
                     if request_id != self._history_request_id or not self._widget_exists(output):
                         return
                     output.configure(state="normal")
+                    summary.set(
+                        f"Исторический интервал: {done} / {total} точек. "
+                        "Отмена — после текущей точки."
+                    )
                     output.delete("1.0", "end")
                     output.insert(
                         "1.0",
@@ -1406,6 +1445,17 @@ class PetrolCodeApp(tk.Tk):
                     if self._widget_exists(output):
                         self._history_export_payload = payload
                         self._history_interval_text = text
+                        chart.set_payload(payload)
+                        summary.set(
+                            (
+                                "Частичный результат отменённого интервала"
+                                if payload.get("cancelled")
+                                else "Интервал рассчитан"
+                            )
+                            + f": {payload.get('points', 0)} точек. Реальные действия отключены."
+                            if payload is not None
+                            else text
+                        )
                         output.configure(state="normal")
                         output.delete("1.0", "end")
                         output.insert("1.0", text)
@@ -1419,7 +1469,7 @@ class PetrolCodeApp(tk.Tk):
             threading.Thread(target=work, daemon=True).start()
 
         actions = tk.Frame(page, bg=BG)
-        actions.pack(fill="x", pady=(0, 12), before=output)
+        actions.pack(fill="x", pady=(0, 12), before=chart)
         self._primary_button(
             actions,
             "Рассчитать на выбранный момент",
@@ -1467,6 +1517,12 @@ class PetrolCodeApp(tk.Tk):
             output.delete("1.0", "end")
             output.insert("1.0", self._history_interval_text)
             output.configure(state="disabled")
+            chart.set_payload(self._history_export_payload)
+            summary.set(
+                "Частичный интервал"
+                if self._history_export_payload and self._history_export_payload.get("cancelled")
+                else "Результат последнего интервала"
+            )
 
     def _render_hybrid_panel(self, parent: tk.Misc) -> None:
         panel = self._surface(parent)
@@ -1584,7 +1640,9 @@ class PetrolCodeApp(tk.Tk):
         ).pack(side="left")
         badge = tk.Label(
             heading,
-            text="⚠  Модельный режим",
+            text="⚠  Синтетический what-if"
+            if self._scenario and self._scenario.id.endswith("_what_if")
+            else "⚠  Модельный режим",
             bg=AMBER_BG,
             fg="#A55E00",
             font=("Segoe UI", 10, "bold"),
@@ -1702,12 +1760,15 @@ class PetrolCodeApp(tk.Tk):
         footer = tk.Frame(page, bg=BG)
         footer.pack(fill="x", pady=(18, 0))
         self._primary_button(footer, "Скачать расчёт", self.export_result).pack(side="left")
+        self._secondary_button(footer, "Синтетический what-if", self.open_what_if_dialog).pack(
+            side="left", padx=10
+        )
         self._secondary_button(footer, "Открыть журнал", lambda: self.show_page("journal")).pack(
             side="left", padx=14
         )
         tk.Label(
             footer,
-            text="НЕФТЕКОД  v1.0  |  prototype",
+            text="НЕФТЕКОД  v1.1  |  prototype",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 9),
@@ -1995,16 +2056,36 @@ class PetrolCodeApp(tk.Tk):
             return None
         return recommendation_to_view(self._result, self._scenario)
 
-    def calculate(self) -> None:
+    def open_what_if_dialog(self) -> None:
+        preset = load_scenario(
+            PROJECT_ROOT / f"config/scenarios/{SCENARIO_LABELS[self.scenario_var.get()]}.json"
+        )
+        current = (
+            self._scenario
+            if self._scenario and self._scenario.id == preset.id + "_what_if"
+            else preset
+        )
+
+        def recalculate(scenario: ScenarioConfig) -> None:
+            self.calculate(scenario)
+
+        open_editor(self, preset, current, recalculate)
+
+    def calculate(self, scenario_override: ScenarioConfig | None = None) -> None:
         self._calculation_request_id += 1
         request_id = self._calculation_request_id
         scenario_id = SCENARIO_LABELS[self.scenario_var.get()]
         self.status_var.set("Выполняется расчёт…")
+        self._result = None
+        self._scenario = None
+        self.show_page("blend" if scenario_override is not None else self._page)
 
         def work() -> None:
             try:
-                scenario = load_scenario(PROJECT_ROOT / f"config/scenarios/{scenario_id}.json")
-                result = run_model_demo(scenario_id)
+                scenario = scenario_override or load_scenario(
+                    PROJECT_ROOT / f"config/scenarios/{scenario_id}.json"
+                )
+                result = run_model_demo(scenario_id, scenario_override=scenario_override)
             except Exception as exc:  # UI boundary: render backend failure without crashing Tk.
                 self._post_ui(partial(self._calculation_failed, request_id, exc))
                 return
@@ -2096,8 +2177,11 @@ class PetrolCodeApp(tk.Tk):
         if not destination:
             return
         try:
+            payload = self._result.model_dump(mode="json")
+            if self._scenario is not None and self._scenario.id.endswith("_what_if"):
+                payload["synthetic_scenario"] = self._scenario.model_dump(mode="json")
             Path(destination).write_text(
-                self._result.model_dump_json(indent=2), encoding="utf-8", newline="\n"
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n"
             )
         except OSError as exc:
             messagebox.showerror("Не удалось сохранить", str(exc), parent=self)

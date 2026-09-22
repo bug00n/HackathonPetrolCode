@@ -28,6 +28,7 @@ from source.contracts import (
     ProcessState,
     Recommendation,
     RuntimeConfig,
+    ScenarioConfig,
     SourceKind,
 )
 from source.data import (
@@ -127,12 +128,18 @@ def run_model_demo(
     scenario_id: str,
     root: Path = PROJECT_ROOT,
     run_dir: str | Path | None = None,
+    *,
+    scenario_override: ScenarioConfig | None = None,
 ) -> Recommendation:
     """Run one deterministic stage-1 model-demo scenario on fixture data."""
     from source.orchestrator import run_cycle
 
     config = load_runtime_config(root / "config/runtime.toml")
     scenario = load_scenario(root / f"config/scenarios/{scenario_id}.json")
+    if scenario_override is not None:
+        scenario = ScenarioConfig.model_validate(scenario_override.model_dump())
+        if scenario.mode.value != "model_demo" or scenario.controls:
+            raise ValueError("What-if supports synthetic blending only, without real controls")
     fixture = json.loads(
         (root / f"global_tests/fixtures/model_demo/{scenario_id}.json").read_text(encoding="utf-8")
     )

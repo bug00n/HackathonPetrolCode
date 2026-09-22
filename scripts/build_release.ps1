@@ -111,7 +111,10 @@ if ($BinaryDirectory) {
         $process = Start-Process -FilePath (Join-Path $destination "Neftekod.exe") -ArgumentList @("--smoke-report", "`"$smokeReport`"") -WorkingDirectory $destination -WindowStyle Hidden -Wait -PassThru
         if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $smokeReport)) { throw "Portable EXE verification failed" }
         $smoke = Get-Content -Raw -LiteralPath $smokeReport | ConvertFrom-Json
-        if ($smoke.error -or $smoke.tk -ne "ok" -or $smoke.history.points -ne 2) { throw "Portable smoke report is incomplete" }
+        if ($smoke.error -or $smoke.tk -ne "ok" -or $smoke.history.points -ne 2 -or
+            -not $smoke.history_chart.rendered -or $smoke.what_if.editor -ne "ok") {
+            throw "Portable smoke report is incomplete"
+        }
     } finally {
         $env:PATH = $savedPath
         $env:PYTHONPATH = $savedPythonPath

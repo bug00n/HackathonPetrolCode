@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
+import tkinter as tk
 import traceback
+from collections.abc import Iterator
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,7 @@ from source.config import PROJECT_ROOT
 
 
 def main() -> None:
+    from source.config import load_scenario
     from source.main import (
         history_interval_command,
         replay_v2_shadow_command,
@@ -20,7 +23,9 @@ def main() -> None:
         validate_stage0,
     )
     from source.ui import PetrolCodeApp
+    from source.ui_charts import HistoryChart
     from source.ui_data import discover_ui_context, ui_hybrid_snapshot, ui_stage_snapshot
+    from source.ui_what_if import editor_values, scenario_from_editor
 
     if len(sys.argv) == 3 and sys.argv[1] == "--smoke-report":
         destination = Path(sys.argv[2])
@@ -42,18 +47,50 @@ def main() -> None:
             at = datetime.fromisoformat("2025-06-01T12:00:00+03:00")
             dataset = context.latest_dataset or ""
             model = context.forecast_artifacts[0].path
-            report["history"] = history_interval_command(
+            history = history_interval_command(
                 context.latest_dataset or "",
                 context.forecast_artifacts[0].path,
                 datetime.fromisoformat("2025-06-01T12:00:00+03:00"),
                 datetime.fromisoformat("2025-06-01T13:00:00+03:00"),
             )
+            report["history"] = history
             app = PetrolCodeApp(initial_page="journal")
             app.withdraw()
+            app._history_export_payload = history
+            app._history_interval_text = "Portable history chart check"
             app.show_page("history")
             app.update()
+
+            def descendants(widget: tk.Misc) -> Iterator[tk.Misc]:
+                for child in widget.winfo_children():
+                    yield child
+                    yield from descendants(child)
+
+            chart = next(w for w in descendants(app) if isinstance(w, HistoryChart))
+            if len(chart.points) != 2 or not chart.find_withtag("point"):
+                raise RuntimeError("Packaged history chart is empty")
+            report["history_chart"] = {"points": len(chart.points), "rendered": True}
+            app.open_what_if_dialog()
+            dialogs = [w for w in app.winfo_children() if isinstance(w, tk.Toplevel)]
+            if not dialogs:
+                raise RuntimeError("Packaged what-if editor did not open")
+            for dialog in dialogs:
+                dialog.withdraw()
+                dialog.destroy()
             app.destroy()
             report["tk"] = "ok"
+            preset = load_scenario(PROJECT_ROOT / "config/scenarios/blend_risk.json")
+            scenario = scenario_from_editor(
+                preset, editor_values(preset) | {"A.sulfur.value": "1", "A.sulfur.upper": "2"}
+            )
+            edited = run_model_demo(preset.id, scenario_override=scenario)
+            if edited.scenario_id != "blend_risk_what_if" or edited.selected is None:
+                raise RuntimeError("Packaged what-if calculation failed")
+            report["what_if"] = {
+                "scenario_id": edited.scenario_id,
+                "status": edited.status.value,
+                "editor": "ok",
+            }
             hybrid = ui_hybrid_snapshot(dataset, model, at)
             report["hybrid"] = asdict(hybrid)
             report["v2"] = replay_v2_shadow_command(dataset, context.v2_artifacts[0].path, at)
