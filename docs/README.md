@@ -4,9 +4,8 @@
 
 - [Главная страница проекта](../README.md) — скачать готовый ZIP и запустить EXE.
 - [Инструкция поставки](../release/README_FIRST.md) — структура архива и ошибки запуска.
-- [Сценарий защиты](../release/DEMO_SCRIPT.md) — показ за пять минут.
+- [Сценарий защиты и полное руководство по UI](../release/DEMO_SCRIPT.md) — включая what-if и график истории v1.1.0.
 - [Документ жюри](../release/JURY_REPORT.md) — реализация, данные, метрики и ограничения.
-- [Статус поставки](../release/RELEASE_STATUS.md) — актуальные проверки и исправления.
 - [Презентация](../release/jury/Neftekod_Presentation.pptx) и [Word-документ](../release/jury/Neftekod_Jury.docx).
 
 ## Разработка и устройство системы
@@ -18,6 +17,8 @@
 - [Материалы организаторов](../materials/README.md).
 
 ## История разработки, не инструкция первого запуска
+
+[Статус поставки](../release/RELEASE_STATUS.md) — проверки и исправления для разработчика.
 
 [План](../IMPLEMENTATION_PLAN.md), [Stage 1](../STAGE1.md), [2](../STAGE2.md), [3](../STAGE3.md), [4](../STAGE4.md), [5](../STAGE5.md), [6](../STAGE6.md), [7](../STAGE7.md), [8](../STAGE8.md), [9](../STAGE9.md), [10](../STAGE10.md).
 
