@@ -419,6 +419,11 @@ def test_history_interval_ui_retains_and_exports_completed_result(
         app.show_page("journal")
         app.show_page("history")
         assert any(
+            "Рассчитано точек: 2 из 2" in widget.get("1.0", "end")
+            for widget in descendants(app)
+            if isinstance(widget, tk.Text)
+        )
+        assert any(
             '"points": 2' in widget.get("1.0", "end")
             for widget in descendants(app)
             if isinstance(widget, tk.Text)

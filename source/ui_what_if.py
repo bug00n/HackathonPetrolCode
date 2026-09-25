@@ -13,14 +13,14 @@ from source.contracts import ScenarioConfig
 
 COMPONENT_FIELDS = (
     ("sulfur.value", "Сера, мг/кг"),
-    ("sulfur.upper", "Сера сверху, мг/кг"),
+    ("sulfur.upper", "Сера · верхняя оценка, мг/кг"),
     ("t95.value", "T95, °C"),
-    ("t95.upper", "T95 сверху, °C"),
+    ("t95.upper", "T95 · верхняя оценка, °C"),
     ("cetane_number.value", "Цетановое число"),
-    ("cetane_number.lower", "Цетановое снизу"),
+    ("cetane_number.lower", "Цетановое · нижняя оценка"),
     ("available_mass_t", "Запас, т"),
-    ("cost_proxy_per_t", "Стоимость, индекс/т"),
-    ("risk_index", "Риск, от 0 до 1"),
+    ("cost_proxy_per_t", "Стоимость, усл. ед./т"),
+    ("risk_index", "Риск, 0–1"),
     ("fraction", "Текущая доля, %"),
 )
 ADDITIVE_FIELDS = (
@@ -28,7 +28,7 @@ ADDITIVE_FIELDS = (
     ("dose", "Текущая присадка, %"),
     ("max_dose", "Максимум присадки, % (1, 2 или 3)"),
     ("additive_stock", "Запас присадки, т"),
-    ("additive_cost", "Стоимость присадки, индекс/т"),
+    ("additive_cost", "Стоимость присадки, усл. ед./т"),
     ("gain_1", "Прирост цетанового числа при 1%"),
     ("gain_2", "Прирост цетанового числа при 2%"),
     ("gain_3", "Прирост цетанового числа при 3%"),
@@ -199,9 +199,9 @@ def open_editor(
     calculate_with_context: Callable[[ScenarioConfig, dict[str, object]], None] | None = None,
 ) -> tk.Toplevel:
     dialog = tk.Toplevel(parent)
-    dialog.title("Синтетический what-if — не реальные данные")
+    dialog.title("Подбор смеси — синтетический сценарий")
     dialog.geometry("940x700")
-    dialog.minsize(800, 700)
+    dialog.minsize(800, 660)
     dialog.transient(parent)
     dialog.configure(bg="#F5F7F7")
     style = ttk.Style(dialog)
@@ -240,34 +240,27 @@ def open_editor(
         font=("Segoe UI", 10),
     )
     style.map("WhatIf.TButton", background=[("active", "#EDF1F3")])
-    style.configure(
-        "WhatIf.Primary.TButton",
-        background="#007D78",
-        foreground="#FFFFFF",
-        bordercolor="#007D78",
-        padding=(18, 9),
-        font=("Segoe UI", 10, "bold"),
-    )
-    style.map("WhatIf.Primary.TButton", background=[("active", "#006965")])
     heading = tk.Frame(dialog, bg="#F5F7F7")
     heading.pack(fill="x", padx=24, pady=(10, 6))
     tk.Label(
         heading,
-        text="Синтетический what-if",
+        text="Подбор смеси",
         bg="#F5F7F7",
         fg="#101B28",
         font=("Segoe UI", 18, "bold"),
     ).pack(anchor="w")
     tk.Label(
         heading,
-        text="Реальное управление отключено. Доли компонентов и присадки должны составлять 100 %.",
+        text="Синтетический сценарий · управление установкой отключено",
         bg="#F5F7F7",
         fg="#617082",
         font=("Segoe UI", 10),
     ).pack(anchor="w", pady=(2, 0))
     warning = tk.Label(
         dialog,
-        text="Пустое свойство означает неизвестное значение, а не ноль.",
+        text=(
+            "Пустое поле свойства означает «нет данных». Доли смеси и присадки в сумме дают 100 %."
+        ),
         bg="#FFF8E8",
         fg="#8C5400",
         anchor="w",
@@ -283,44 +276,79 @@ def open_editor(
     variables = {
         key: tk.StringVar(dialog, value=value) for key, value in editor_values(current).items()
     }
-    recipe = ttk.Frame(notebook, padding=20, style="WhatIf.TFrame")
+    recipe = ttk.Frame(notebook, padding=18, style="WhatIf.TFrame")
     notebook.add(recipe, text="Рецептура")
+    recipe.columnconfigure(0, weight=1)
+    recipe.columnconfigure(1, weight=1)
+    form = ttk.Frame(recipe, style="WhatIf.TFrame")
+    form.grid(row=0, column=0, sticky="nw", padx=(0, 20))
+    result = tk.Frame(recipe, bg="#F6F8F8", highlightbackground="#D8E0E4", highlightthickness=1)
+    result.grid(row=0, column=1, sticky="new")
     ttk.Label(
-        recipe,
-        text="Введите значение. Свободные доли подберутся после Enter или выхода из поля.",
+        form,
+        text="1. Задайте доли",
         style="WhatIf.TLabel",
-    ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 14))
+        font=("Segoe UI", 12, "bold"),
+    ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+    ttk.Label(
+        form,
+        text="Введите долю. Остальные поля можно оставить свободными.",
+        style="WhatIf.TLabel",
+        wraplength=400,
+    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 14))
     locks: dict[str, tk.BooleanVar] = {}
     entries: dict[str, ttk.Entry] = {}
     recipe_keys = [f"{item.id}.fraction" for item in preset.blend_components] + ["dose"]
-    for row, key in enumerate(recipe_keys, 1):
+    for row, key in enumerate(recipe_keys, 2):
         label = "Присадка, %" if key == "dose" else f"Компонент {key.split('.')[0]}, %"
-        ttk.Label(recipe, text=label, style="WhatIf.TLabel").grid(
+        ttk.Label(form, text=label, style="WhatIf.TLabel").grid(
             row=row, column=0, sticky="w", pady=7
         )
-        entry = ttk.Entry(recipe, textvariable=variables[key], width=18, style="WhatIf.TEntry")
+        entry = ttk.Entry(form, textvariable=variables[key], width=12, style="WhatIf.TEntry")
         entry.grid(row=row, column=1, padx=12, sticky="w")
         entries[key] = entry
         locks[key] = tk.BooleanVar(dialog, value=False)
-        ttk.Checkbutton(recipe, text="Зафиксировать", variable=locks[key]).grid(
+        ttk.Checkbutton(form, text="Не менять", variable=locks[key]).grid(
             row=row, column=2, sticky="w"
         )
-    ttk.Label(recipe, text="Масса партии, т", style="WhatIf.TLabel").grid(
-        row=4, column=0, sticky="w", pady=7
+    ttk.Label(form, text="Масса партии, т", style="WhatIf.TLabel").grid(
+        row=5, column=0, sticky="w", pady=7
     )
     entries["total_mass_t"] = ttk.Entry(
-        recipe, textvariable=variables["total_mass_t"], width=18, style="WhatIf.TEntry"
+        form, textvariable=variables["total_mass_t"], width=12, style="WhatIf.TEntry"
     )
-    entries["total_mass_t"].grid(row=4, column=1, padx=12, sticky="w")
+    entries["total_mass_t"].grid(row=5, column=1, padx=12, sticky="w")
+    tk.Label(
+        result,
+        text="2. Выберите вариант",
+        bg="#F6F8F8",
+        fg="#101B28",
+        font=("Segoe UI", 12, "bold"),
+    ).pack(anchor="w", padx=18, pady=(17, 3))
+    tk.Label(
+        result,
+        text="Подбор учитывает качество, запасы и поля «Не менять».",
+        bg="#F6F8F8",
+        fg="#617082",
+        wraplength=330,
+        justify="left",
+    ).pack(anchor="w", padx=18)
     preview = tk.StringVar(
-        dialog, value="Исходный сценарий. Измените поле или нажмите «Подобрать смесь»."
+        dialog, value="Исходная рецептура. Измените долю или нажмите «Подобрать смесь»."
     )
-    ttk.Label(
-        recipe, textvariable=preview, style="WhatIf.TLabel", wraplength=790, justify="left"
-    ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(18, 6))
-    variants = ttk.Combobox(recipe, state="readonly", width=38)
-    variants.grid(row=6, column=0, columnspan=2, sticky="w", pady=5)
-    variants.grid_remove()
+    tk.Label(
+        result,
+        textvariable=preview,
+        bg="#F6F8F8",
+        fg="#38485A",
+        wraplength=330,
+        justify="left",
+        anchor="nw",
+        font=("Segoe UI", 10),
+    ).pack(fill="x", padx=18, pady=(16, 8))
+    variants = ttk.Combobox(result, state="readonly", width=35)
+    variants.pack(fill="x", padx=18, pady=(2, 18))
+    variants.pack_forget()
     components = ttk.Frame(notebook, padding=10, style="WhatIf.TFrame")
     notebook.add(components, text="Свойства и запасы")
     for col, component in enumerate(preset.blend_components):
@@ -374,6 +402,12 @@ def open_editor(
     pending: str | None = None
     updating = False
 
+    def cancel_pending() -> None:
+        nonlocal pending
+        if pending is not None:
+            dialog.after_cancel(pending)
+            pending = None
+
     def values_now() -> dict[str, str]:
         return {key: var.get() for key, var in variables.items()}
 
@@ -381,12 +415,17 @@ def open_editor(
         nonlocal updating
         option, updated = options[position]
         old = values_now()
+        original = before_assist or old
         updating = True
         try:
             for key in recipe_keys:
                 variables[key].set(updated[key])
                 entries[key].configure(
-                    style=("WhatIf.Changed.TEntry" if updated[key] != old[key] else "WhatIf.TEntry")
+                    style=(
+                        "WhatIf.Changed.TEntry"
+                        if updated[key] != original[key]
+                        else "WhatIf.TEntry"
+                    )
                 )
         finally:
             updating = False
@@ -395,9 +434,9 @@ def open_editor(
             "dose": "Присадка",
         }
         changes = [
-            f"{names[key]}: {old[key]}% → {updated[key]}%"
+            f"{names[key]}: {original[key]}% → {updated[key]}%"
             for key in recipe_keys
-            if old[key] != updated[key]
+            if original[key] != updated[key]
         ]
         quality = next(
             (item.metrics for item in option.evaluation.assessments if "sulfur" in item.metrics),
@@ -422,12 +461,14 @@ def open_editor(
                 label = {"sulfur": "Сера", "t95": "T95", "cetane_number": "ЦЧ"}.get(
                     constraint.metric, constraint.metric
                 )
-                checks.append(f"{label}: {value:.2f} {sign} {limit:g}")
-        preview.set(
-            f"{option.label}. "
-            + ("; ".join(changes) if changes else "Смесь уже подходит.")
-            + ("\nПроверка: " + "; ".join(checks) if checks else "")
-        )
+                unit = {"sulfur": "мг/кг", "t95": "°C", "cetane_number": "ед."}.get(
+                    constraint.metric, ""
+                )
+                checks.append(f"{label}: {value:.2f} {unit} {sign} {limit:g} {unit}")
+        summary = [option.label, "", "Изменения:", *(changes or ["Смесь уже подходит."])]
+        if checks:
+            summary.extend(("", "Проверка ограничений:", *checks))
+        preview.set("\n".join(summary))
         error.set("")
 
     def pick(_: tk.Event[tk.Misc] | None = None) -> None:
@@ -436,10 +477,10 @@ def open_editor(
 
     variants.bind("<<ComboboxSelected>>", pick)
 
-    def suggest(changed: str | None = None) -> None:
-        nonlocal options, before_assist, pending
-        pending = None
-        if updating or not assistant_on.get():
+    def suggest(changed: str | None = None, *, force: bool = False) -> None:
+        nonlocal options, before_assist
+        cancel_pending()
+        if updating or (not assistant_on.get() and not force):
             return
         raw = values_now()
         fixed = frozenset(key for key, locked in locks.items() if locked.get())
@@ -449,14 +490,14 @@ def open_editor(
             options = assist_editor_values(preset, raw, fixed)
         except ValueError as exc:
             options = ()
-            variants.grid_remove()
+            variants.pack_forget()
             error.set(str(exc))
             preview.set("Автоподбор не смог составить допустимую смесь.")
             return
         before_assist = raw
         variants["values"] = tuple(item.label for item, _ in options)
         variants.current(0)
-        variants.grid()
+        variants.pack(fill="x", padx=18, pady=(2, 18))
         show_option(0)
 
     def schedule(changed: str) -> None:
@@ -477,6 +518,7 @@ def open_editor(
 
     def undo_assist() -> None:
         nonlocal updating, before_assist
+        cancel_pending()
         if before_assist is None:
             return
         updating = True
@@ -489,19 +531,20 @@ def open_editor(
             updating = False
         before_assist = None
         preview.set("Автоподбор отменён. Введённое значение сохранено.")
-        variants.grid_remove()
+        variants.pack_forget()
 
-    ttk.Checkbutton(recipe, text="Автоподбор", variable=assistant_on).grid(
-        row=7, column=0, sticky="w", pady=(12, 0)
+    ttk.Checkbutton(form, text="Подбирать после изменения", variable=assistant_on).grid(
+        row=6, column=0, columnspan=3, sticky="w", pady=(18, 6)
     )
-    ttk.Button(recipe, text="Подобрать смесь", command=suggest).grid(
-        row=7, column=1, sticky="w", pady=(12, 0)
+    ttk.Button(form, text="Подобрать смесь", command=lambda: suggest(force=True)).grid(
+        row=7, column=0, columnspan=2, sticky="w", pady=(6, 0)
     )
-    ttk.Button(recipe, text="Отменить автоподбор", command=undo_assist).grid(
-        row=7, column=2, sticky="w", pady=(12, 0)
+    ttk.Button(form, text="Отменить подбор", command=undo_assist).grid(
+        row=8, column=0, columnspan=2, sticky="w", pady=(8, 0)
     )
 
     def apply() -> None:
+        cancel_pending()
         try:
             scenario = scenario_from_editor(
                 preset, {key: var.get() for key, var in variables.items()}
@@ -525,26 +568,48 @@ def open_editor(
 
     def reset() -> None:
         nonlocal before_assist
+        cancel_pending()
         for key, value in editor_values(preset).items():
             variables[key].set(value)
         for lock_var in locks.values():
             lock_var.set(False)
         before_assist = None
-        variants.grid_remove()
+        variants.pack_forget()
+        preview.set("Исходная рецептура восстановлена. Измените долю или рассчитайте результат.")
+        for key in recipe_keys:
+            entries[key].configure(style="WhatIf.TEntry")
         error.set(
             "Восстановлены исходные поля сценария. "
-            "Нажмите «Пересчитать what-if» для нового результата."
+            "Нажмите «Рассчитать смесь» для нового результата."
         )
 
     buttons = ttk.Frame(dialog, padding=(24, 8), style="WhatIf.Footer.TFrame")
     buttons.pack(fill="x")
-    ttk.Button(
-        buttons, text="Пересчитать what-if", command=apply, style="WhatIf.Primary.TButton"
+    tk.Button(
+        buttons,
+        text="Рассчитать смесь",
+        command=apply,
+        bg="#007D78",
+        fg="#FFFFFF",
+        activebackground="#006965",
+        activeforeground="#FFFFFF",
+        bd=0,
+        padx=20,
+        pady=10,
+        font=("Segoe UI", 10, "bold"),
+        cursor="hand2",
     ).pack(side="left")
-    ttk.Button(buttons, text="Сбросить к сценарию", command=reset, style="WhatIf.TButton").pack(
+    ttk.Button(buttons, text="Сбросить", command=reset, style="WhatIf.TButton").pack(
         side="left", padx=10
     )
-    ttk.Button(
-        buttons, text="Закрыть без изменений", command=dialog.destroy, style="WhatIf.TButton"
-    ).pack(side="right")
+
+    def close_dialog() -> None:
+        cancel_pending()
+        dialog.destroy()
+
+    ttk.Button(buttons, text="Закрыть", command=close_dialog, style="WhatIf.TButton").pack(
+        side="right"
+    )
+    dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+    dialog.bind("<Escape>", lambda _event: close_dialog())
     return dialog

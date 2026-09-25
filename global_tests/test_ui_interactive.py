@@ -142,12 +142,14 @@ def test_editor_reset_validation_and_chart_on_real_tk() -> None:
         first = entries[0]
         first.delete(0, "end")
         first.insert(0, "bad input")
-        buttons = {w.cget("text"): w for w in descendants(dialog) if isinstance(w, ttk.Button)}
-        buttons["Пересчитать what-if"].invoke()
+        buttons = {
+            w.cget("text"): w for w in descendants(dialog) if isinstance(w, (tk.Button, ttk.Button))
+        }
+        buttons["Рассчитать смесь"].invoke()
         assert not received and dialog.winfo_exists()
-        buttons["Сбросить к сценарию"].invoke()
+        buttons["Сбросить"].invoke()
         assert first.get() == editor_values(preset)["A.fraction"]
-        buttons["Пересчитать what-if"].invoke()
+        buttons["Рассчитать смесь"].invoke()
         assert len(received) == 1 and received[0].id.endswith("_what_if")
         chart = HistoryChart(root)
         chart.set_payload(interval_payload())
@@ -178,22 +180,33 @@ def test_editor_assist_and_undo_on_real_tk() -> None:
         locks = [
             widget
             for widget in descendants(dialog)
-            if isinstance(widget, ttk.Checkbutton) and widget.cget("text") == "Зафиксировать"
+            if isinstance(widget, ttk.Checkbutton) and widget.cget("text") == "Не менять"
         ]
         locks[1].invoke()
         buttons = {
             widget.cget("text"): widget
             for widget in descendants(dialog)
-            if isinstance(widget, ttk.Button)
+            if isinstance(widget, (tk.Button, ttk.Button))
         }
         buttons["Подобрать смесь"].invoke()
         assert b_share.get() == "10"
         assert float(entries[0].get()) + float(b_share.get()) + float(
             entries[2].get()
         ) == pytest.approx(100)
-        buttons["Отменить автоподбор"].invoke()
+        buttons["Отменить подбор"].invoke()
         assert b_share.get() == "10"
         assert entries[0].get() == editor_values(preset)["A.fraction"]
+        auto = next(
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Checkbutton)
+            and widget.cget("text") == "Подбирать после изменения"
+        )
+        auto.invoke()
+        buttons["Подобрать смесь"].invoke()
+        assert float(entries[0].get()) + float(b_share.get()) + float(
+            entries[2].get()
+        ) == pytest.approx(100)
         dialog.destroy()
     finally:
         root.destroy()

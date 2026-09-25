@@ -59,7 +59,7 @@ BG = "#F5F7F7"
 SURFACE = "#FFFFFF"
 TEXT = "#101B28"
 MUTED = "#617082"
-HEADER = "#202B31"
+HEADER = "#FFFFFF"
 TEAL = "#007D78"
 TEAL_HOVER = "#006965"
 AMBER = "#D88400"
@@ -250,7 +250,7 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         component = changed[0] if changed else "смеси"
         banner_title = "Доступен модельный вариант"
         banner_detail = "Расчёт относится только к синтетическому сценарию блендинга."
-        action_title = f"Увеличить долю компонента {component}"
+        action_title = f"Вариант: увеличить долю компонента {component}"
         action_detail = (
             "Текущая рецептура проходит проверки; вариант улучшает модельные критерии."
             if result.baseline is not None and result.baseline.feasible
@@ -434,6 +434,38 @@ def format_history_replay_view(view: UiHistoryReplayView) -> str:
     return "\n".join(rows)
 
 
+def format_history_interval_payload(payload: dict[str, object]) -> str:
+    """Put the useful interval result before its technical export data."""
+    points = payload.get("points", 0)
+    requested = payload.get("requested_points", points)
+    rows = [
+        "Частичный исторический интервал" if payload.get("cancelled") else "Исторический интервал",
+        f"Рассчитано точек: {points} из {requested}",
+    ]
+    if payload.get("start") and payload.get("end"):
+        rows.append(f"Период: {payload['start']} — {payload['end']}")
+    coverage = payload.get("forecast_coverage")
+    if isinstance(coverage, (int, float)):
+        rows.append(f"Прогноз серы доступен в {coverage:.0%} точек")
+    counts = payload.get("status_counts")
+    if isinstance(counts, dict) and counts:
+        rows.append(
+            "Статусы: "
+            + ", ".join(
+                f"{STATUS_RU.get(str(key), key)} — {value}" for key, value in counts.items()
+            )
+        )
+    rows.extend(
+        (
+            "Реальные управляющие действия отключены.",
+            "",
+            "Технические данные расчёта (JSON):",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+    )
+    return "\n".join(rows)
+
+
 def format_hybrid_blend_view(view: UiHybridBlendView) -> str:
     """Render the hybrid sulfur-only blend panel in a compact form."""
     rows = [
@@ -538,7 +570,9 @@ class PetrolCodeApp(tk.Tk):
 
     def _build_styles(self) -> None:
         style = ttk.Style(self)
-        style.theme_use("clam")
+        style.theme_use(
+            "vista" if sys.platform == "win32" and "vista" in style.theme_names() else "clam"
+        )
         style.configure(
             "Petrol.Treeview",
             background=SURFACE,
@@ -568,17 +602,17 @@ class PetrolCodeApp(tk.Tk):
         )
 
     def _build_shell(self) -> None:
-        self.header = tk.Frame(self, bg=HEADER, height=60)
+        self.header = tk.Frame(self, bg=HEADER, height=58)
         self.header.pack(fill="x")
         self.header.pack_propagate(False)
         tk.Label(
             self.header,
             text="НЕФТЕКОД",
             bg=HEADER,
-            fg="white",
-            font=("Segoe UI", 20, "bold"),
-        ).pack(side="left", padx=(32, 28))
-        tk.Frame(self.header, bg="#65727A", width=1, height=26).pack(side="left", padx=(0, 14))
+            fg=TEXT,
+            font=("Segoe UI", 17, "bold"),
+        ).pack(side="left", padx=(24, 18))
+        tk.Frame(self.header, bg=BORDER, width=1, height=24).pack(side="left", padx=(0, 10))
         for key, label in (
             ("overview", "Обзор"),
             ("avt", "АВТ"),
@@ -592,23 +626,24 @@ class PetrolCodeApp(tk.Tk):
                 text=label,
                 command=partial(self.show_page, key),
                 bg=HEADER,
-                fg="#C0C8CD",
-                activebackground=HEADER,
-                activeforeground="white",
+                fg=MUTED,
+                activebackground=SOFT,
+                activeforeground=TEAL,
                 bd=0,
-                padx=18,
-                font=("Segoe UI", 11, "bold"),
+                padx=12,
+                font=("Segoe UI", 10, "bold"),
                 cursor="hand2",
             )
             button.pack(side="left", fill="y")
             self._nav_buttons[key] = button
         tk.Label(
             self.header,
-            text="Модельный контур  •  реальные уставки отключены",
+            text="ДЕМО  ·  управление отключено",
             bg=HEADER,
-            fg="#B8C3C9",
-            font=("Segoe UI", 10),
-        ).pack(side="right", padx=32)
+            fg=MUTED,
+            font=("Segoe UI", 9),
+        ).pack(side="right", padx=24)
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
         self.body = tk.Frame(self, bg=BG)
         self.body.pack(fill="both", expand=True)
         self.show_page(self._page)
@@ -620,8 +655,8 @@ class PetrolCodeApp(tk.Tk):
     def _set_nav(self, page: str) -> None:
         for key, button in self._nav_buttons.items():
             button.configure(
-                fg="white" if key == page else "#C0C8CD",
-                bg="#31454B" if key == page else HEADER,
+                fg=TEAL if key == page else MUTED,
+                bg=SOFT if key == page else HEADER,
             )
 
     def show_page(self, page: str) -> None:
@@ -1018,20 +1053,23 @@ class PetrolCodeApp(tk.Tk):
         title.pack(side="left")
         tk.Label(
             title,
-            text="Состояние установки",
+            text="Модельный расчёт смеси",
             bg=BG,
             fg=TEXT,
             font=("Segoe UI", 28, "bold"),
         ).pack(anchor="w")
         tk.Label(
             title,
-            text="Текущий модельный сценарий, расчёт и ограничения",
+            text="Выберите синтетический сценарий или настройте свою смесь",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 12),
         ).pack(anchor="w")
-        controls = tk.Frame(top, bg=BG)
-        controls.pack(side="right", pady=8)
+        controls = self._surface(page)
+        controls.pack(fill="x", pady=(20, 0), ipady=12)
+        tk.Label(
+            controls, text="СЦЕНАРИЙ", bg=SURFACE, fg=MUTED, font=("Segoe UI", 9, "bold")
+        ).pack(side="left", padx=(18, 10))
         scenario = ttk.Combobox(
             controls,
             values=tuple(SCENARIO_LABELS),
@@ -1040,51 +1078,52 @@ class PetrolCodeApp(tk.Tk):
             width=23,
             style="Petrol.TCombobox",
         )
-        scenario.pack(side="left", padx=6)
-        horizon = ttk.Combobox(
-            controls,
-            values=("60 мин",),
-            textvariable=self.horizon_var,
-            state="readonly",
-            width=12,
-            style="Petrol.TCombobox",
-        )
-        horizon.pack(side="left", padx=6)
+        scenario.pack(side="left", padx=(0, 18))
+        tk.Label(controls, text="Горизонт: 60 мин", bg=SURFACE, fg=MUTED).pack(side="left")
         button = self._primary_button(controls, "Рассчитать", self.calculate)
-        button.pack(side="left", padx=(8, 0))
-        self._secondary_button(page, "Синтетический what-if", self.open_what_if_dialog).pack(
-            anchor="w", pady=(10, 0)
+        button.pack(side="right", padx=(8, 18))
+        self._secondary_button(controls, "Настроить смесь", self.open_what_if_dialog).pack(
+            side="right", padx=(8, 0)
         )
 
         view = self._view()
+        banner_colors = {
+            "hold": ("#EDF7F3", "#B7DACC", GREEN, "РЕЖИМ БЕЗ ИЗМЕНЕНИЙ"),
+            "recommend": ("#FFF8E8", "#E9B850", AMBER, "МОДЕЛЬНЫЙ ВАРИАНТ"),
+            "abstain": ("#FFF4F1", "#E5B5AD", RED, "НУЖНА ПРОВЕРКА"),
+        }
+        banner_bg, banner_border, banner_accent, banner_label = banner_colors.get(
+            view.status if view else "", (SOFT, BORDER, MUTED, "ОЖИДАНИЕ РАСЧЁТА")
+        )
         banner = tk.Frame(
             page,
-            bg=AMBER_BG,
-            highlightbackground="#E9B850",
+            bg=banner_bg,
+            highlightbackground=banner_border,
             highlightthickness=1,
         )
-        banner.pack(fill="x", pady=(22, 16), ipady=12)
-        tk.Label(
-            banner,
-            text="⚠",
-            bg=AMBER_BG,
-            fg=AMBER,
-            font=("Segoe UI Symbol", 23, "bold"),
-        ).pack(side="left", padx=(20, 14))
-        banner_text = tk.Frame(banner, bg=AMBER_BG)
-        banner_text.pack(side="left")
+        banner.pack(fill="x", pady=(16, 16))
+        tk.Frame(banner, bg=banner_accent, width=4).pack(side="left", fill="y")
+        banner_text = tk.Frame(banner, bg=banner_bg)
+        banner_text.pack(side="left", fill="x", expand=True, padx=18, pady=12)
         tk.Label(
             banner_text,
-            text=view.banner_title if view else self.status_var.get(),
-            bg=AMBER_BG,
-            fg="#583714",
-            font=("Segoe UI", 11, "bold"),
+            text=banner_label,
+            bg=banner_bg,
+            fg=banner_accent,
+            font=("Segoe UI", 9, "bold"),
         ).pack(anchor="w")
         tk.Label(
             banner_text,
+            text=view.banner_title if view else self.status_var.get(),
+            bg=banner_bg,
+            fg=TEXT,
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w", pady=(2, 0))
+        tk.Label(
+            banner_text,
             text=view.banner_detail if view else "Расчёт ещё не выполнен.",
-            bg=AMBER_BG,
-            fg="#536171",
+            bg=banner_bg,
+            fg=MUTED,
             font=("Segoe UI", 10),
         ).pack(anchor="w")
 
@@ -1102,27 +1141,6 @@ class PetrolCodeApp(tk.Tk):
         self._render_info(info, view)
         self._render_stage_cards(page)
 
-        stages = tk.Frame(page, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1)
-        stages.pack(fill="x", pady=(16, 12), ipady=4)
-        for text, target in (
-            ("АВТ", "avt"),
-            ("Гидроочистка", "hydrotreating"),
-            ("Смесь", "blend"),
-        ):
-            command = partial(self.show_page, target)
-            button = tk.Button(
-                stages,
-                text=text,
-                command=command,
-                bg=TEAL,
-                fg="white",
-                activebackground=TEAL_HOVER,
-                bd=0,
-                pady=8,
-                font=("Segoe UI", 10, "bold"),
-                cursor="hand2",
-            )
-            button.pack(side="left", fill="x", expand=True, padx=3)
         self._accordion(
             page,
             "Источники, проверка конфигурации и подготовка данных",
@@ -1258,7 +1276,15 @@ class PetrolCodeApp(tk.Tk):
             anchor="w", padx=22, pady=(20, 12)
         )
         self._info_row(parent, "Режим", "Модельный")
-        self._info_row(parent, "Сценарий", self._scenario.id if self._scenario else "—")
+        self._info_row(
+            parent,
+            "Сценарий",
+            "Изменённая смесь"
+            if self._scenario and self._scenario.id.endswith("_what_if")
+            else self._scenario_label(self._scenario.id)
+            if self._scenario
+            else "—",
+        )
         self._info_row(parent, "Горизонт", self.horizon_var.get())
         self._info_row(parent, "Последний расчёт", datetime.now().strftime("%H:%M"))
         tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=20, pady=18)
@@ -1328,8 +1354,15 @@ class PetrolCodeApp(tk.Tk):
         left.grid(row=0, column=0, sticky="ew", padx=(0, 12))
         right = tk.Frame(grid, bg=SURFACE)
         right.grid(row=0, column=1, sticky="ew", padx=(12, 0))
-        self._field(left, "Момент данных (ISO с timezone)", as_of_var)
-        self._field(right, "Конец исторического интервала (ISO с timezone)", interval_to_var)
+        self._field(left, "Момент прогноза / начало интервала", as_of_var)
+        self._field(right, "Конец интервала", interval_to_var)
+        tk.Label(
+            fields,
+            text="Формат времени: 2025-06-01T12:00:00+03:00 · часовой пояс обязателен",
+            bg=SURFACE,
+            fg=MUTED,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=20, pady=(0, 12))
 
         def settings(parent: tk.Misc) -> None:
             self._field(parent, "Исторические данные", dataset_var)
@@ -1511,12 +1544,7 @@ class PetrolCodeApp(tk.Tk):
                     payload = history_interval_command(
                         dataset, model, start, end, progress=progress, cancelled=cancel.is_set
                     )
-                    title = (
-                        "Интервал отменён. Частичный результат"
-                        if payload.get("cancelled")
-                        else "Исторический интервал"
-                    )
-                    text = title + "\n\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+                    text = format_history_interval_payload(payload)
                 except Exception as exc:
                     text = f"Ошибка интервала: {exc}"
 
@@ -1551,22 +1579,16 @@ class PetrolCodeApp(tk.Tk):
 
         actions = tk.Frame(page, bg=BG)
         actions.pack(fill="x", pady=(0, 14), before=chart_panel)
-        for column in range(3):
-            actions.grid_columnconfigure(column, weight=1)
-        self._primary_button(actions, "Рассчитать на выбранный момент", start_calculation).grid(
-            row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 8)
+        self._primary_button(actions, "Рассчитать момент", start_calculation).pack(
+            side="left", padx=(0, 8)
         )
         interval_button = self._secondary_button(actions, "Рассчитать интервал", calculate_interval)
-        interval_button.configure(fg=TEAL, font=("Segoe UI", 11, "bold"))
-        interval_button.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 8))
+        interval_button.pack(side="left", padx=(0, 8))
         self._secondary_button(
             actions, "Отменить интервал", lambda: self._interval_cancel.set()
-        ).grid(row=0, column=2, sticky="ew", pady=(0, 8))
-        self._secondary_button(
-            actions, "Экспортировать этот результат", self.export_history_result
-        ).grid(row=1, column=0, sticky="ew", padx=(0, 8))
-        self._secondary_button(actions, "Журнал", lambda: self.show_page("journal")).grid(
-            row=1, column=1, sticky="ew", padx=(0, 8)
+        ).pack(side="left")
+        self._secondary_button(actions, "Экспорт результата", self.export_history_result).pack(
+            side="right"
         )
         render(
             self._history_view
@@ -1709,16 +1731,16 @@ class PetrolCodeApp(tk.Tk):
         heading.pack(fill="x")
         tk.Label(
             heading,
-            text="Рекомендация по смешению",
+            text="Результат подбора смеси",
             bg=BG,
             fg=TEXT,
             font=("Segoe UI", 28, "bold"),
         ).pack(side="left")
         badge = tk.Label(
             heading,
-            text="⚠  Синтетический what-if"
+            text="Синтетическая смесь"
             if self._scenario and self._scenario.id.endswith("_what_if")
-            else "⚠  Модельный режим",
+            else "Модельный сценарий",
             bg=AMBER_BG,
             fg="#A55E00",
             font=("Segoe UI", 10, "bold"),
@@ -1836,7 +1858,7 @@ class PetrolCodeApp(tk.Tk):
         footer = tk.Frame(page, bg=BG)
         footer.pack(fill="x", pady=(18, 0))
         self._primary_button(footer, "Скачать расчёт", self.export_result).pack(side="left")
-        self._secondary_button(footer, "Синтетический what-if", self.open_what_if_dialog).pack(
+        self._secondary_button(footer, "Настроить смесь", self.open_what_if_dialog).pack(
             side="left", padx=10
         )
         self._secondary_button(footer, "Открыть журнал", lambda: self.show_page("journal")).pack(
@@ -1844,7 +1866,7 @@ class PetrolCodeApp(tk.Tk):
         )
         tk.Label(
             footer,
-            text="НЕФТЕКОД  v1.1  |  prototype",
+            text="НЕФТЕКОД  ·  модельный прототип",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 9),
