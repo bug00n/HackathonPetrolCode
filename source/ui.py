@@ -1286,7 +1286,11 @@ class PetrolCodeApp(tk.Tk):
             else "—",
         )
         self._info_row(parent, "Горизонт", self.horizon_var.get())
-        self._info_row(parent, "Последний расчёт", datetime.now().strftime("%H:%M"))
+        self._info_row(
+            parent,
+            "Момент сценария",
+            self._result.as_of.strftime("%d.%m.%Y %H:%M") if self._result else "—",
+        )
         tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=20, pady=18)
         tk.Label(
             parent,
@@ -1616,11 +1620,19 @@ class PetrolCodeApp(tk.Tk):
             output.insert("1.0", self._history_interval_text)
             output.configure(state="disabled")
             chart.set_payload(self._history_export_payload)
-            summary.set(
-                "Частичный интервал"
-                if self._history_export_payload and self._history_export_payload.get("cancelled")
-                else "Результат последнего интервала"
-            )
+            if self._history_export_payload:
+                status = (
+                    "Частичный интервал"
+                    if self._history_export_payload.get("cancelled")
+                    else "Интервал рассчитан"
+                )
+                summary.set(
+                    f"{status}. Рассчитано точек: "
+                    f"{self._history_export_payload.get('points', 0)}. "
+                    "Реальные действия отключены."
+                )
+            else:
+                summary.set("Результат интервала недоступен")
 
     def _render_hybrid_panel(self, parent: tk.Misc) -> None:
         panel = self._surface(parent)

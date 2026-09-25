@@ -67,6 +67,12 @@ def test_what_if_rejects_invalid_inputs(updates: dict[str, str]) -> None:
         scenario_from_editor(preset, editor_values(preset) | updates)
 
 
+def test_what_if_validation_names_visible_field() -> None:
+    preset = load_scenario("config/scenarios/blend_risk.json")
+    with pytest.raises(ValueError, match="Компонент A · Текущая доля"):
+        scenario_from_editor(preset, editor_values(preset) | {"A.fraction": "abc"})
+
+
 @pytest.mark.parametrize(
     "updates",
     [

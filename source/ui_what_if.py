@@ -35,6 +35,14 @@ ADDITIVE_FIELDS = (
 )
 
 
+def field_label(key: str) -> str:
+    """Name editor inputs as a person sees them, not by contract keys."""
+    if "." in key:
+        component, field = key.split(".", 1)
+        return f"Компонент {component} · {dict(COMPONENT_FIELDS).get(field, field)}"
+    return dict(ADDITIVE_FIELDS).get(key, key)
+
+
 def editor_values(scenario: ScenarioConfig) -> dict[str, str]:
     """Represent null quality explicitly as an empty field, never as zero."""
     values: dict[str, str] = {}
@@ -76,9 +84,9 @@ def scenario_from_editor(base: ScenarioConfig, values: dict[str, str]) -> Scenar
         try:
             value = float(values[key].strip().replace(",", "."))
         except (KeyError, ValueError) as exc:
-            raise ValueError(f"{key}: введите число") from exc
+            raise ValueError(f"{field_label(key)}: введите число") from exc
         if not math.isfinite(value) or value < 0:
-            raise ValueError(f"{key}: требуется конечное неотрицательное число")
+            raise ValueError(f"{field_label(key)}: требуется конечное неотрицательное число")
         return value
 
     data = base.model_dump(mode="json")
@@ -105,7 +113,12 @@ def scenario_from_editor(base: ScenarioConfig, values: dict[str, str]) -> Scenar
             point, edge = estimate["value"], estimate[bound]
             if point is not None and edge is not None:
                 if (bound == "upper" and edge < point) or (bound == "lower" and edge > point):
-                    raise ValueError(f"{component['id']}: граница {metric} противоречит значению")
+                    label = {"sulfur": "серы", "t95": "T95", "cetane_number": "цетанового числа"}[
+                        metric
+                    ]
+                    raise ValueError(
+                        f"Компонент {component['id']}: оценка {label} противоречит значению"
+                    )
         if component["risk_index"] > 1:
             raise ValueError(f"{component['id']}: риск должен быть от 0 до 1")
     data["current_additive_mass_fraction"] = number("dose") / 100
@@ -142,9 +155,9 @@ def assist_editor_values(
         try:
             result = float(values[key].strip().replace(",", ".")) / 100
         except (KeyError, ValueError) as exc:
-            raise ValueError(f"{key}: введите число от 0 до 100") from exc
+            raise ValueError(f"{field_label(key)}: введите число от 0 до 100") from exc
         if not math.isfinite(result) or result < 0 or result > 1:
-            raise ValueError(f"{key}: требуется число от 0 до 100")
+            raise ValueError(f"{field_label(key)}: требуется число от 0 до 100")
         return result
 
     desired = {key: fraction(f"{key}.fraction") for key in component_ids}
@@ -155,7 +168,7 @@ def assist_editor_values(
     try:
         max_dose = float(values["max_dose"].strip().replace(",", ".")) / 100
     except (KeyError, ValueError) as exc:
-        raise ValueError("max_dose: введите максимум присадки 1, 2 или 3%") from exc
+        raise ValueError("Максимум присадки: введите 1, 2 или 3%") from exc
     temporary_dose = min(dose, max_dose) if math.isfinite(max_dose) else dose
     temporary["dose"] = f"{temporary_dose * 100:.12g}"
     temporary[f"{component_ids[0]}.fraction"] = f"{(1 - temporary_dose) * 50:.12g}"
