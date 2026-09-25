@@ -171,11 +171,24 @@ def _forecast_history_quality(
         applicability = check_applicability(features)
         if not getattr(applicability, "available", False):
             code = str(getattr(applicability, "reason_code", "OUT_OF_DOMAIN"))
+            detail = "Forecast features are missing or outside the validated training domain."
+            if code == "OUT_OF_DOMAIN":
+                age_features = [
+                    name
+                    for name in getattr(applicability, "violations", ())
+                    if str(name).endswith("_age_minutes")
+                ]
+                if age_features:
+                    detail = (
+                        "The saved model has not been validated for this measurement age. "
+                        "Choose a historical measurement time or use a model "
+                        "validated for delayed data."
+                    )
             return _unavailable(
                 state,
                 code,
                 target_signal,
-                "Forecast features are missing or outside the validated training domain.",
+                detail,
             )
     prediction = float(predict(features)[0])
     upper: float | None = None

@@ -98,6 +98,31 @@ def generate_candidates(
                 is_model_scenario=scenario.mode is OperationMode.MODEL_DEMO,
             )
         )
+    # Preserve established scenario choices; search continuously if the grid
+    # falsely reports that no admissible recipe exists.
+    if any(item.feasible for item in evaluate_candidates(state, tuple(candidates), scenario)):
+        return tuple(candidates)
+    from source.agents.blend_assist import feasible_blends
+
+    seen = {
+        (
+            round(item.blend_mass_fractions.get(component_b, -1), 9),
+            round(item.additive_mass_fraction, 9),
+        )
+        for item in candidates
+    }
+    for option in feasible_blends(
+        scenario,
+        dict(scenario.current_blend_mass_fractions),
+        scenario.current_additive_mass_fraction,
+    ):
+        key = (round(option.fractions[component_b], 9), round(option.dose, 9))
+        if key not in seen:
+            if len(candidates) >= max_candidates:
+                candidates[-1] = option.evaluation.candidate
+                break
+            candidates.append(option.evaluation.candidate)
+            seen.add(key)
     return tuple(candidates)
 
 

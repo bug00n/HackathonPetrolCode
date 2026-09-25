@@ -38,10 +38,10 @@ from source.contracts import (
     Unit,
 )
 from source.explain import build_explanation
-from source.journal import write_run_journal
+from source.journal import write_run_journal, write_run_status
 from source.ml.action_effects import ActionOutcome, VerifiedActionEffectModel
 from source.ml.controls import generate_setpoint_candidates
-from source.ml.features import build_features
+from source.ml.features import FeatureBatch, build_features
 from source.ml.policy import PolicyParameters, assess_change_policy
 
 
@@ -438,7 +438,7 @@ def _recheck_selected(
     return rechecked
 
 
-def run_cycle(
+def _run_cycle(
     data: Any,
     as_of: datetime,
     model: Any,
@@ -446,6 +446,10 @@ def run_cycle(
     config: RuntimeConfig,
     context: DecisionContext,
     run_dir: Path,
+    feature_batch: FeatureBatch | None = None,
+    recipe_mode: str = "optimize",
+    editor_context: dict[str, object] | None = None,
+    run_id: str | None = None,
 ) -> Recommendation:
     """Run one backend recommendation cycle and persist its journal."""
     if as_of.tzinfo is None or as_of.utcoffset() is None:
@@ -463,7 +467,11 @@ def run_cycle(
     state = _build_cycle_state(data, as_of, effective_scenario, config)
     features: pd.DataFrame | None = None
     if model is not None and effective_scenario.mode is OperationMode.HISTORY:
-        features = build_features(data, as_of, state, model)
+        features = (
+            build_features(data, as_of, state, model)
+            if feature_batch is None
+            else build_features(data, as_of, state, model, batch=feature_batch)
+        )
     action_model = _action_model(model)
     if effective_scenario.mode is OperationMode.HISTORY and action_model is not None:
         candidates = generate_setpoint_candidates(
@@ -484,7 +492,22 @@ def run_cycle(
             model=model,
         )
     else:
-        candidates = generate_candidates(state, effective_scenario, config)
+        if recipe_mode not in {"optimize", "evaluate"}:
+            raise ValueError("recipe_mode must be optimize or evaluate")
+        if recipe_mode == "evaluate" and effective_scenario.mode is not OperationMode.MODEL_DEMO:
+            raise ValueError("fixed recipe evaluation is available only in model_demo")
+        candidates = (
+            (
+                CandidateAction(
+                    id="hold",
+                    kind=CandidateKind.HOLD,
+                    horizon_minutes=config.horizon_minutes,
+                    is_model_scenario=True,
+                ),
+            )
+            if recipe_mode == "evaluate"
+            else generate_candidates(state, effective_scenario, config)
+        )
         evaluations = evaluate_candidates(
             state, candidates, effective_scenario, features=features, model=model
         )
@@ -514,7 +537,7 @@ def run_cycle(
         )
     )
     result = Recommendation(
-        run_id=str(uuid4()),
+        run_id=run_id or str(uuid4()),
         state_id=state.state_id,
         as_of=state.as_of,
         scenario_id=scenario.id,
@@ -548,8 +571,45 @@ def run_cycle(
         selection_reason=selection_reason,
         rejection_summary=_rejection_summary(evaluations),
         features=features,
+        editor_context=editor_context,
     )
     return result
+
+
+def run_cycle(
+    data: Any,
+    as_of: datetime,
+    model: Any,
+    scenario: ScenarioConfig,
+    config: RuntimeConfig,
+    context: DecisionContext,
+    run_dir: Path,
+    feature_batch: FeatureBatch | None = None,
+    recipe_mode: str = "optimize",
+    editor_context: dict[str, object] | None = None,
+) -> Recommendation:
+    """Run and record a complete decision lifecycle, including failed attempts."""
+    run_id = str(uuid4())
+    write_run_status(run_dir, run_id, "started")
+    try:
+        result = _run_cycle(
+            data,
+            as_of,
+            model,
+            scenario,
+            config,
+            context,
+            run_dir,
+            feature_batch,
+            recipe_mode,
+            editor_context,
+            run_id,
+        )
+        write_run_status(run_dir, run_id, "completed")
+        return result
+    except Exception as exc:
+        write_run_status(run_dir, run_id, "failed", f"{type(exc).__name__}: {exc}")
+        raise
 
 
 __all__ = ["run_cycle"]

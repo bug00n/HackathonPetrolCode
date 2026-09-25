@@ -12,6 +12,7 @@ import queue
 import sys
 import threading
 import tkinter as tk
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from functools import partial
@@ -19,7 +20,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable, Sequence
 
-from source.config import load_scenario
+from source.config import load_runtime_config, load_scenario
 from source.contracts import (
     CandidateEvaluation,
     ConstraintStatus,
@@ -27,6 +28,7 @@ from source.contracts import (
     RecommendationStatus,
     ScenarioConfig,
 )
+from source.journal import recover_interrupted_runs
 from source.main import (
     PROJECT_ROOT,
     action_shadow_estimate_command,
@@ -294,7 +296,18 @@ def journal_entries(run_dir: Path) -> tuple[Path, ...]:
     """Return newest journal result files first without trusting partial directories."""
     if not run_dir.exists():
         return ()
-    files = [path for path in run_dir.glob("*/result.json") if path.is_file()]
+    files = []
+    for path in run_dir.glob("*/result.json"):
+        if not path.is_file():
+            continue
+        status_path = path.parent / "status.json"
+        if status_path.is_file():
+            try:
+                if json.loads(status_path.read_text(encoding="utf-8")).get("status") != "completed":
+                    continue
+            except (OSError, json.JSONDecodeError):
+                continue
+        files.append(path)
     return tuple(sorted(files, key=lambda path: path.stat().st_mtime, reverse=True))
 
 
@@ -468,7 +481,11 @@ class PetrolCodeApp(tk.Tk):
         self.status_var = tk.StringVar(value="Готово к расчёту")
         self._ui_events: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
         self._closing = False
+        recover_interrupted_runs(
+            PROJECT_ROOT / load_runtime_config(PROJECT_ROOT / "config/runtime.toml").runs_dir
+        )
         self._interval_cancel = threading.Event()
+        self._history_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="history")
         self._shared_dataset = tk.StringVar(value=discover_ui_context().latest_dataset or "")
         self._shared_as_of = tk.StringVar(value=RELEASE_DEMO_AS_OF)
         self._result: Recommendation | None = None
@@ -507,6 +524,7 @@ class PetrolCodeApp(tk.Tk):
     def destroy(self) -> None:
         self._closing = True
         self._interval_cancel.set()
+        self._history_executor.shutdown(wait=False, cancel_futures=True)
         if hasattr(self, "_poll_id"):
             self.after_cancel(self._poll_id)
         super().destroy()
@@ -601,7 +619,10 @@ class PetrolCodeApp(tk.Tk):
 
     def _set_nav(self, page: str) -> None:
         for key, button in self._nav_buttons.items():
-            button.configure(fg="white" if key == page else "#C0C8CD")
+            button.configure(
+                fg="white" if key == page else "#C0C8CD",
+                bg="#31454B" if key == page else HEADER,
+            )
 
     def show_page(self, page: str) -> None:
         page = PAGE_ALIASES.get(page, page)
@@ -698,11 +719,26 @@ class PetrolCodeApp(tk.Tk):
     def _field(
         parent: tk.Misc, label: str, variable: tk.StringVar, width: int | None = None
     ) -> None:
-        tk.Label(parent, text=label, bg=BG, fg=TEXT, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        tk.Label(
+            parent,
+            text=label,
+            bg=parent.cget("bg"),
+            fg=MUTED,
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w")
         entry = tk.Entry(
-            parent, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1, width=width or 20
+            parent,
+            textvariable=variable,
+            bg=SURFACE,
+            fg=TEXT,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=BORDER,
+            highlightcolor=TEAL,
+            width=width or 20,
         )
-        entry.pack(fill="x", pady=(4, 10), ipady=6)
+        entry.pack(fill="x", pady=(6, 8), ipady=8)
 
     @staticmethod
     def _stage_tone(status: str) -> str:
@@ -1306,13 +1342,57 @@ class PetrolCodeApp(tk.Tk):
         summary = tk.StringVar(
             value="Укажите время и запустите расчёт. Реальные действия отключены."
         )
+        result_panel = self._surface(page)
+        result_panel.pack(fill="x", pady=(0, 14))
         tk.Label(
-            page, textvariable=summary, bg=BG, fg=TEXT, anchor="w", justify="left", wraplength=1100
-        ).pack(fill="x", pady=8)
-        chart = HistoryChart(page)
-        chart.pack(fill="x", pady=(0, 10))
-        output = tk.Text(page, height=7, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
-        output.pack(fill="both", expand=True)
+            result_panel,
+            text="ПОСЛЕДНИЙ РЕЗУЛЬТАТ",
+            bg=SURFACE,
+            fg=MUTED,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=20, pady=(14, 4))
+        tk.Label(
+            result_panel,
+            textvariable=summary,
+            bg=SURFACE,
+            fg=TEXT,
+            anchor="w",
+            justify="left",
+            wraplength=1100,
+            font=("Segoe UI", 12, "bold"),
+        ).pack(fill="x", padx=20, pady=(0, 14))
+        chart_panel = self._surface(page)
+        chart_panel.pack(fill="x", pady=(0, 14))
+        tk.Label(
+            chart_panel,
+            text="Динамика серы",
+            bg=SURFACE,
+            fg=TEXT,
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", padx=20, pady=(16, 0))
+        chart = HistoryChart(chart_panel)
+        chart.pack(fill="x", padx=12, pady=(0, 8))
+        details = self._surface(page)
+        details.pack(fill="x")
+        tk.Label(
+            details,
+            text="Детали расчёта",
+            bg=SURFACE,
+            fg=TEXT,
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", padx=20, pady=(16, 10))
+        output = tk.Text(
+            details,
+            height=8,
+            bg="#F8FAFA",
+            fg=TEXT,
+            bd=0,
+            wrap="word",
+            font=("Consolas", 10),
+            padx=14,
+            pady=10,
+        )
+        output.pack(fill="x", padx=20, pady=(0, 18))
 
         def render(view: UiHistoryReplayView) -> None:
             output.configure(state="normal")
@@ -1335,6 +1415,8 @@ class PetrolCodeApp(tk.Tk):
             as_of: str,
             action_model: str | None,
         ) -> None:
+            if request_id != self._history_request_id:
+                return
             view = ui_history_snapshot(dataset, model, as_of, action_model)
 
             def finish() -> None:
@@ -1364,17 +1446,14 @@ class PetrolCodeApp(tk.Tk):
             output.delete("1.0", "end")
             output.insert("1.0", "Расчёт исторического прогноза…")
             output.configure(state="disabled")
-            threading.Thread(
-                target=calculate,
-                args=(
-                    self._history_request_id,
-                    dataset_var.get().strip() or None,
-                    model_var.get().strip() or None,
-                    as_of_var.get(),
-                    action_var.get().strip() or None,
-                ),
-                daemon=True,
-            ).start()
+            self._history_executor.submit(
+                calculate,
+                self._history_request_id,
+                dataset_var.get().strip() or None,
+                model_var.get().strip() or None,
+                as_of_var.get(),
+                action_var.get().strip() or None,
+            )
 
         def calculate_interval() -> None:
             self._history_request_id += 1
@@ -1425,6 +1504,8 @@ class PetrolCodeApp(tk.Tk):
             progress(0, 0)
 
             def work() -> None:
+                if request_id != self._history_request_id or cancel.is_set():
+                    return
                 payload = None
                 try:
                     payload = history_interval_command(
@@ -1466,32 +1547,27 @@ class PetrolCodeApp(tk.Tk):
                 except tk.TclError:
                     return
 
-            threading.Thread(target=work, daemon=True).start()
+            self._history_executor.submit(work)
 
         actions = tk.Frame(page, bg=BG)
-        actions.pack(fill="x", pady=(0, 12), before=chart)
-        self._primary_button(
-            actions,
-            "Рассчитать на выбранный момент",
-            start_calculation,
-        ).pack(side="left")
-        self._secondary_button(actions, "Журнал", lambda: self.show_page("journal")).pack(
-            side="left", padx=12
-        )
-        self._secondary_button(actions, "Рассчитать интервал", calculate_interval).pack(side="left")
-        self._secondary_button(
-            actions, "Отменить интервал", lambda: self._interval_cancel.set()
-        ).pack(side="left")
-        self._secondary_button(
-            actions, "Экспортировать этот результат", self.export_history_result
-        ).pack(side="left", padx=12)
-        buttons = [child for child in actions.winfo_children() if isinstance(child, tk.Button)]
-        for button in buttons:
-            button.pack_forget()
-        for index, button in enumerate(buttons):
-            button.grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=4)
+        actions.pack(fill="x", pady=(0, 14), before=chart_panel)
         for column in range(3):
             actions.grid_columnconfigure(column, weight=1)
+        self._primary_button(actions, "Рассчитать на выбранный момент", start_calculation).grid(
+            row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 8)
+        )
+        interval_button = self._secondary_button(actions, "Рассчитать интервал", calculate_interval)
+        interval_button.configure(fg=TEAL, font=("Segoe UI", 11, "bold"))
+        interval_button.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 8))
+        self._secondary_button(
+            actions, "Отменить интервал", lambda: self._interval_cancel.set()
+        ).grid(row=0, column=2, sticky="ew", pady=(0, 8))
+        self._secondary_button(
+            actions, "Экспортировать этот результат", self.export_history_result
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        self._secondary_button(actions, "Журнал", lambda: self.show_page("journal")).grid(
+            row=1, column=1, sticky="ew", padx=(0, 8)
+        )
         render(
             self._history_view
             or UiHistoryReplayView(
@@ -2067,11 +2143,22 @@ class PetrolCodeApp(tk.Tk):
         )
 
         def recalculate(scenario: ScenarioConfig) -> None:
-            self.calculate(scenario)
+            self.calculate(scenario, recipe_mode="evaluate")
 
-        open_editor(self, preset, current, recalculate)
+        def recalculate_with_context(scenario: ScenarioConfig, context: dict[str, object]) -> None:
+            self.calculate(scenario, recipe_mode="evaluate", editor_context=context)
 
-    def calculate(self, scenario_override: ScenarioConfig | None = None) -> None:
+        open_editor(
+            self, preset, current, recalculate, calculate_with_context=recalculate_with_context
+        )
+
+    def calculate(
+        self,
+        scenario_override: ScenarioConfig | None = None,
+        *,
+        recipe_mode: str = "optimize",
+        editor_context: dict[str, object] | None = None,
+    ) -> None:
         self._calculation_request_id += 1
         request_id = self._calculation_request_id
         scenario_id = SCENARIO_LABELS[self.scenario_var.get()]
@@ -2085,7 +2172,12 @@ class PetrolCodeApp(tk.Tk):
                 scenario = scenario_override or load_scenario(
                     PROJECT_ROOT / f"config/scenarios/{scenario_id}.json"
                 )
-                result = run_model_demo(scenario_id, scenario_override=scenario_override)
+                result = run_model_demo(
+                    scenario_id,
+                    scenario_override=scenario_override,
+                    recipe_mode=recipe_mode,
+                    editor_context=editor_context,
+                )
             except Exception as exc:  # UI boundary: render backend failure without crashing Tk.
                 self._post_ui(partial(self._calculation_failed, request_id, exc))
                 return

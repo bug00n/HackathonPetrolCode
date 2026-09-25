@@ -13,6 +13,7 @@ import pytest
 
 from source.acceptance import (
     JOURNAL_FILES,
+    export_journals,
     load_episode_specs,
     run_acceptance_suite,
     sha256_file,
@@ -81,6 +82,15 @@ def test_acceptance_suite_reproduces_decisions_and_exports_full_journals(
         assert "manifest.json" in names
         for filename in JOURNAL_FILES:
             assert f"sulfur_risk/{filename}" in names
+
+
+@pytest.mark.parametrize("name", ("../outside", r"..\outside"))
+def test_journal_export_rejects_path_components(name: str, tmp_path: Path) -> None:
+    """A catalog id must not create a ZIP entry outside its own journal directory."""
+    destination = tmp_path / "journals.zip"
+    with pytest.raises(ValueError, match="single path components"):
+        export_journals([(name, tmp_path / "source")], destination)
+    assert not destination.exists()
 
 
 def test_acceptance_decision_fingerprints_repeat(tmp_path: Path) -> None:

@@ -170,13 +170,22 @@ def list_prepared_datasets(root: Path = PROJECT_ROOT) -> tuple[Path, ...]:
 
 
 def _release_manifest(root: Path) -> dict[str, Any]:
-    """Read the optional release pin without making it a runtime dependency."""
+    """Allow discovery only when no release manifest exists at all."""
     path = root / "config/release_manifest.json"
+    if not path.exists():
+        return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid release manifest: {path}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != "1.0":
+        raise ValueError("unsupported release manifest schema")
+    for key in ("release_id", "prepared_dataset", "forecast_artifact", "v2_artifact"):
+        if not isinstance(payload.get(key), str) or not payload[key]:
+            raise ValueError(f"release manifest needs {key}")
+    if "action_artifact" not in payload:
+        raise ValueError("release manifest needs action_artifact, null if disabled")
+    return payload
 
 
 def _manifest_dataset_id(path: Path) -> str | None:
@@ -292,11 +301,7 @@ def discover_ui_context(root: Path = PROJECT_ROOT) -> UiContext:
         forecast_artifacts=forecast,
         action_artifacts=action,
         v2_artifacts=v2,
-        release_id=(
-            str(_release_manifest(root).get("release_id"))
-            if _release_manifest(root).get("release_id")
-            else None
-        ),
+        release_id=str(manifest["release_id"]) if manifest.get("release_id") else None,
     )
 
 
@@ -343,6 +348,9 @@ def ui_stage_snapshot(
     try:
         config = load_runtime_config(root / "config/runtime.toml")
         data = load_prepared_dataset(data_path)
+        data.telemetry["timestamp"] = pd.to_datetime(
+            data.telemetry["timestamp"], utc=True, errors="coerce"
+        )
         timestamp = _parse_as_of(as_of) if as_of is not None else _default_as_of(data)
         tags = _tags_by_signal_id(root)
         groups = AVT_SIGNAL_GROUPS if canonical_page == "avt" else HYDROTREATING_SIGNAL_GROUPS

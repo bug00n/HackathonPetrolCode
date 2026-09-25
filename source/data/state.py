@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -56,6 +57,31 @@ def _stage_from_signal_id(signal_id: str) -> Stage:
     return Stage.HYDROTREATMENT
 
 
+def _utc_frame(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
+    """Normalize timestamp columns once; reuse frames already normalized to UTC."""
+    for column in columns:
+        dtype = frame[column].dtype
+        if not isinstance(dtype, pd.DatetimeTZDtype) or dtype.tz != UTC:
+            break
+    else:
+        return frame
+    normalized = frame.copy()
+    for column in columns:
+        normalized[column] = pd.to_datetime(normalized[column], utc=True)
+    return normalized
+
+
+def prepare_state_data(data: PreparedData) -> PreparedData:
+    """Return a per-request dataset with UTC timestamps for repeated state builds."""
+    quality = _utc_frame(data.quality, ("measured_at", "available_at"))
+    telemetry = (
+        _utc_frame(data.telemetry, ("timestamp",))
+        if "timestamp" in data.telemetry.columns
+        else data.telemetry
+    )
+    return replace(data, quality=quality, telemetry=telemetry)
+
+
 def _telemetry_candidates(
     frame: pd.DataFrame,
     signal_id: str,
@@ -98,13 +124,10 @@ def build_state(
     if as_of.tzinfo is None or as_of.utcoffset() is None:
         raise ValueError("as_of must be timezone-aware")
     as_of = as_of.astimezone(UTC)
-    frame = data.quality.copy()
-    frame["measured_at"] = pd.to_datetime(frame["measured_at"], utc=True)
-    frame["available_at"] = pd.to_datetime(frame["available_at"], utc=True)
+    prepared = prepare_state_data(data)
+    frame = prepared.quality
     visible = frame[(frame["measured_at"] <= as_of) & (frame["available_at"] <= as_of)]
-    telemetry = data.telemetry.copy()
-    if "timestamp" in telemetry.columns:
-        telemetry["timestamp"] = pd.to_datetime(telemetry["timestamp"], utc=True)
+    telemetry = prepared.telemetry
     control_units = {control.signal_id: control.unit for control in scenario.controls}
 
     snapshots: dict[str, SignalSnapshot] = {}
