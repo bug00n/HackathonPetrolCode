@@ -96,11 +96,21 @@ def load_telemetry_rules(path: str | Path) -> dict[str, dict[str, object]]:
     return result
 
 
-def config_fingerprint(config: RuntimeConfig) -> str:
-    """Stable JSON used by the preparation manifest hash."""
-    return json.dumps(
-        config.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
+def config_fingerprint(config: RuntimeConfig, *, preparation_only: bool = False) -> str:
+    """Stable preparation identity; preserve the v1.0 full-config fingerprint."""
+    payload = config.model_dump(mode="json")
+    if preparation_only:
+        payload = {
+            name: payload[name]
+            for name in (
+                "source_timezone",
+                "lims_delay_hours",
+                "tag_dictionary_path",
+                "telemetry_rules_path",
+                "materials_dir",
+            )
+        }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 __all__ = [

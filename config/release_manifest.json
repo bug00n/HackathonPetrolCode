@@ -1,7 +1,15 @@
 {
   "schema_version": "1.0",
-  "release_id": "neftekod-v1.1.0",
+  "release_id": "neftekod-v1.2.0",
   "prepared_dataset": "data/processed/66bdfcbb23b4",
+  "legacy_config_sha256": "00a45650caa0f415e78037d56bc49de7161f55f9eecd24675e8874d64efb63e2",
+  "preparation_config_sha256": "7f8dab1f4befa7ed4d14108146d344eeeb4341711880144ad0195d163a55c4dd",
+  "prepared_sha256": {
+    "telemetry.csv.gz": "20b434e7fd01e49ad45ec82635ea14940677267f58d0d3f70f63812d8c17c84d",
+    "quality.csv.gz": "fbef330af12854052c7622f10c561460af3d1a708d59b87892ad49d82f0be9e4",
+    "issues.csv.gz": "bffe17ad1fcfdfaa4496405ce1b7eb2d0f318c67103bfbaf63a0e45d17ee9fb9",
+    "feature_order.json": "fb7b26c4991e029f246baa8efc99f971f07fc765bbb5e59d521794a3ed33932e"
+  },
   "forecast_artifact": "artifacts/models/sulfur-upper-33efba3c3141",
   "v2_artifact": "artifacts/models/sulfur-v2-shadow-61f972d07181",
   "action_artifact": null,

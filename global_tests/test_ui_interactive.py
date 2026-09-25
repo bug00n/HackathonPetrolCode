@@ -146,7 +146,7 @@ def test_editor_reset_validation_and_chart_on_real_tk() -> None:
         buttons["Пересчитать what-if"].invoke()
         assert not received and dialog.winfo_exists()
         buttons["Сбросить к сценарию"].invoke()
-        assert first.get() == "6"
+        assert first.get() == editor_values(preset)["A.fraction"]
         buttons["Пересчитать what-if"].invoke()
         assert len(received) == 1 and received[0].id.endswith("_what_if")
         chart = HistoryChart(root)
@@ -157,5 +157,43 @@ def test_editor_reset_validation_and_chart_on_real_tk() -> None:
         assert all(chart.type(item) != "line" for item in chart.find_withtag("point"))
         chart.set_payload(None)
         assert not chart.find_withtag("point")
+    finally:
+        root.destroy()
+
+
+def test_editor_assist_and_undo_on_real_tk() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    try:
+        preset = load_scenario("config/scenarios/blend_risk.json")
+        dialog = open_editor(root, preset, preset, lambda _scenario: None)
+        dialog.withdraw()
+        entries = [widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)]
+        b_share = entries[1]
+        b_share.delete(0, "end")
+        b_share.insert(0, "10")
+        locks = [
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Checkbutton) and widget.cget("text") == "Зафиксировать"
+        ]
+        locks[1].invoke()
+        buttons = {
+            widget.cget("text"): widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Button)
+        }
+        buttons["Подобрать смесь"].invoke()
+        assert b_share.get() == "10"
+        assert float(entries[0].get()) + float(b_share.get()) + float(
+            entries[2].get()
+        ) == pytest.approx(100)
+        buttons["Отменить автоподбор"].invoke()
+        assert b_share.get() == "10"
+        assert entries[0].get() == editor_values(preset)["A.fraction"]
+        dialog.destroy()
     finally:
         root.destroy()

@@ -13,7 +13,7 @@ import sklearn
 
 from source.config import config_fingerprint, load_runtime_config
 from source.contracts import DatasetManifest, Recommendation
-from source.data.prepare import PreparedData, write_prepared_dataset
+from source.data.prepare import PreparedData, load_prepared_dataset, write_prepared_dataset
 from source.main import main, run_history_command
 from source.ml.artifacts import LastValueRegressor, feature_schema_hash, save_model
 
@@ -112,6 +112,112 @@ def _write_point_model(directory: Path, tag_dictionary_sha256: str) -> Path:
     artifact_dir = directory / model_id
     save_model(artifact_dir, predictor, metadata, {"selected_model": "last_value"})
     return artifact_dir
+
+
+def test_reused_feature_sources_match_uncached_batches(tmp_path: Path) -> None:
+    from source.ml.artifacts import load_model
+    from source.ml.features import prepare_feature_batch, prepare_feature_sources
+
+    data = _prepared_data()
+    model = load_model(
+        _write_point_model(tmp_path / "models", data.manifest.tag_dictionary_sha256),
+        trusted=True,
+    )
+    queries = pd.date_range("2026-01-15T08:40:00Z", periods=4, freq="10min")
+    sources = prepare_feature_sources(data, model)
+    for chunk in (queries[:2], queries[2:]):
+        expected = prepare_feature_batch(data, chunk, model).frame
+        actual = prepare_feature_batch(data, chunk, model, sources=sources).frame
+        pd.testing.assert_frame_equal(expected, actual)
+
+
+def test_feature_recipe_mismatch_fails_before_forecast(tmp_path: Path) -> None:
+    from source.ml.artifacts import load_model
+    from source.ml.features import prepare_feature_sources
+
+    data = _prepared_data()
+    model = load_model(
+        _write_point_model(tmp_path / "models", data.manifest.tag_dictionary_sha256),
+        trusted=True,
+    )
+    metadata = model.metadata.model_dump(mode="python")
+    metadata["processing"]["feature_definition"]["lags_minutes"] = [0, 15]
+    from types import SimpleNamespace
+
+    with pytest.raises(ValueError, match="feature recipe"):
+        prepare_feature_sources(data, SimpleNamespace(metadata=metadata))
+
+
+def test_feature_recipe_accepts_telemetry_order_from_model() -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from source.ml.features import prepare_feature_sources
+
+    data = _prepared_data()
+    telemetry = data.telemetry.copy()
+    telemetry["ht:F2"] = telemetry["ht:F1"] + 1
+    data = replace(data, telemetry=telemetry, feature_order=("ht:F2", "ht:F1", TARGET_SIGNAL))
+    metadata = {
+        "feature_names": ("ht:F1__lag_0m", "ht:F2__lag_0m", FEATURE_NAME),
+        "target_signal": TARGET_SIGNAL,
+        "target_source": "pak",
+        "target_unit": TARGET_UNIT,
+        "horizon_minutes": 60,
+        "processing": {"feature_definition": {"telemetry_signals": ["ht:F1", "ht:F2"]}},
+    }
+    sources = prepare_feature_sources(data, SimpleNamespace(metadata=metadata))
+    assert sources.feature_spec[1] == ("ht:F2", "ht:F1")
+
+
+def test_runtime_output_path_does_not_invalidate_new_prepared_data(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from source.main import PROJECT_ROOT, _validate_current_prepared_dataset
+
+    config = load_runtime_config(Path("config/runtime.toml"))
+    data = _prepared_data()
+    manifest = data.manifest.model_copy(
+        update={
+            "preparation_version": "2",
+            "config_sha256": hashlib.sha256(
+                config_fingerprint(config, preparation_only=True).encode()
+            ).hexdigest(),
+        }
+    )
+    data = replace(data, manifest=manifest)
+    path = write_prepared_dataset(data, tmp_path / "processed")
+    data = load_prepared_dataset(path)
+    changed_output = config.model_copy(update={"runs_dir": Path("other-runs")})
+    _validate_current_prepared_dataset(data, changed_output, PROJECT_ROOT, path)
+    changed_preparation = config.model_copy(update={"source_timezone": "UTC"})
+    with pytest.raises(ValueError, match="config_sha256"):
+        _validate_current_prepared_dataset(data, changed_preparation, PROJECT_ROOT, path)
+
+
+def test_pinned_legacy_dataset_tolerates_output_path_change(tmp_path: Path) -> None:
+    from source.main import _validate_current_prepared_dataset
+
+    config = load_runtime_config(Path("config/runtime.toml"))
+    for relative in ("config/tags.csv", "config/telemetry_rules.json"):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(Path(relative).read_bytes())
+    path = write_prepared_dataset(_prepared_data(), tmp_path / "data/processed")
+    data = load_prepared_dataset(path)
+    release = {
+        "prepared_dataset": f"data/processed/{path.name}",
+        "legacy_config_sha256": data.manifest.config_sha256,
+        "preparation_config_sha256": hashlib.sha256(
+            config_fingerprint(config, preparation_only=True).encode()
+        ).hexdigest(),
+    }
+    (tmp_path / "config/release_manifest.json").write_text(json.dumps(release), encoding="utf-8")
+    changed_output = config.model_copy(update={"runs_dir": Path("other-runs")})
+    _validate_current_prepared_dataset(data, changed_output, tmp_path, path)
+    changed_preparation = config.model_copy(update={"source_timezone": "UTC"})
+    with pytest.raises(ValueError, match="config_sha256"):
+        _validate_current_prepared_dataset(data, changed_preparation, tmp_path, path)
 
 
 def test_run_history_cli_uses_trusted_artifact_and_writes_journal(

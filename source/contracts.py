@@ -600,7 +600,7 @@ class SourceArtifact(ContractModel):
 
 
 class DatasetManifest(ContractModel):
-    schema_version: Literal["1.0"] = SCHEMA_VERSION
+    schema_version: Literal["1.0", "1.1"] = SCHEMA_VERSION
     dataset_id: Annotated[str, Field(min_length=12, max_length=12)]
     preparation_version: str
     created_at: AwareDatetime
@@ -612,6 +612,17 @@ class DatasetManifest(ContractModel):
     telemetry_rules_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None
     row_counts: dict[str, Annotated[int, Field(ge=0)]]
     time_ranges: dict[str, tuple[AwareDatetime, AwareDatetime] | None]
+    prepared_sha256: dict[str, Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]] | None = None
+
+    @model_validator(mode="after")
+    def validate_prepared_hashes(self) -> "DatasetManifest":
+        if self.schema_version == "1.1" and (
+            self.prepared_sha256 is None
+            or set(self.prepared_sha256)
+            != {"telemetry.csv.gz", "quality.csv.gz", "issues.csv.gz", "feature_order.json"}
+        ):
+            raise ValueError("schema 1.1 requires hashes of every prepared data file")
+        return self
 
 
 __all__ = [

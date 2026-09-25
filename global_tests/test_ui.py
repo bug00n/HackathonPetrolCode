@@ -294,7 +294,7 @@ def release_context_root(tmp_path: Path) -> Path:
 def test_release_manifest_pins_one_live_context(release_context_root: Path) -> None:
     context = ui_data_module.discover_ui_context(release_context_root)
 
-    assert context.release_id == "neftekod-v1.1.0"
+    assert context.release_id == "neftekod-v1.2.0"
     assert context.latest_dataset is not None
     assert context.latest_dataset.endswith("66bdfcbb23b4")
     assert tuple(item.model_id for item in context.forecast_artifacts) == (
@@ -304,6 +304,13 @@ def test_release_manifest_pins_one_live_context(release_context_root: Path) -> N
         "sulfur-v2-shadow-61f972d07181",
     )
     assert context.action_artifacts == ()
+
+
+def test_corrupt_release_manifest_cannot_fall_back_to_latest(release_context_root: Path) -> None:
+    release_file = release_context_root / "config/release_manifest.json"
+    release_file.write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid release manifest"):
+        ui_data_module.discover_ui_context(release_context_root)
 
 
 def test_missing_release_pins_do_not_select_other_available_inputs(
@@ -376,7 +383,12 @@ def test_history_interval_ui_retains_and_exports_completed_result(
     monkeypatch.setattr(ui_module.PetrolCodeApp, "calculate", lambda self: None)
     monkeypatch.setattr(ui_module, "history_interval_command", lambda *args, **kwargs: payload)
     monkeypatch.setattr(
-        ui_module.threading, "Thread", lambda target, **kwargs: SimpleNamespace(start=target)
+        ui_module,
+        "ThreadPoolExecutor",
+        lambda **kwargs: SimpleNamespace(
+            submit=lambda target, *args: target(*args),
+            shutdown=lambda **kwargs: None,
+        ),
     )
     monkeypatch.setattr(
         ui_module.filedialog, "asksaveasfilename", lambda **kwargs: str(destination)

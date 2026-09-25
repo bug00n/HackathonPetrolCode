@@ -25,7 +25,7 @@ def main() -> None:
     from source.ui import PetrolCodeApp
     from source.ui_charts import HistoryChart
     from source.ui_data import discover_ui_context, ui_hybrid_snapshot, ui_stage_snapshot
-    from source.ui_what_if import editor_values, scenario_from_editor
+    from source.ui_what_if import assist_editor_values, editor_values, scenario_from_editor
 
     if len(sys.argv) == 3 and sys.argv[1] == "--smoke-report":
         destination = Path(sys.argv[2])
@@ -86,10 +86,18 @@ def main() -> None:
             edited = run_model_demo(preset.id, scenario_override=scenario)
             if edited.scenario_id != "blend_risk_what_if" or edited.selected is None:
                 raise RuntimeError("Packaged what-if calculation failed")
+            options = assist_editor_values(
+                preset,
+                editor_values(preset) | {"B.fraction": "10"},
+                frozenset({"B.fraction"}),
+            )
+            if not options or options[0][1]["B.fraction"] != "10":
+                raise RuntimeError("Packaged blend assistance failed")
             report["what_if"] = {
                 "scenario_id": edited.scenario_id,
                 "status": edited.status.value,
                 "editor": "ok",
+                "assist": "ok",
             }
             hybrid = ui_hybrid_snapshot(dataset, model, at)
             report["hybrid"] = asdict(hybrid)

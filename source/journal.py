@@ -35,6 +35,32 @@ def _json_line(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
 
 
+def write_run_status(run_dir: Path, run_id: str, status: str, detail: str = "") -> None:
+    """Publish a durable lifecycle marker for success, failure, or cancellation."""
+    if status not in {"started", "completed", "failed", "cancelled", "interrupted"}:
+        raise ValueError("invalid run lifecycle status")
+    _atomic_write(
+        run_dir / run_id / "status.json",
+        json.dumps({"run_id": run_id, "status": status, "detail": detail}, ensure_ascii=False),
+    )
+
+
+def recover_interrupted_runs(run_dir: Path) -> int:
+    """Mark abandoned started runs after restarting the local application."""
+    count = 0
+    for path in run_dir.glob("*/status.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("status") == "started":
+            write_run_status(
+                run_dir, path.parent.name, "interrupted", "process stopped before completion"
+            )
+            count += 1
+    return count
+
+
 def write_run_journal(
     run_dir: Path,
     state: ProcessState,
@@ -46,6 +72,7 @@ def write_run_journal(
     selection_reason: str = "unknown",
     rejection_summary: dict[str, int] | None = None,
     features: pd.DataFrame | None = None,
+    editor_context: dict[str, object] | None = None,
 ) -> Path:
     """Write a compact reproducible record of one successful run."""
     rejection_summary = rejection_summary or {}
@@ -75,6 +102,7 @@ def write_run_journal(
                 "state": state.model_dump(mode="json"),
                 "scenario": scenario.model_dump(mode="json"),
                 "context": context.model_dump(mode="json"),
+                "editor_context": editor_context,
             },
             ensure_ascii=False,
             indent=2,
@@ -104,4 +132,4 @@ def write_run_journal(
     return target
 
 
-__all__ = ["write_run_journal"]
+__all__ = ["write_run_journal", "write_run_status", "recover_interrupted_runs"]

@@ -15,13 +15,10 @@ if (Test-Path -LiteralPath $destination) {
 $manifestPath = Join-Path $root "config\release_manifest.json"
 $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
 $required = @(
-    "README.md", "requirements.txt", "requirements.lock.txt",
+    "README.md", "DESIGN.md", "requirements.txt", "requirements.lock.txt",
     "pyproject.toml", "source", "config", "global_tests", "materials",
     "scripts", "docs", "third_party"
 )
-$required += @(Get-ChildItem -LiteralPath $root -Filter "*.md" -File |
-    Where-Object { $_.Name -notin @("README.md", "AGENTS.md") } |
-    ForEach-Object { $_.Name })
 $selected = @(
     [string]$manifest.prepared_dataset,
     [string]$manifest.forecast_artifact,
@@ -112,7 +109,8 @@ if ($BinaryDirectory) {
         if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $smokeReport)) { throw "Portable EXE verification failed" }
         $smoke = Get-Content -Raw -LiteralPath $smokeReport | ConvertFrom-Json
         if ($smoke.error -or $smoke.tk -ne "ok" -or $smoke.history.points -ne 2 -or
-            -not $smoke.history_chart.rendered -or $smoke.what_if.editor -ne "ok") {
+            -not $smoke.history_chart.rendered -or $smoke.what_if.editor -ne "ok" -or
+            $smoke.what_if.assist -ne "ok") {
             throw "Portable smoke report is incomplete"
         }
     } finally {
