@@ -110,7 +110,7 @@ if ($BinaryDirectory) {
         $smoke = Get-Content -Raw -LiteralPath $smokeReport | ConvertFrom-Json
         if ($smoke.error -or $smoke.tk -ne "ok" -or $smoke.history.points -ne 2 -or
             -not $smoke.history_chart.rendered -or $smoke.what_if.editor -ne "ok" -or
-            $smoke.what_if.assist -ne "ok") {
+            $smoke.what_if.assist -ne "ok" -or $smoke.dpi_awareness -ne 1) {
             throw "Portable smoke report is incomplete"
         }
     } finally {

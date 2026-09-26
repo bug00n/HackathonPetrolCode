@@ -796,6 +796,11 @@ class PetrolCodeApp(tk.Tk):
         initial_scenario: str = "blend_risk",
         initial_page: str = "overview",
     ) -> None:
+        if sys.platform == "win32":
+            from ctypes import windll
+
+            # Keep direct Python launches crisp; the packaged EXE uses the manifest.
+            windll.user32.SetProcessDPIAware()
         super().__init__()
         self.title("НЕФТЕКОД — поддержка технологических решений")
         width = min(1536, max(1000, self.winfo_screenwidth() - 80))

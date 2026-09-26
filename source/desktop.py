@@ -56,6 +56,13 @@ def main() -> None:
             report["history"] = history
             app = PetrolCodeApp(initial_page="journal")
             app.withdraw()
+            if sys.platform == "win32":
+                from ctypes import byref, c_int, windll
+
+                awareness = c_int()
+                if windll.shcore.GetProcessDpiAwareness(None, byref(awareness)) != 0:
+                    raise RuntimeError("Cannot read Windows DPI awareness")
+                report["dpi_awareness"] = awareness.value
             app._history_export_payload = history
             app._history_interval_text = "Portable history chart check"
             app.show_page("history")
