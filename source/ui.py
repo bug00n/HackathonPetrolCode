@@ -24,10 +24,12 @@ from source.config import load_runtime_config, load_scenario
 from source.contracts import (
     CandidateEvaluation,
     ConstraintStatus,
+    ProcessState,
     Recommendation,
     RecommendationStatus,
     ScenarioConfig,
 )
+from source.explain import reason_text, reasons_text
 from source.journal import recover_interrupted_runs
 from source.main import (
     PROJECT_ROOT,
@@ -82,6 +84,14 @@ STATUS_RU = {
     "not_actionable": "не рекомендованы",
     "actionable": "разрешены моделью",
     "unavailable": "недоступны",
+}
+FRESHNESS_RU = {"fresh": "свежий", "stale": "устарел", "missing": "нет данных"}
+SOURCE_RU = {
+    "telemetry": "телеметрия",
+    "pak": "ПАК",
+    "lims": "ЛИМС",
+    "vak": "ВАК",
+    "scenario": "сценарий",
 }
 
 SCENARIO_LABELS = {
@@ -172,6 +182,8 @@ def _display_unit(unit: str | None) -> str:
         "kg/m3": "кг/м³",
         "t": "т",
         "1": "доля",
+        "MPa": "МПа",
+        "t/h": "т/ч",
     }.get(unit or "", unit or "")
 
 
@@ -260,7 +272,7 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         banner_title = "Изменение режима не требуется"
         banner_detail = "Текущая модельная рецептура проходит доступные проверки."
         action_title = "Сохранить текущую рецептуру"
-        action_detail = "Материального улучшения относительно hold не найдено."
+        action_detail = "Существенного улучшения относительно текущей смеси не найдено."
     else:
         banner_title = "Рекомендация недоступна"
         banner_detail = "Обязательные данные или консервативная оценка качества отсутствуют."
@@ -314,8 +326,8 @@ def journal_entries(run_dir: Path) -> tuple[Path, ...]:
 def _format_value(value: float | None, unit: str = "мг/кг") -> str:
     if value is None:
         return "—"
-    rendered = f"{value:.2f}".rstrip("0").rstrip(".").replace(".", ",")
-    return f"{rendered} {unit}"
+    rendered = f"{value:.4f}".rstrip("0").rstrip(".").replace(".", ",")
+    return f"{rendered} {unit}".strip()
 
 
 def format_action_shadow_payload(payload: dict[str, object]) -> str:
@@ -332,10 +344,11 @@ def format_action_shadow_payload(payload: dict[str, object]) -> str:
         "Модельный эффект по историческим эпизодам",
         "Не является советом по изменению уставки.",
         "",
-        f"Текущая сера ПАК: {_format_value(baseline if isinstance(baseline, float) else None)}",
-        f"Сценарий: {control} на {delta} {control_unit}".rstrip(),
+        "Текущая сера ПАК: "
+        + _format_value(baseline if isinstance(baseline, (int, float)) else None),
+        f"Сценарий: изменение {control} на {delta} {control_unit}".rstrip(),
         "",
-        "Горизонт | Сера | Изменение к hold | Верхняя граница",
+        "Изменение к исходному режиму по горизонтам:",
     ]
     for horizon in (60, 120, 180):
         key = str(horizon)
@@ -345,20 +358,22 @@ def format_action_shadow_payload(payload: dict[str, object]) -> str:
         predicted_text = _format_value(predicted if isinstance(predicted, float) else None)
         change_text = _format_value(change if isinstance(change, float) else None)
         upper_text = _format_value(conservative if isinstance(conservative, float) else None)
-        rows.append(f"{horizon:>3} мин | {predicted_text} | {change_text} | {upper_text}")
+        rows.append(
+            f"{horizon} мин: сера {predicted_text}; изменение {change_text}; "
+            f"верхняя оценка {upper_text}"
+        )
     rows.extend(
         (
             "",
             "Историческая область: " + ("да" if payload.get("within_observed_domain") else "нет"),
-            "Validation модели: "
-            + ("пройдена" if payload.get("model_validated") else "не пройдена"),
+            "Проверка модели: " + ("пройдена" if payload.get("model_validated") else "не пройдена"),
             "Верхняя граница серы: "
             + ("проходит" if payload.get("safety_passes") else "не проходит"),
         )
     )
     reasons = payload.get("reason_codes")
     if isinstance(reasons, (list, tuple)) and reasons:
-        rows.append("Причины: " + ", ".join(str(reason) for reason in reasons))
+        rows.append("Причины: " + reasons_text([str(reason) for reason in reasons]))
     return "\n".join(rows)
 
 
@@ -366,22 +381,27 @@ def format_v2_forecast_payload(payload: dict[str, object]) -> str:
     """Render the schema-1.2 shadow forecast in an operator-readable form."""
     forecast = payload.get("forecast")
     if not isinstance(forecast, dict):
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        return "Прогноз недоступен. Проверьте выбранные данные и модель."
     probabilities = forecast.get("horizon_probabilities", {})
     rows = [
-        "Эпизодный прогноз серы (PAK, shadow)",
+        "Эпизодный прогноз серы · ПАК",
+        "Исследовательский режим.",
         "Не является командой управления и не изменяет уставки.",
         f"Состояние на: {payload.get('as_of', '—')}",
         f"Тревога: {'да' if forecast.get('event_alarm') else 'нет'}",
         f"Применимость: {'да' if forecast.get('applicable') else 'нет'}",
         "",
-        "Горизонт | P(пересечение 10 мг/кг)",
+        "Вероятность начала превышения 10 мг/кг:",
     ]
     if isinstance(probabilities, dict):
         for horizon in (10, 20, 30, 60):
             value = probabilities.get(str(horizon))
-            rendered = f"{float(value) * 100:.1f}%" if isinstance(value, (int, float)) else "—"
-            rows.append(f"{horizon:>3} мин | {rendered}")
+            rendered = (
+                f"{float(value) * 100:.1f}".replace(".", ",") + " %"
+                if isinstance(value, (int, float))
+                else "—"
+            )
+            rows.append(f"{horizon} мин: {rendered}")
     rows.extend(
         (
             "",
@@ -398,44 +418,46 @@ def format_v2_forecast_payload(payload: dict[str, object]) -> str:
                 else None
             ),
             "Причины: "
-            + (", ".join(str(reason) for reason in forecast.get("reason_codes", ())) or "—"),
-            f"Статус артефакта: {payload.get('production_status', '—')}",
+            + reasons_text([str(reason) for reason in forecast.get("reason_codes", ())]),
+            "Результат служит предупреждением, а не основанием менять уставки.",
         )
     )
     return "\n".join(rows)
 
 
 def format_history_replay_view(view: UiHistoryReplayView) -> str:
-    """Render a history replay result without hiding the raw journal payload."""
+    """Show the forecast and its limits; the raw payload remains exportable."""
+    if view.status != "ready":
+        return (
+            "Исторический прогноз серы\n\n"
+            "Расчёт пока недоступен. Укажите время, данные и модель, затем запустите прогноз."
+            if view.status == "empty"
+            else (
+                "Исторический прогноз серы\n\n"
+                "Не удалось выполнить расчёт. Проверьте время, данные и модель."
+            )
+        )
     rows = [
         "Исторический прогноз серы",
-        "Прогноз рассчитан. Реальные уставки не изменяются."
-        if view.status == "ready"
-        else view.message,
+        "Прогноз рассчитан. Реальные уставки не изменяются.",
         "",
         f"Статус: {STATUS_RU.get(view.recommendation_status or view.status, view.status)}",
-        f"Модель: {view.model_id or '—'}",
         f"Момент данных: {view.as_of or '—'}",
         f"Сера, точечный прогноз: {_format_value(view.sulfur_point)}",
         f"Сера, верхняя граница: {_format_value(view.sulfur_upper)}",
         f"Проверка верхней границы: {STATUS_RU.get(view.upper_status, view.upper_status)}",
-        f"Действия: {STATUS_RU.get(view.action_state, view.action_state)}",
-        f"Выбранный тип: {view.selected_kind or '—'}",
-        f"Коды причин: {', '.join(view.reason_codes) if view.reason_codes else '—'}",
+        f"Реальные действия: {STATUS_RU.get(view.action_state, 'недоступны')}",
     ]
-    if view.issues:
-        rows.append("Проблемы: " + " | ".join(view.issues))
-    if view.journal_path:
-        rows.append(f"Журнал: {view.journal_path}")
-    if view.raw is not None:
-        rows.extend(
-            ("", "Raw recommendation JSON:", json.dumps(view.raw, ensure_ascii=False, indent=2))
-        )
+    if view.reason_codes:
+        rows.append("Почему: " + reasons_text(list(view.reason_codes)))
+    if view.issues and not view.reason_codes:
+        rows.append("Некоторые проверки недоступны; технические детали есть в экспорте.")
+    rows.append("Технические данные можно сохранить кнопкой «Экспорт результата».")
     return "\n".join(rows)
 
 
 def format_history_interval_payload(payload: dict[str, object]) -> str:
-    """Put the useful interval result before its technical export data."""
+    """Summarize the interval without showing machine JSON in the operator view."""
     points = payload.get("points", 0)
     requested = payload.get("requested_points", points)
     rows = [
@@ -446,7 +468,7 @@ def format_history_interval_payload(payload: dict[str, object]) -> str:
         rows.append(f"Период: {payload['start']} — {payload['end']}")
     coverage = payload.get("forecast_coverage")
     if isinstance(coverage, (int, float)):
-        rows.append(f"Прогноз серы доступен в {coverage:.0%} точек")
+        rows.append(f"Прогноз серы доступен в {coverage * 100:.0f} % точек")
     counts = payload.get("status_counts")
     if isinstance(counts, dict) and counts:
         rows.append(
@@ -455,41 +477,211 @@ def format_history_interval_payload(payload: dict[str, object]) -> str:
                 f"{STATUS_RU.get(str(key), key)} — {value}" for key, value in counts.items()
             )
         )
+    reasons = payload.get("reason_counts")
+    if isinstance(reasons, dict) and reasons:
+        rows.append(
+            "Почему система отказалась от действий: "
+            + "; ".join(f"{reason_text(str(code))} — {count}" for code, count in reasons.items())
+        )
     rows.extend(
         (
             "Реальные управляющие действия отключены.",
-            "",
-            "Технические данные расчёта (JSON):",
-            json.dumps(payload, ensure_ascii=False, indent=2),
+            "Динамика показана на графике; полный расчёт доступен через «Экспорт результата».",
         )
     )
     return "\n".join(rows)
 
 
 def format_hybrid_blend_view(view: UiHybridBlendView) -> str:
-    """Render the hybrid sulfur-only blend panel in a compact form."""
+    """Explain the sulfur-only calculation without raw assumptions and codes."""
+    if view.status != "ready":
+        return (
+            "Условное смешение по прогнозу серы\n\n"
+            "Для расчёта выберите исторические данные и модель прогноза."
+            if view.status == "empty"
+            else (
+                "Условное смешение по прогнозу серы\n\n"
+                "Расчёт не выполнен. Проверьте данные и модель."
+            )
+        )
     rows = [
-        "Условное смешение по прогнозу серы (Hybrid sulfur-only blend)",
-        "Рассчитана только сера. Остальные свойства смеси здесь не подтверждаются."
-        if view.status == "ready"
-        else view.message,
+        "Условное смешение по прогнозу серы",
+        "Рассчитана только сера. Остальные свойства смеси здесь не подтверждаются.",
+        "Связь потока между установками остаётся модельным допущением.",
         "",
-        f"Статус расчёта: {STATUS_RU.get(view.status, view.status)}",
-        f"Сценарий: {view.scenario_id}",
-        f"Модель: {view.model_id or '—'}",
-        f"Состояние: {view.source_state_id or '—'}",
-        f"Компонент A, сера point: {_format_value(view.component_sulfur_point)}",
-        f"Компонент A, сера upper: {_format_value(view.component_sulfur_upper)}",
-        f"Смесь, сера point: {_format_value(view.blend_sulfur_point)}",
-        f"Смесь, сера upper: {_format_value(view.blend_sulfur_upper)}",
+        f"Компонент A, прогноз серы: {_format_value(view.component_sulfur_point)}",
+        f"Компонент A, верхняя оценка: {_format_value(view.component_sulfur_upper)}",
+        f"Смесь, расчётная сера: {_format_value(view.blend_sulfur_point)}",
+        f"Смесь, верхняя оценка: {_format_value(view.blend_sulfur_upper)}",
         "Проверка ограничения серы: "
         + STATUS_RU.get(view.constraint_status, view.constraint_status),
     ]
     if view.reason_codes:
-        rows.append("Коды причин: " + ", ".join(view.reason_codes))
-    if view.assumptions:
-        rows.append("Допущения: " + " | ".join(view.assumptions))
+        rows.append("Ограничения вывода: " + reasons_text(list(view.reason_codes)))
+    rows.append("Полные допущения сохраняются в экспорте результата.")
     return "\n".join(rows)
+
+
+def format_journal_payload(payload: dict[str, object]) -> str:
+    """Give old and new journal entries the same readable default view."""
+    try:
+        result = Recommendation.model_validate(payload)
+    except (TypeError, ValueError):
+        return "Не удалось прочитать результат запуска. Проверьте технический файл result.json."
+    scenario_name = next(
+        (
+            label
+            for label, scenario_id in SCENARIO_LABELS.items()
+            if scenario_id == result.scenario_id
+        ),
+        "Изменённая модельная смесь"
+        if result.scenario_id.endswith("_what_if")
+        else "Исторический расчёт",
+    )
+    status = (
+        {
+            RecommendationStatus.RECOMMEND: "выбран модельный вариант",
+            RecommendationStatus.HOLD: "сохранена текущая смесь",
+            RecommendationStatus.ABSTAIN: "вариант не выбран",
+        }[result.status]
+        if result.mode.value == "model_demo"
+        else STATUS_RU.get(result.status.value, "требует проверки")
+    )
+    rows = [
+        f"Результат: {status[0].upper() + status[1:]}",
+        "",
+        f"Сценарий: {scenario_name}",
+        f"Момент данных: {result.as_of.isoformat()}",
+    ]
+    baseline = result.baseline
+    selected = result.selected
+    _, _, baseline_upper = _metric(baseline, "sulfur")
+    _, _, selected_upper = _metric(selected, "sulfur")
+    if baseline_upper is not None:
+        rows.append(f"Текущая сера, верхняя оценка: {_format_value(baseline_upper)}")
+    if selected_upper is not None:
+        rows.append(f"Выбранная смесь, верхняя оценка: {_format_value(selected_upper)}")
+    if selected is not None and selected.candidate.blend_mass_fractions:
+        recipe = [
+            f"{component}: {_format_value(fraction * 100, '%')}"
+            for component, fraction in sorted(selected.candidate.blend_mass_fractions.items())
+        ]
+        recipe.append(
+            f"присадка: {_format_value(selected.candidate.additive_mass_fraction * 100, '%')}"
+        )
+        rows.append("Рецептура: " + "; ".join(recipe))
+    if result.reason_codes:
+        rows.append("Причины при проверке вариантов:")
+        rows.extend(
+            f"• {text}" for text in dict.fromkeys(reason_text(code) for code in result.reason_codes)
+        )
+    elif result.status is RecommendationStatus.HOLD:
+        rows.append("Почему: текущая рецептура проходит проверки; изменение не требуется.")
+    rows.extend(
+        (
+            "",
+            "Модельный результат не меняет уставки оборудования.",
+            "Исходные расчёты и коды сохранены в технических файлах запуска.",
+        )
+    )
+    return "\n".join(rows)
+
+
+def format_alternatives(result: Recommendation | None) -> str:
+    """Describe feasible recipes by their fractions and checked quality."""
+    if result is None or not result.alternatives:
+        return "Других допустимых вариантов нет."
+    rows = [
+        "Другие рецептуры, прошедшие модельные проверки:",
+        "Выбор учитывает риск, производительность и стоимость; "
+        "минимум серы не всегда лучший вариант.",
+    ]
+    for index, alternative in enumerate(result.alternatives, start=1):
+        shares = [
+            f"компонент {name} — {_format_value(share * 100, '%')}"
+            for name, share in sorted(alternative.candidate.blend_mass_fractions.items())
+        ]
+        shares.append(
+            f"присадка — {_format_value(alternative.candidate.additive_mass_fraction * 100, '%')}"
+        )
+        _, _, sulfur_upper = _metric(alternative, "sulfur")
+        _, _, t95_upper = _metric(alternative, "t95")
+        _, cetane_lower, _ = _metric(alternative, "cetane_number")
+        risk, _, _ = _metric(alternative, "risk_index")
+        cost, _, _ = _metric(alternative, "cost_proxy")
+        rows.extend(
+            (
+                "",
+                f"Вариант {index}: " + "; ".join(shares),
+                "Верхняя оценка серы: " + _format_value(sulfur_upper),
+                "T95 сверху: "
+                + _format_value(t95_upper, "°C")
+                + "; цетановое снизу: "
+                + _format_value(cetane_lower, "ед."),
+                "Модельный риск: "
+                + _format_value(risk, "")
+                + "; стоимостной индекс: "
+                + _format_value(cost, ""),
+            )
+        )
+    return "\n".join(rows)
+
+
+def format_state_summary(state: ProcessState) -> str:
+    """Summarize available historical inputs without dumping every signal."""
+    signals = tuple(state.signals.values())
+    fresh = sum(signal.fresh for signal in signals)
+    missing = sum(signal.selected is None for signal in signals)
+    stale = len(signals) - fresh - missing
+    return "\n".join(
+        (
+            "Историческое состояние собрано",
+            "",
+            f"Момент данных: {state.as_of.isoformat()}",
+            f"Сигналов: {len(signals)} · свежих: {fresh} · "
+            f"устаревших: {stale} · отсутствуют: {missing}",
+            f"Замечаний к данным: {len(state.issues)}",
+            "Состояние доступно только для чтения. Прогноз и действия здесь не рассчитываются.",
+        )
+    )
+
+
+def format_lims_correction_payload(payload: dict[str, object]) -> str:
+    """Show the validation gate and held-out audit of delayed LIMS correction."""
+    report = payload.get("report")
+    if not isinstance(report, dict):
+        return "Отчёт коррекции недоступен. Проверьте выбранные данные и модель."
+
+    def metric(key: str) -> str:
+        value = report.get(key)
+        return _format_value(value if isinstance(value, (int, float)) else None)
+
+    coverage = report.get("validation_upper_coverage")
+    coverage_text = (
+        f"{coverage * 100:.1f}".replace(".", ",") + " %"
+        if isinstance(coverage, (int, float))
+        else "—"
+    )
+    eligible = report.get("promotion_eligible") is True
+    return "\n".join(
+        (
+            "Проверка лабораторной коррекции",
+            "Коррекция исследовательская; основная модель приложения не меняется.",
+            "",
+            "Допуск к теневой проверке: "
+            + ("да, по валидации" if eligible else "нет, критерий не пройден"),
+            f"Ошибка исходного прогноза на валидации: {metric('validation_pak_point_mae')}",
+            f"Ошибка с коррекцией на валидации: {metric('validation_corrected_mae')}",
+            f"Покрытие верхней оценки на валидации: {coverage_text}",
+            "",
+            f"Отложенный тест: {report.get('test_rows', '—')} наблюдений.",
+            f"Ошибка исходного прогноза: {metric('pak_point_mae')}",
+            f"Ошибка с коррекцией: {metric('corrected_mae')}",
+            "Тест не использовался для выбора модели."
+            if report.get("test_used_for_selection") is False
+            else "Проверьте порядок выбора модели по техническому отчёту.",
+        )
+    )
 
 
 class PetrolCodeApp(tk.Tk):
@@ -863,10 +1055,13 @@ class PetrolCodeApp(tk.Tk):
         )
         forecast_count = len(context.forecast_artifacts)
         action_count = len(context.action_artifacts)
-        dataset_text = "dataset найден" if context.latest_dataset else "dataset отсутствует"
+        dataset_text = "данные выбраны" if context.latest_dataset else "данные не найдены"
         tk.Label(
             card,
-            text=f"{dataset_text} · forecast {forecast_count} · action {action_count}",
+            text=(
+                f"{dataset_text} · моделей прогноза: {forecast_count} · "
+                f"моделей эффекта действий: {action_count}"
+            ),
             bg=SURFACE,
             fg=TEXT,
             font=("Segoe UI", 11, "bold"),
@@ -874,8 +1069,8 @@ class PetrolCodeApp(tk.Tk):
         tk.Label(
             card,
             text=(
-                "Forecast работает read-only; actionable совет включается только "
-                "verified action artifact."
+                "Исторический прогноз доступен только для просмотра. Советы по реальным "
+                "уставкам отключены без отдельно проверенной модели их эффекта."
             ),
             bg=SURFACE,
             fg=MUTED,
@@ -944,7 +1139,7 @@ class PetrolCodeApp(tk.Tk):
         right = tk.Frame(inner, bg=SURFACE)
         right.pack(side="left", fill="x", expand=True)
         self._field(left, "Исторические данные", dataset_var)
-        self._field(right, "Момент данных (ISO с timezone)", as_of_var)
+        self._field(right, "Момент данных (ISO, с часовым поясом)", as_of_var)
         content = tk.Frame(page, bg=BG)
         content.pack(fill="both", expand=True)
 
@@ -1012,7 +1207,7 @@ class PetrolCodeApp(tk.Tk):
         )
         for key, title, width in (
             ("group", "Группа", 150),
-            ("signal", "Signal", 120),
+            ("signal", "Тег", 120),
             ("label", "Смысл", 310),
             ("value", "Значение", 120),
             ("source", "Источник", 95),
@@ -1036,9 +1231,9 @@ class PetrolCodeApp(tk.Tk):
                     row.signal_id,
                     row.label,
                     row.value_text,
-                    row.source,
+                    SOURCE_RU.get(row.source, row.source),
                     age,
-                    row.freshness,
+                    FRESHNESS_RU[row.freshness],
                     issue,
                 ),
                 tags=(self._stage_tone(row.freshness),),
@@ -1371,7 +1566,7 @@ class PetrolCodeApp(tk.Tk):
         def settings(parent: tk.Misc) -> None:
             self._field(parent, "Исторические данные", dataset_var)
             self._field(parent, "Прогноз серы", model_var)
-            self._field(parent, "Артефакт действий (не используется)", action_var)
+            self._field(parent, "Модель эффекта действий (не используется)", action_var)
 
         self._accordion(page, "Дополнительные настройки данных и модели", settings).pack(
             fill="x", pady=(0, 10)
@@ -1425,7 +1620,7 @@ class PetrolCodeApp(tk.Tk):
             fg=TEXT,
             bd=0,
             wrap="word",
-            font=("Consolas", 10),
+            font=("Segoe UI", 11),
             padx=14,
             pady=10,
         )
@@ -1508,7 +1703,7 @@ class PetrolCodeApp(tk.Tk):
                 start = datetime.fromisoformat(as_of_var.get().replace("Z", "+00:00"))
                 end = datetime.fromisoformat(interval_to_var.get().replace("Z", "+00:00"))
                 if start.tzinfo is None or end.tzinfo is None:
-                    raise ValueError("обе границы интервала должны содержать timezone")
+                    raise ValueError("введите обе границы с часовым поясом")
             except (TypeError, ValueError) as exc:
                 self._history_interval_text = f"Ошибка ввода интервала: {exc}"
                 summary.set(self._history_interval_text)
@@ -1639,7 +1834,7 @@ class PetrolCodeApp(tk.Tk):
         panel.pack(fill="x", pady=(16, 0))
         tk.Label(
             panel,
-            text="Hybrid: АВТ → гидроочистка → смесь",
+            text="Условная смесь: АВТ → гидроочистка → смесь",
             bg=SURFACE,
             fg=TEXT,
             font=("Segoe UI", 15, "bold"),
@@ -1647,8 +1842,8 @@ class PetrolCodeApp(tk.Tk):
         tk.Label(
             panel,
             text=(
-                "Компонент A берётся только из history forecast. Если forecast недоступен, "
-                "UI не подставляет synthetic production-значение."
+                "Сера компонента A берётся из исторического прогноза. Если прогноз "
+                "недоступен, система не подставляет модельное значение."
             ),
             bg=SURFACE,
             fg=MUTED,
@@ -1671,7 +1866,7 @@ class PetrolCodeApp(tk.Tk):
         right.pack(side="left", fill="x", expand=True, padx=(10, 0))
         self._field(left, "Исторические данные", dataset_var)
         self._field(middle, "Прогноз серы", model_var)
-        self._field(right, "Момент данных (ISO с timezone)", as_of_var)
+        self._field(right, "Момент данных (ISO, с часовым поясом)", as_of_var)
         output = tk.Text(panel, height=10, bg="#FAFBFB", fg=TEXT, bd=0, wrap="word")
         output.pack(fill="x", padx=26, pady=(4, 16))
 
@@ -1712,17 +1907,17 @@ class PetrolCodeApp(tk.Tk):
 
         self._secondary_button(
             panel,
-            "Рассчитать hybrid",
+            "Рассчитать условную смесь",
             start_calculation,
         ).pack(anchor="e", padx=26, pady=(0, 16))
-        self._secondary_button(panel, "Экспортировать hybrid", self.export_hybrid_result).pack(
-            anchor="e", padx=26, pady=(0, 16)
-        )
+        self._secondary_button(
+            panel, "Экспортировать условную смесь", self.export_hybrid_result
+        ).pack(anchor="e", padx=26, pady=(0, 16))
         render(
             self._hybrid_view
             or UiHybridBlendView(
                 status="empty",
-                message="Hybrid не рассчитан.",
+                message="Условная смесь не рассчитана.",
                 scenario_id="hybrid_blend",
                 source_state_id=None,
                 model_id=None,
@@ -1863,7 +2058,7 @@ class PetrolCodeApp(tk.Tk):
         ).pack(fill="x", pady=(16, 8))
         self._accordion(
             page,
-            "Альтернативы и ход расчёта",
+            "Другие допустимые варианты",
             self._alternatives_content,
         ).pack(fill="x")
         self._render_hybrid_panel(page)
@@ -1995,7 +2190,7 @@ class PetrolCodeApp(tk.Tk):
             bd=0,
             highlightthickness=0,
             width=38,
-            font=("Consolas", 10),
+            font=("Segoe UI", 11),
         )
         listbox.grid(row=0, column=0, sticky="nsew", padx=(18, 0), pady=18)
         detail = tk.Text(
@@ -2014,14 +2209,20 @@ class PetrolCodeApp(tk.Tk):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 as_of = str(payload.get("as_of", "—"))[:19]
-                scenario = str(payload.get("scenario_id", "расчёт"))
-                status = str(payload.get("status", "—"))
+                scenario_id = str(payload.get("scenario_id", "расчёт"))
+                scenario = next(
+                    (label for label, code in SCENARIO_LABELS.items() if code == scenario_id),
+                    "Изменённая смесь" if scenario_id.endswith("_what_if") else "История",
+                )
+                status = STATUS_RU.get(str(payload.get("status", "")), "требует проверки")
                 run_id = str(payload.get("run_id", path.parent.name))[:8]
                 label = f"{as_of} · {scenario} · {status} · {run_id}"
             except (OSError, json.JSONDecodeError):
                 label = f"{path.parent.name} · повреждённая запись"
             labels.append(label)
             listbox.insert("end", label)
+
+        technical = tk.BooleanVar(value=False)
 
         def select(_: tk.Event[Any] | None = None) -> None:
             selection = listbox.curselection()
@@ -2036,28 +2237,34 @@ class PetrolCodeApp(tk.Tk):
                     if metadata_path.is_file()
                     else {}
                 )
-                summary = (
-                    f"Запуск: {payload.get('run_id', path.parent.name)}\n"
-                    f"Сценарий: {payload.get('scenario_id', '—')}\n"
-                    f"Момент данных: {payload.get('as_of', '—')}\n"
-                    f"Статус: {payload.get('status', '—')}\n"
-                    f"Модель: {payload.get('model_id', '—')}\n"
-                    f"Папка доказательств: {path.parent}\n\n"
-                    "Краткий результат:\n"
-                    f"{payload.get('explanation', '—')}\n\n"
-                    "Полный result.json:\n"
-                )
-                rendered = summary + json.dumps(payload, ensure_ascii=False, indent=2)
-                if metadata:
-                    rendered += "\n\nmetadata.json:\n" + json.dumps(
-                        metadata, ensure_ascii=False, indent=2
-                    )
+                if technical.get():
+                    rendered = "result.json:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+                    if metadata:
+                        rendered += "\n\nmetadata.json:\n" + json.dumps(
+                            metadata, ensure_ascii=False, indent=2
+                        )
+                else:
+                    rendered = format_journal_payload(payload) + f"\n\nПапка запуска: {path.parent}"
             except (OSError, json.JSONDecodeError) as exc:
                 rendered = f"Не удалось открыть текущий запуск: {exc}"
             detail.configure(state="normal")
             detail.delete("1.0", "end")
             detail.insert("1.0", rendered)
             detail.configure(state="disabled")
+
+        def toggle_technical() -> None:
+            technical.set(not technical.get())
+            technical_button.configure(
+                text="Показать понятный результат"
+                if technical.get()
+                else "Показать технический JSON"
+            )
+            select()
+
+        technical_button = self._secondary_button(
+            content, "Показать технический JSON", toggle_technical
+        )
+        technical_button.grid(row=1, column=1, sticky="e", padx=18, pady=(0, 14))
 
         listbox.bind("<<ListboxSelect>>", select)
         if paths:
@@ -2108,28 +2315,20 @@ class PetrolCodeApp(tk.Tk):
             text=text,
             bg=SURFACE,
             fg=MUTED,
-            wraplength=1250,
+            wraplength=900,
             justify="left",
+            font=("Segoe UI", 11),
         ).pack(anchor="w")
 
     def _alternatives_content(self, parent: tk.Frame) -> None:
-        if self._result is None or not self._result.alternatives:
-            self._text_content(parent, "Допустимых альтернатив нет.")
-            return
-        lines = []
-        for alternative in self._result.alternatives:
-            value, _, upper = _metric(alternative, "sulfur")
-            lines.append(
-                f"{alternative.candidate.id}: point {_format_value(value)}, "
-                f"upper {_format_value(upper)}"
-            )
-        self._text_content(parent, "\n".join(lines))
+        self._text_content(parent, format_alternatives(self._result))
 
     def _data_tools_content(self, parent: tk.Frame) -> None:
         tk.Label(
             parent,
             text=(
-                "Доступны те же безопасные операции, что и в CLI. Подготовка полного архива "
+                "Доступны те же безопасные операции, что и в командной строке. "
+                "Подготовка полного архива "
                 "может занять несколько минут."
             ),
             bg=SURFACE,
@@ -2145,7 +2344,7 @@ class PetrolCodeApp(tk.Tk):
         self._secondary_button(row, "Подготовить данные", self.prepare_data).pack(
             side="left", padx=10
         )
-        self._secondary_button(row, "Собрать historical state", self.open_state_dialog).pack(
+        self._secondary_button(row, "Собрать историческое состояние", self.open_state_dialog).pack(
             side="left"
         )
         self._secondary_button(row, "Прогноз серы", self.open_history_forecast_dialog).pack(
@@ -2266,14 +2465,14 @@ class PetrolCodeApp(tk.Tk):
     def export_hybrid_result(self) -> None:
         if self._hybrid_view is None or self._hybrid_view.status == "empty":
             messagebox.showinfo(
-                "Нет hybrid-результата",
+                "Нет результата условной смеси",
                 "Сначала выполните условное смешение по прогнозу серы.",
                 parent=self,
             )
             return
         destination = filedialog.asksaveasfilename(
             parent=self,
-            title="Сохранить hybrid-результат",
+            title="Сохранить результат условной смеси",
             defaultextension=".json",
             filetypes=(("JSON", "*.json"),),
             initialfile="neftekod-hybrid-result.json",
@@ -2321,14 +2520,14 @@ class PetrolCodeApp(tk.Tk):
         messagebox.showinfo(
             "Конфигурация корректна",
             f"Теги: {result['tags']}\nСценарии: {result['scenarios']}\n"
-            f"Demo fixtures: {result['model_demo_fixtures']}",
+            f"Примеров для проверки: {result['model_demo_fixtures']}",
             parent=self,
         )
 
     def prepare_data(self) -> None:
         if not messagebox.askokcancel(
             "Подготовить данные",
-            "Прочитать полный архив materials и создать локальный prepared dataset?",
+            "Прочитать исходные материалы и создать локальный подготовленный набор данных?",
             parent=self,
         ):
             return
@@ -2348,7 +2547,10 @@ class PetrolCodeApp(tk.Tk):
         self.status_var.set("Данные подготовлены")
         messagebox.showinfo(
             "Данные подготовлены",
-            json.dumps(result, ensure_ascii=False, indent=2),
+            "Набор данных создан.\n"
+            f"Идентификатор: {result.get('dataset_id', '—')}\n"
+            f"Замечаний к исходным данным: {result.get('issues_count', '—')}\n"
+            f"Папка: {result.get('dataset_path', '—')}",
             parent=self,
         )
 
@@ -2358,8 +2560,8 @@ class PetrolCodeApp(tk.Tk):
 
     def open_state_dialog(self) -> None:
         dialog = tk.Toplevel(self)
-        dialog.title("Собрать historical state")
-        dialog.geometry("680x330")
+        dialog.title("Историческое состояние")
+        dialog.geometry("680x390")
         dialog.configure(bg=BG)
         dialog.transient(self)
         fields = tk.Frame(dialog, bg=BG)
@@ -2369,25 +2571,59 @@ class PetrolCodeApp(tk.Tk):
         tk.Entry(fields, textvariable=dataset_var, bg=SURFACE, fg=TEXT, bd=1).pack(
             fill="x", pady=(4, 14), ipady=7
         )
-        tk.Label(fields, text="Момент данных (ISO с timezone)", bg=BG, fg=TEXT).pack(anchor="w")
+        tk.Label(fields, text="Момент данных (ISO, с часовым поясом)", bg=BG, fg=TEXT).pack(
+            anchor="w"
+        )
         as_of_var = self._shared_as_of
         tk.Entry(fields, textvariable=as_of_var, bg=SURFACE, fg=TEXT, bd=1).pack(
             fill="x", pady=(4, 14), ipady=7
         )
         output = tk.Text(fields, height=5, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
         output.pack(fill="both", expand=True)
+        current_state: ProcessState | None = None
+        technical = tk.BooleanVar(value=False)
 
-        def build() -> None:
-            try:
-                timestamp = datetime.fromisoformat(as_of_var.get().replace("Z", "+00:00"))
-                state = build_state_command(dataset_var.get(), "history", timestamp)
-                text = state.model_dump_json(indent=2)
-            except Exception as exc:
-                text = f"Ошибка: {exc}"
+        def render(text: str) -> None:
             output.delete("1.0", "end")
             output.insert("1.0", text)
 
-        self._primary_button(fields, "Собрать состояние", build).pack(anchor="e", pady=(12, 0))
+        def build() -> None:
+            nonlocal current_state
+            try:
+                timestamp = datetime.fromisoformat(as_of_var.get().replace("Z", "+00:00"))
+                current_state = build_state_command(dataset_var.get(), "history", timestamp)
+                text = (
+                    current_state.model_dump_json(indent=2)
+                    if technical.get()
+                    else format_state_summary(current_state)
+                )
+            except Exception as exc:
+                current_state = None
+                text = f"Ошибка: {exc}"
+            render(text)
+
+        def toggle_technical() -> None:
+            if current_state is None:
+                return
+            technical.set(not technical.get())
+            technical_button.configure(
+                text="Показать понятный результат"
+                if technical.get()
+                else "Показать технический JSON"
+            )
+            render(
+                current_state.model_dump_json(indent=2)
+                if technical.get()
+                else format_state_summary(current_state)
+            )
+
+        buttons = tk.Frame(fields, bg=BG)
+        buttons.pack(fill="x", pady=(12, 0))
+        technical_button = self._secondary_button(
+            buttons, "Показать технический JSON", toggle_technical
+        )
+        technical_button.pack(side="left")
+        self._primary_button(buttons, "Собрать состояние", build).pack(side="right")
 
     def open_action_shadow_dialog(self) -> None:
         """Show a historical P8/F19 scenario without presenting it as a recommendation."""
@@ -2406,8 +2642,8 @@ class PetrolCodeApp(tk.Tk):
         at_var = self._shared_as_of
         for label, variable in (
             ("Исторические данные", dataset_var),
-            ("Исследовательский action-артефакт", model_var),
-            ("Время состояния (ISO с timezone)", at_var),
+            ("Исследовательская модель эффекта действий", model_var),
+            ("Время состояния (ISO, с часовым поясом)", at_var),
             ("Изменение тега в его исходной единице", delta_var),
         ):
             tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
@@ -2445,7 +2681,7 @@ class PetrolCodeApp(tk.Tk):
             try:
                 at = datetime.fromisoformat(values["at_var"].replace("Z", "+00:00"))
                 if at.tzinfo is None:
-                    raise ValueError("время должно содержать timezone")
+                    raise ValueError("введите время с часовым поясом")
                 result = action_shadow_estimate_command(
                     values["dataset_var"],
                     values["model_var"],
@@ -2498,10 +2734,10 @@ class PetrolCodeApp(tk.Tk):
             ("Исторические данные", dataset_var),
             ("Прогноз серы", model_var),
             (
-                "Проверенный action-артефакт (необязательно)",
+                "Проверенная модель эффекта действий (необязательно)",
                 action_model_var,
             ),
-            ("Время состояния (ISO с timezone)", at_var),
+            ("Время состояния (ISO, с часовым поясом)", at_var),
         ):
             tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
             tk.Entry(fields, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1).pack(
@@ -2511,7 +2747,8 @@ class PetrolCodeApp(tk.Tk):
             fields,
             text=(
                 "Прогноз использует только доступные к выбранному времени данные. "
-                "Без verified action artifact это предупреждение, а не совет по уставкам."
+                "Без отдельно проверенной модели эффекта действий это предупреждение, "
+                "а не совет по уставкам."
             ),
             bg=BG,
             fg=MUTED,
@@ -2529,7 +2766,7 @@ class PetrolCodeApp(tk.Tk):
             try:
                 at = datetime.fromisoformat(values["at_var"].replace("Z", "+00:00"))
                 if at.tzinfo is None:
-                    raise ValueError("время должно содержать timezone")
+                    raise ValueError("введите время с часовым поясом")
                 action_model = values["action_model_var"].strip() or None
                 view = ui_history_snapshot(
                     values["dataset_var"],
@@ -2574,8 +2811,8 @@ class PetrolCodeApp(tk.Tk):
         at_var = self._shared_as_of
         for label, variable in (
             ("Исторические данные", dataset_var),
-            ("Shadow-артефакт v2", model_var),
-            ("Время состояния (ISO с timezone)", at_var),
+            ("Исследовательская модель v2", model_var),
+            ("Время состояния (ISO, с часовым поясом)", at_var),
         ):
             tk.Label(fields, text=label, bg=BG, fg=TEXT).pack(anchor="w")
             tk.Entry(fields, textvariable=variable, bg=SURFACE, fg=TEXT, bd=1).pack(
@@ -2585,7 +2822,8 @@ class PetrolCodeApp(tk.Tk):
             fields,
             text=(
                 "Показывает вероятность начала эпизода и верхнюю границу серы на нескольких "
-                "горизонтах. Артефакт работает только в shadow-режиме: это предупреждение, "
+                "горизонтах. Модель работает только в исследовательском режиме: "
+                "это предупреждение, "
                 "а не совет и не изменение уставок."
             ),
             bg=BG,
@@ -2604,7 +2842,7 @@ class PetrolCodeApp(tk.Tk):
             try:
                 at = datetime.fromisoformat(values["at_var"].replace("Z", "+00:00"))
                 if at.tzinfo is None:
-                    raise ValueError("время должно содержать timezone")
+                    raise ValueError("введите время с часовым поясом")
                 result = replay_v2_shadow_command(values["dataset_var"], values["model_var"], at)
                 text = format_v2_forecast_payload(result)
             except Exception as exc:
@@ -2613,7 +2851,7 @@ class PetrolCodeApp(tk.Tk):
 
         self._primary_button(
             fields,
-            "Рассчитать episode forecast",
+            "Рассчитать прогноз превышения",
             lambda: threading.Thread(
                 target=calculate,
                 args=(
@@ -2653,8 +2891,8 @@ class PetrolCodeApp(tk.Tk):
             fields,
             text=(
                 "ЛИМС публикуется с задержкой и используется отдельно от оперативного ПАК. "
-                "Результат показывает качество коррекции; только прошедшая gate-коррекция "
-                "может стать кандидатом для shadow-периода."
+                "Результат показывает качество коррекции. Только прошедшую проверку "
+                "коррекцию можно рассматривать для теневого испытания."
             ),
             bg=BG,
             fg=MUTED,
@@ -2663,30 +2901,57 @@ class PetrolCodeApp(tk.Tk):
         ).pack(anchor="w", pady=(0, 10))
         output = tk.Text(fields, height=14, bg=SURFACE, fg=TEXT, bd=1, wrap="word")
         output.pack(fill="both", expand=True)
+        current_result: dict[str, object] | None = None
+        technical = tk.BooleanVar(value=False)
 
         def render(text: str) -> None:
             output.delete("1.0", "end")
             output.insert("1.0", text)
+
+        def render_result(result: dict[str, object]) -> None:
+            nonlocal current_result
+            current_result = result
+            render(
+                json.dumps(result, ensure_ascii=False, indent=2)
+                if technical.get()
+                else format_lims_correction_payload(result)
+            )
+
+        def toggle_technical() -> None:
+            if current_result is None:
+                return
+            technical.set(not technical.get())
+            technical_button.configure(
+                text="Показать понятный результат"
+                if technical.get()
+                else "Показать технический JSON"
+            )
+            render_result(current_result)
 
         def calculate(values: dict[str, str]) -> None:
             try:
                 result = evaluate_lims_correction_command(
                     values["dataset_var"], values["model_var"]
                 )
-                text = json.dumps(result, ensure_ascii=False, indent=2)
+                self._schedule_dialog_render(dialog, lambda _: render_result(result), "")
             except Exception as exc:
-                text = f"Ошибка: {exc}"
-            self._schedule_dialog_render(dialog, render, text)
+                self._schedule_dialog_render(dialog, render, f"Ошибка: {exc}")
 
+        buttons = tk.Frame(fields, bg=BG)
+        buttons.pack(fill="x", pady=(12, 0))
+        technical_button = self._secondary_button(
+            buttons, "Показать технический JSON", toggle_technical
+        )
+        technical_button.pack(side="left")
         self._primary_button(
-            fields,
-            "Оценить LIMS-коррекцию",
+            buttons,
+            "Оценить коррекцию по ЛИМС",
             lambda: threading.Thread(
                 target=calculate,
                 args=({"dataset_var": dataset_var.get(), "model_var": model_var.get()},),
                 daemon=True,
             ).start(),
-        ).pack(anchor="e", pady=(12, 0))
+        ).pack(side="right")
 
 
 def smoke_snapshot(scenario_id: str) -> dict[str, Any]:

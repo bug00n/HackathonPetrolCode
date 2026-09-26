@@ -87,7 +87,8 @@ def test_material_improvement_does_not_claim_baseline_quality_failure(
     assert result.baseline is not None and result.baseline.feasible
     assert "MATERIAL_IMPROVEMENT" in result.reason_codes
     assert "текущий режим проходит ограничения" in result.explanation
-    assert "cost_proxy" in result.explanation
+    assert "стоимост" in result.explanation
+    assert "reason=" not in result.explanation
     assert "проходит проверки" in view.action_detail
 
 
