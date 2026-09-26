@@ -2,7 +2,7 @@
 
 Локальное приложение поддержки технологических решений: модельные рецептуры дизельного топлива, исторический прогноз серы и объяснимые проверки ограничений.
 
-[Скачать Windows-версию](https://github.com/bug00n/HackathonPetrolCode/releases/latest/download/Neftekod-Windows-x64.zip) · [Все файлы релиза](https://github.com/bug00n/HackathonPetrolCode/releases/latest) · [Сценарий защиты](docs/DEMO_SCRIPT.md)
+[Скачать Windows-версию](https://github.com/bug00n/HackathonPetrolCode/releases/download/v1.3.6/Neftekod-Windows-x64.zip) · [Все файлы релиза](https://github.com/bug00n/HackathonPetrolCode/releases/tag/v1.3.6) · [Сценарий защиты](docs/DEMO_SCRIPT.md)
 
 ## Запуск за три шага
 
@@ -16,7 +16,7 @@
 
 ## Что показать первым
 
-В приложении на «Обзоре» уже рассчитан сценарий **«Повышенная сера»**. Откройте **«Смесь»**: верхняя модельная оценка серы меняется с 14,058 до 9,306 мг/кг при пределе 10 мг/кг. Нажмите **«Настроить смесь»**, чтобы изменить долю, сохранить важное поле отметкой «Не менять» и сравнить допустимые варианты.
+В приложении на «Обзоре» уже рассчитан сценарий **«Повышенная сера»**. Откройте **«Смесь»**: верхняя модельная оценка серы меняется с 14,058 до 9,306 мг/кг при пределе 10 мг/кг. Нажмите **«Настроить смесь»**, чтобы изменить долю, сохранить важное поле отметкой «Не менять» и сравнить допустимые варианты. Если с введённой долей подходящей смеси нет, кнопка «Найти ближайшую допустимую» предложит изменить её.
 
 | Раздел | Что доступно |
 | --- | --- |
@@ -30,8 +30,8 @@
 
 ## Материалы для жюри
 
-- [Презентация](https://github.com/bug00n/HackathonPetrolCode/releases/latest/download/Neftekod_Presentation.pptx).
-- [Технический документ для жюри](https://github.com/bug00n/HackathonPetrolCode/releases/latest/download/Neftekod_Jury.docx).
+- [Презентация](https://github.com/bug00n/HackathonPetrolCode/releases/download/v1.3.6/Neftekod_Presentation.pptx).
+- [Технический документ для жюри](https://github.com/bug00n/HackathonPetrolCode/releases/download/v1.3.6/Neftekod_Jury.docx).
 - [Короткий сценарий показа, полная инструкция по UI и ответы на вопросы](docs/DEMO_SCRIPT.md).
 
 В готовом ZIP документы лежат в `docs/jury`. PPTX и DOCX можно скачать отдельно со страницы релиза.
