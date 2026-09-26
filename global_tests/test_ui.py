@@ -294,7 +294,7 @@ def release_context_root(tmp_path: Path) -> Path:
 def test_release_manifest_pins_one_live_context(release_context_root: Path) -> None:
     context = ui_data_module.discover_ui_context(release_context_root)
 
-    assert context.release_id == "neftekod-v1.2.0"
+    assert context.release_id == "neftekod-v1.3.0"
     assert context.latest_dataset is not None
     assert context.latest_dataset.endswith("66bdfcbb23b4")
     assert tuple(item.model_id for item in context.forecast_artifacts) == (

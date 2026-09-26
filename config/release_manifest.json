@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "release_id": "neftekod-v1.2.0",
+  "release_id": "neftekod-v1.3.0",
   "prepared_dataset": "data/processed/66bdfcbb23b4",
   "legacy_config_sha256": "00a45650caa0f415e78037d56bc49de7161f55f9eecd24675e8874d64efb63e2",
   "preparation_config_sha256": "7f8dab1f4befa7ed4d14108146d344eeeb4341711880144ad0195d163a55c4dd",
