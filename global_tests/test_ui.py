@@ -44,6 +44,8 @@ from source.ui import (
     history_replay_to_view,
     history_smoke_snapshot,
     journal_entries,
+    quality_comparison_rows,
+    recipe_comparison_rows,
     recommendation_to_view,
     ui_history_snapshot,
     ui_hybrid_snapshot,
@@ -230,12 +232,41 @@ def test_ui_exposes_complete_risk_recipe_and_quality_bounds(tmp_path: Path) -> N
     assert additive.actual == "1 %"
     assert additive.limit == "≤ 3 %"
 
+    recipe = {row[0]: row for row in recipe_comparison_rows(view)}
+    assert recipe["Компонент A"] == ("Компонент A", "69,3 %", "89,1 %", "+19,8 п.п.")
+    assert recipe["Компонент B"] == ("Компонент B", "29,7 %", "9,9 %", "-19,8 п.п.")
+    quality = {row[0]: row for row in quality_comparison_rows(view)}
+    assert len(quality) == 3
+    assert quality["Сера · верхняя, мг/кг"] == (
+        "Сера · верхняя, мг/кг",
+        "14,058",
+        "9,306",
+        "-4,752",
+        "≤ 10 мг/кг",
+    )
+
 
 def test_ui_keeps_missing_sulfur_unavailable(tmp_path: Path) -> None:
     _, view = _view("blend_missing", tmp_path)
 
     assert view.selected_upper is None
     assert view.action_title == "Требуется ручная проверка"
+    assert all(row[2] == "Не выбран" for row in quality_comparison_rows(view))
+    assert all(row[3] == "—" for row in recipe_comparison_rows(view))
+
+
+def test_ui_shows_model_risk_and_cost_tradeoff_side_by_side(tmp_path: Path) -> None:
+    _, view = _view("blend_tradeoff", tmp_path)
+    comparison = quality_comparison_rows(view)
+    assert [row[0] for row in comparison[:2]] == [
+        "Модельный риск, 0–1",
+        "Стоимость, усл. ед./т",
+    ]
+    rows = {row[0]: row for row in comparison}
+    assert rows["Модельный риск, 0–1"][1] == "0,8"
+    assert rows["Модельный риск, 0–1"][2] == "0,73"
+    assert rows["Стоимость, усл. ед./т"][1] == "1,99"
+    assert rows["Стоимость, усл. ед./т"][2] == "2,0395"
 
 
 def test_stage_snapshots_show_avt_and_hydrotreating_without_controls(tmp_path: Path) -> None:
@@ -300,7 +331,7 @@ def release_context_root(tmp_path: Path) -> Path:
 def test_release_manifest_pins_one_live_context(release_context_root: Path) -> None:
     context = ui_data_module.discover_ui_context(release_context_root)
 
-    assert context.release_id == "neftekod-v1.3.3"
+    assert context.release_id == "neftekod-v1.3.4"
     assert context.latest_dataset is not None
     assert context.latest_dataset.endswith("66bdfcbb23b4")
     assert tuple(item.model_id for item in context.forecast_artifacts) == (

@@ -102,6 +102,18 @@ SCENARIO_LABELS = {
     "Низкое цетановое число": "blend_cetane_risk",
     "Недостающие данные": "blend_missing",
 }
+SCENARIO_HELP = {
+    "Риск и стоимость": "Сравните снижение модельного риска с изменением стоимости смеси.",
+    "Нормальный режим": "Исходная смесь проходит проверки. Посмотрите, нужно ли её менять.",
+    "Повышенная сера": (
+        "Исходная смесь превышает предел серы. Сравните доли и качество до и после подбора."
+    ),
+    "Риск T95": "Исходная смесь превышает предел T95. Сравните доли и качество до и после подбора.",
+    "Низкое цетановое число": "Исходная смесь не достигает минимума цетанового числа.",
+    "Недостающие данные": (
+        "Нет обязательной оценки качества, поэтому модель не может выбрать смесь."
+    ),
+}
 
 PAGE_ALIASES = {"recommendation": "blend"}
 PAGE_CHOICES = (
@@ -129,6 +141,7 @@ class DashboardView:
     """Small UI projection derived exclusively from recommendation contracts."""
 
     status: str
+    scenario_id: str
     banner_title: str
     banner_detail: str
     action_title: str
@@ -141,6 +154,10 @@ class DashboardView:
     selected_t95_upper: float | None
     selected_cetane_lower: float | None
     selected_upper: float | None
+    baseline_risk: float | None
+    selected_risk: float | None
+    baseline_cost: float | None
+    selected_cost: float | None
     current_fractions: dict[str, float]
     proposed_fractions: dict[str, float]
     current_additive_fraction: float
@@ -246,9 +263,13 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
     baseline_value, _, baseline_upper = _metric(result.baseline, "sulfur")
     _, _, baseline_t95_upper = _metric(result.baseline, "t95")
     _, baseline_cetane_lower, _ = _metric(result.baseline, "cetane_number")
+    baseline_risk, _, _ = _metric(result.baseline, "risk_index")
+    baseline_cost, _, _ = _metric(result.baseline, "cost_proxy")
     selected_value, _, selected_upper = _metric(result.selected, "sulfur")
     _, _, selected_t95_upper = _metric(result.selected, "t95")
     _, selected_cetane_lower, _ = _metric(result.selected, "cetane_number")
+    selected_risk, _, _ = _metric(result.selected, "risk_index")
+    selected_cost, _, _ = _metric(result.selected, "cost_proxy")
     current = dict(scenario.current_blend_mass_fractions)
     proposed = dict(current)
     current_additive = scenario.current_additive_mass_fraction
@@ -260,8 +281,8 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
     if result.status is RecommendationStatus.RECOMMEND:
         changed = [key for key in proposed if proposed.get(key, 0.0) > current.get(key, 0.0) + 1e-9]
         component = changed[0] if changed else "смеси"
-        banner_title = "Доступен модельный вариант"
-        banner_detail = "Расчёт относится только к синтетическому сценарию блендинга."
+        banner_title = "Предложена другая рецептура"
+        banner_detail = "Ниже показано, какие доли и показатели меняются в модельном расчёте."
         action_title = f"Вариант: увеличить долю компонента {component}"
         action_detail = (
             "Текущая рецептура проходит проверки; вариант улучшает модельные критерии."
@@ -270,17 +291,20 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         )
     elif result.status is RecommendationStatus.HOLD:
         banner_title = "Изменение режима не требуется"
-        banner_detail = "Текущая модельная рецептура проходит доступные проверки."
+        banner_detail = "Текущая модельная рецептура проходит проверки; ниже видно сравнение."
         action_title = "Сохранить текущую рецептуру"
         action_detail = "Существенного улучшения относительно текущей смеси не найдено."
     else:
         banner_title = "Рекомендация недоступна"
-        banner_detail = "Обязательные данные или консервативная оценка качества отсутствуют."
+        banner_detail = (
+            "Обязательных данных не хватает: сравнение покажет исходные значения без варианта."
+        )
         action_title = "Требуется ручная проверка"
         action_detail = "Система не подставляет неизвестные значения и не выбирает действие."
 
     return DashboardView(
         status=result.status.value,
+        scenario_id=scenario.id,
         banner_title=banner_title,
         banner_detail=banner_detail,
         action_title=action_title,
@@ -293,6 +317,10 @@ def recommendation_to_view(result: Recommendation, scenario: ScenarioConfig) -> 
         selected_t95_upper=selected_t95_upper,
         selected_cetane_lower=selected_cetane_lower,
         selected_upper=selected_upper,
+        baseline_risk=baseline_risk,
+        selected_risk=selected_risk,
+        baseline_cost=baseline_cost,
+        selected_cost=selected_cost,
         current_fractions=current,
         proposed_fractions=proposed,
         current_additive_fraction=current_additive,
@@ -328,6 +356,82 @@ def _format_value(value: float | None, unit: str = "мг/кг") -> str:
         return "—"
     rendered = f"{value:.4f}".rstrip("0").rstrip(".").replace(".", ",")
     return f"{rendered} {unit}".strip()
+
+
+def _format_delta(before: float | None, after: float | None, unit: str = "") -> str:
+    if before is None or after is None:
+        return "—"
+    difference = after - before
+    if abs(difference) < 0.00005:
+        difference = 0.0
+    return ("+" if difference > 0 else "") + _format_value(difference, unit)
+
+
+def recipe_comparison_rows(view: DashboardView) -> tuple[tuple[str, str, str, str], ...]:
+    """Show the input recipe beside the selected recipe, without implying a time series."""
+    rows = []
+    for component in sorted(view.current_fractions):
+        before = view.current_fractions[component] * 100
+        after = view.proposed_fractions.get(component, 0.0) * 100
+        rows.append(
+            (
+                f"Компонент {component}",
+                _format_value(before, "%"),
+                _format_value(after, "%") if view.status != "abstain" else "Не выбран",
+                _format_delta(before, after, "п.п.") if view.status != "abstain" else "—",
+            )
+        )
+    before = view.current_additive_fraction * 100
+    after = view.proposed_additive_fraction * 100
+    rows.append(
+        (
+            "Присадка",
+            _format_value(before, "%"),
+            _format_value(after, "%") if view.status != "abstain" else "Не выбрана",
+            _format_delta(before, after, "п.п.") if view.status != "abstain" else "—",
+        )
+    )
+    return tuple(rows)
+
+
+def quality_comparison_rows(view: DashboardView) -> tuple[tuple[str, str, str, str, str], ...]:
+    """Compare the same conservative estimates used by scenario quality checks."""
+    limits = {row.name: row.limit for row in view.constraints}
+    quality_values: tuple[tuple[str, str, float | None, float | None], ...] = (
+        ("Сера · верхняя, мг/кг", "Сера", view.baseline_upper, view.selected_upper),
+        ("T95 · верхняя, °C", "T95", view.baseline_t95_upper, view.selected_t95_upper),
+        (
+            "Цетановое · нижняя, ед.",
+            "Цетановое число",
+            view.baseline_cetane_lower,
+            view.selected_cetane_lower,
+        ),
+    )
+    if view.scenario_id.startswith("blend_tradeoff"):
+        values = (
+            ("Модельный риск, 0–1", "", view.baseline_risk, view.selected_risk),
+            ("Стоимость, усл. ед./т", "", view.baseline_cost, view.selected_cost),
+            *quality_values,
+        )
+    else:
+        values = quality_values
+    focus = {
+        "blend_t95_risk": ("T95 · верхняя, °C",),
+        "blend_cetane_risk": ("Цетановое · нижняя, ед.",),
+    }.get(view.scenario_id, ())
+    values = tuple(
+        sorted(values, key=lambda row: focus.index(row[0]) if row[0] in focus else len(focus))
+    )
+    return tuple(
+        (
+            label,
+            _format_value(before, ""),
+            _format_value(after, "") if view.status != "abstain" else "Не выбран",
+            _format_delta(before, after) if view.status != "abstain" else "—",
+            limits.get(key, "—"),
+        )
+        for label, key, before, after in values
+    )
 
 
 def format_action_shadow_payload(payload: dict[str, object]) -> str:
@@ -1255,7 +1359,7 @@ class PetrolCodeApp(tk.Tk):
         ).pack(anchor="w")
         tk.Label(
             title,
-            text="Выберите синтетический сценарий или настройте свою смесь",
+            text="Сравните текущую смесь с модельным вариантом: доли, качество и разницу",
             bg=BG,
             fg=MUTED,
             font=("Segoe UI", 12),
@@ -1274,12 +1378,29 @@ class PetrolCodeApp(tk.Tk):
             style="Petrol.TCombobox",
         )
         scenario.pack(side="left", padx=(0, 18))
-        tk.Label(controls, text="Горизонт: 60 мин", bg=SURFACE, fg=MUTED).pack(side="left")
+        tk.Label(controls, text="Сравнение рецептур", bg=SURFACE, fg=MUTED).pack(side="left")
         button = self._primary_button(controls, "Рассчитать", self.calculate)
         button.pack(side="right", padx=(8, 18))
         self._secondary_button(controls, "Настроить смесь", self.open_what_if_dialog).pack(
             side="right", padx=(8, 0)
         )
+        scenario_help = tk.StringVar(value=SCENARIO_HELP[self.scenario_var.get()])
+        scenario.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: scenario_help.set(
+                SCENARIO_HELP[self.scenario_var.get()]
+                + " Нажмите «Рассчитать», чтобы обновить сравнение."
+            ),
+        )
+        tk.Label(
+            page,
+            textvariable=scenario_help,
+            bg=BG,
+            fg=MUTED,
+            font=("Segoe UI", 10),
+            wraplength=1000,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 0))
 
         view = self._view()
         banner_colors = {
@@ -1327,12 +1448,12 @@ class PetrolCodeApp(tk.Tk):
         main.grid_columnconfigure(0, weight=4)
         main.grid_columnconfigure(1, weight=1, minsize=260)
         main.grid_rowconfigure(0, weight=1)
-        chart_side = tk.Frame(main, bg=SURFACE)
-        chart_side.grid(row=0, column=0, sticky="nsew")
+        comparison = tk.Frame(main, bg=SURFACE)
+        comparison.grid(row=0, column=0, sticky="nsew")
         info = tk.Frame(main, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1)
         info.grid(row=0, column=1, sticky="nsew")
-        self._render_kpis(chart_side, view)
-        self._render_chart(chart_side, view)
+        self._render_recipe_comparison(comparison, view)
+        self._render_quality_comparison(comparison, view)
         self._render_info(info, view)
         self._render_stage_cards(page)
 
@@ -1342,129 +1463,109 @@ class PetrolCodeApp(tk.Tk):
             self._data_tools_content,
         ).pack(fill="x")
 
-    def _render_kpis(self, parent: tk.Frame, view: DashboardView | None) -> None:
-        strip = tk.Frame(parent, bg=SURFACE)
-        strip.pack(fill="x", padx=26, pady=(18, 12))
-        values = (
-            ("Сера · верхняя", _format_value(view.selected_upper) if view else "—"),
-            (
-                "T95 · верхняя",
-                _format_value(view.selected_t95_upper, "°C") if view else "—",
-            ),
-            (
-                "Цетановое · нижняя",
-                _format_value(view.selected_cetane_lower, "ед.") if view else "—",
-            ),
+    @staticmethod
+    def _comparison_table(
+        parent: tk.Frame, headings: tuple[str, ...], rows: tuple[tuple[str, ...], ...]
+    ) -> None:
+        columns = tuple(str(index) for index in range(len(headings)))
+        table = ttk.Treeview(
+            parent,
+            columns=columns,
+            show="headings",
+            height=len(rows),
+            selectmode="none",
+            style="Petrol.Treeview",
         )
-        for index, (label, value) in enumerate(values):
-            cell = tk.Frame(strip, bg=SURFACE)
-            cell.pack(side="left", fill="x", expand=True, padx=(0, 18))
-            tk.Label(cell, text=label, bg=SURFACE, fg=TEXT, font=("Segoe UI", 10, "bold")).pack(
-                anchor="w"
+        for index, heading in enumerate(headings):
+            key = columns[index]
+            table.heading(key, text=heading)
+            table.column(
+                key,
+                width=220 if index == 0 else 130,
+                minwidth=150 if index == 0 else 90,
+                anchor="w" if index == 0 else "e",
+                stretch=True,
             )
-            tk.Label(cell, text=value, bg=SURFACE, fg=TEXT, font=("Segoe UI", 25, "bold")).pack(
-                anchor="w", pady=(3, 0)
-            )
-            tk.Label(
-                cell, text="Модельный расчёт", bg=SURFACE, fg=MUTED, font=("Segoe UI", 9)
-            ).pack(anchor="w")
-            if index < 2:
-                tk.Frame(strip, bg=BORDER, width=1, height=72).pack(side="left", padx=(0, 18))
+        for row in rows:
+            table.insert("", "end", values=row)
+        table.pack(fill="x", padx=24)
 
-    def _render_chart(self, parent: tk.Frame, view: DashboardView | None) -> None:
-        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=24)
+    def _render_recipe_comparison(self, parent: tk.Frame, view: DashboardView | None) -> None:
+        heading = (
+            "Исходная рецептура"
+            if view is not None and view.status == "abstain"
+            else "Рецептура без изменений"
+            if view is not None and view.status == "hold"
+            else "Что меняется в рецептуре"
+        )
         tk.Label(
             parent,
-            text="Сера в смеси, мг/кг",
+            text=heading,
             bg=SURFACE,
             fg=TEXT,
-            font=("Segoe UI", 12, "bold"),
-        ).pack(anchor="w", padx=24, pady=(16, 2))
-        canvas = tk.Canvas(parent, bg=SURFACE, highlightthickness=0, height=345)
-        canvas.pack(fill="both", expand=True, padx=24, pady=(0, 14))
-
-        def redraw(_: tk.Event[Any] | None = None) -> None:
-            self._draw_sulfur_chart(canvas, view)
-
-        canvas.bind("<Configure>", redraw)
-        redraw()
-
-    @staticmethod
-    def _draw_sulfur_chart(canvas: tk.Canvas, view: DashboardView | None) -> None:
-        canvas.delete("all")
-        width = max(canvas.winfo_width(), 680)
-        height = max(canvas.winfo_height(), 300)
-        left, right, top, bottom = 52, width - 26, 34, height - 48
-        maximum = 16.0
-        for value in range(0, 17, 2):
-            y = bottom - (value / maximum) * (bottom - top)
-            canvas.create_line(left, y, right, y, fill="#E3E8EA")
-            canvas.create_text(left - 12, y, text=str(value), fill=MUTED, anchor="e")
-        canvas.create_line(left, bottom, right, bottom, fill="#AEBAC1")
-        limit_y = bottom - (10.0 / maximum) * (bottom - top)
-        canvas.create_line(left, limit_y, right, limit_y, fill=AMBER, dash=(7, 5), width=2)
-        canvas.create_text(
-            right - 6,
-            limit_y - 12,
-            text="Предел сценария · 10",
-            fill=AMBER,
-            anchor="e",
-            font=("Segoe UI", 9, "bold"),
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", padx=24, pady=(18, 4))
+        tk.Label(
+            parent,
+            text=(
+                "Доли компонентов одной партии. Изменение указано в процентных пунктах."
+                if view is None or view.status == "recommend"
+                else "Доли компонентов одной модельной партии."
+            ),
+            bg=SURFACE,
+            fg=MUTED,
+        ).pack(anchor="w", padx=24, pady=(0, 10))
+        if view is None:
+            tk.Label(parent, text="Сначала выполните расчёт.", bg=SURFACE, fg=MUTED).pack(
+                anchor="w", padx=24, pady=(0, 14)
+            )
+            return
+        self._comparison_table(
+            parent,
+            ("Доля", "Сейчас", "Вариант", "Разница"),
+            recipe_comparison_rows(view),
         )
-        x_current = left + (right - left) * 0.28
-        x_selected = left + (right - left) * 0.72
-        baseline = view.baseline_upper if view and view.baseline_upper is not None else None
-        selected = view.selected_upper if view and view.selected_upper is not None else None
-        if baseline is not None:
-            y_current = bottom - min(baseline, maximum) / maximum * (bottom - top)
-            canvas.create_oval(
-                x_current - 6, y_current - 6, x_current + 6, y_current + 6, fill=TEAL, outline=""
-            )
-            canvas.create_text(
-                x_current,
-                y_current - 18,
-                text=_format_value(baseline),
-                fill=TEXT,
-                font=("Segoe UI", 10, "bold"),
-            )
-            if selected is not None:
-                y_selected = bottom - min(selected, maximum) / maximum * (bottom - top)
-                canvas.create_line(
-                    x_current, y_current, x_selected, y_selected, fill=TEAL, dash=(7, 5), width=3
-                )
-                canvas.create_oval(
-                    x_selected - 6,
-                    y_selected - 6,
-                    x_selected + 6,
-                    y_selected + 6,
-                    fill=TEAL,
-                    outline="",
-                )
-                canvas.create_text(
-                    x_selected,
-                    y_selected - 18,
-                    text=_format_value(selected),
-                    fill=TEXT,
-                    font=("Segoe UI", 10, "bold"),
-                )
-        else:
-            canvas.create_text(
-                (left + right) / 2,
-                (top + bottom) / 2,
-                text="Расчёт серы недоступен",
-                fill=MUTED,
-                font=("Segoe UI", 13),
-            )
-        canvas.create_text(x_current, bottom + 24, text="Текущая рецептура", fill=MUTED)
-        canvas.create_text(x_selected, bottom + 24, text="Выбранный вариант", fill=MUTED)
-        canvas.create_text(
-            right,
-            top - 14,
-            text="Показана верхняя сценарная оценка, не исторический тренд",
-            fill=MUTED,
-            anchor="e",
-            font=("Segoe UI", 9),
+        if view.status == "abstain":
+            tk.Label(
+                parent,
+                text="Вариант не выбран: обязательных данных для подбора недостаточно.",
+                bg=SURFACE,
+                fg=RED,
+            ).pack(anchor="w", padx=24, pady=(7, 0))
+
+    def _render_quality_comparison(self, parent: tk.Frame, view: DashboardView | None) -> None:
+        heading = (
+            "Доступные оценки текущей смеси"
+            if view is not None and view.status == "abstain"
+            else "Проверки текущей смеси"
+            if view is not None and view.status == "hold"
+            else "Что меняется в результате"
         )
+        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=24, pady=(18, 0))
+        tk.Label(
+            parent,
+            text=heading,
+            bg=SURFACE,
+            fg=TEXT,
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor="w", padx=24, pady=(16, 10))
+        if view is not None:
+            self._comparison_table(
+                parent,
+                ("Показатель", "Сейчас", "Вариант", "Разница", "Предел"),
+                quality_comparison_rows(view),
+            )
+        tk.Label(
+            parent,
+            text=(
+                "Сера и T95 — верхние оценки, цетановое число — нижняя. "
+                "Это сравнение двух модельных рецептур, не прогноз по времени."
+            ),
+            bg=SURFACE,
+            fg=MUTED,
+            wraplength=800,
+            justify="left",
+        ).pack(anchor="w", padx=24, pady=(10, 18))
 
     def _render_info(self, parent: tk.Frame, view: DashboardView | None) -> None:
         tk.Label(parent, text="Данные", bg=SURFACE, fg=TEXT, font=("Segoe UI", 15, "bold")).pack(
@@ -1480,10 +1581,10 @@ class PetrolCodeApp(tk.Tk):
             if self._scenario
             else "—",
         )
-        self._info_row(parent, "Горизонт", self.horizon_var.get())
+        self._info_row(parent, "Тип результата", "Сравнение рецептур")
         self._info_row(
             parent,
-            "Момент сценария",
+            "Момент расчёта",
             self._result.as_of.strftime("%d.%m.%Y %H:%M") if self._result else "—",
         )
         tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=20, pady=18)
@@ -1499,7 +1600,7 @@ class PetrolCodeApp(tk.Tk):
         tk.Label(
             parent,
             text=(
-                "Action model не подтверждён. Реальные управляющие воздействия отключены."
+                "Модель реальных действий не подтверждена. Управление установкой отключено."
                 if view
                 else "Выполните расчёт."
             ),
