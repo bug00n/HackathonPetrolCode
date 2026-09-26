@@ -285,3 +285,85 @@ def test_editor_repairs_conflicting_quality_before_calculation() -> None:
         assert received[0].blend_components[0].sulfur.upper == 1
     finally:
         root.destroy()
+
+
+def test_manual_blend_assist_keeps_the_latest_entered_share_and_fills_blank() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    try:
+        preset = load_scenario("config/scenarios/blend_risk.json")
+        received = []
+        dialog = open_editor(root, preset, preset, received.append)
+        dialog.withdraw()
+        entries = [widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)]
+        share_a, share_b, dose = entries[:3]
+        share_a.delete(0, "end")
+        share_a.insert(0, "86.2083333333")
+        share_b.delete(0, "end")
+        button = next(
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Button) and widget.cget("text") == "Подобрать смесь"
+        )
+        button.invoke()
+        assert share_a.get() == "86.2083333333"
+        assert float(share_b.get()) == pytest.approx(12.7916666667)
+        assert dose.get() == "1"
+        reset = next(
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Button) and widget.cget("text") == "Сбросить"
+        )
+        reset.invoke()
+        share_a.delete(0, "end")
+        share_a.insert(0, "86.2083333333")
+        share_b.delete(0, "end")
+        calculate = next(
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, tk.Button) and widget.cget("text") == "Рассчитать смесь"
+        )
+        calculate.invoke()
+        assert len(received) == 1
+        assert received[0].current_blend_mass_fractions["A"] == pytest.approx(0.862083333333)
+        assert received[0].current_blend_mass_fractions["B"] == pytest.approx(0.127916666667)
+    finally:
+        root.destroy()
+
+
+def test_nearest_blend_option_changes_input_only_when_explicitly_requested() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    try:
+        preset = load_scenario("config/scenarios/blend_risk.json")
+        dialog = open_editor(root, preset, preset, lambda _scenario: None)
+        dialog.withdraw()
+        entries = [widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)]
+        share_a, share_b = entries[:2]
+        share_a.delete(0, "end")
+        share_a.insert(0, "86.2")
+        share_b.delete(0, "end")
+        locks = [
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Checkbutton) and widget.cget("text") == "Не менять"
+        ]
+        locks[2].invoke()
+        buttons = {
+            widget.cget("text"): widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Button)
+        }
+        buttons["Подобрать смесь"].invoke()
+        assert share_a.get() == "86.2"
+        buttons["Найти ближайшую допустимую"].invoke()
+        assert float(share_a.get()) > 86.2
+        assert float(share_a.get()) + float(share_b.get()) == pytest.approx(99.0)
+    finally:
+        root.destroy()

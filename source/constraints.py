@@ -10,6 +10,7 @@ from source.contracts import (
     ConstraintSpec,
     ConstraintStatus,
     MetricEstimate,
+    OperationMode,
     ProcessState,
     ScenarioConfig,
 )
@@ -26,6 +27,8 @@ def _quality_check(
     constraint: ConstraintSpec,
     candidate: CandidateAction,
     assessments: tuple[AgentAssessment, ...],
+    *,
+    rounding_tolerance: float = 0.0,
 ) -> ConstraintResult:
     metric = _metric(assessments, constraint.metric)
     if metric is None:
@@ -65,10 +68,10 @@ def _quality_check(
     if actual is None:
         status = ConstraintStatus.UNKNOWN
         reason = "UNCERTAINTY_UNAVAILABLE"
-    elif constraint.lower is not None and actual < constraint.lower:
+    elif constraint.lower is not None and actual < constraint.lower - rounding_tolerance:
         status = ConstraintStatus.FAIL
         reason = "QUALITY_LIMIT"
-    elif constraint.upper is not None and actual > constraint.upper:
+    elif constraint.upper is not None and actual > constraint.upper + rounding_tolerance:
         status = ConstraintStatus.FAIL
         reason = "QUALITY_LIMIT"
     return ConstraintResult(
@@ -165,7 +168,12 @@ def check_constraints(
 ) -> tuple[ConstraintResult, ...]:
     """Check all hard constraints for one evaluated candidate."""
     _ = state
-    checks = [_quality_check(item, candidate, assessments) for item in scenario.constraints]
+    # Synthetic recipes are displayed with rounded decimals; ignore only float noise.
+    tolerance = 1e-10 if scenario.mode is OperationMode.MODEL_DEMO else 0.0
+    checks = [
+        _quality_check(item, candidate, assessments, rounding_tolerance=tolerance)
+        for item in scenario.constraints
+    ]
     checks.extend(_stock_checks(scenario, candidate))
     return tuple(checks)
 

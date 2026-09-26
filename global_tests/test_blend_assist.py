@@ -28,6 +28,25 @@ def test_editor_keeps_changed_share_and_only_repairs_recipe() -> None:
         assert option.evaluation.feasible
 
 
+def test_blank_neighbor_uses_the_entered_share_at_a_rounded_quality_boundary() -> None:
+    scenario = load_scenario("config/scenarios/blend_risk.json")
+    values = editor_values(scenario) | {"A.fraction": "86.2083333333", "B.fraction": ""}
+    options = assist_editor_values(scenario, values, frozenset({"A.fraction"}))
+    assert options
+    _, updated = options[0]
+    assert updated["A.fraction"] == values["A.fraction"]
+    assert float(updated["B.fraction"]) == pytest.approx(12.7916666667)
+    assert updated["dose"] == "1"
+    assert scenario_from_editor(scenario, updated)
+
+
+def test_rounding_tolerance_does_not_allow_a_material_quality_violation() -> None:
+    scenario = load_scenario("config/scenarios/blend_risk.json")
+    values = editor_values(scenario) | {"A.fraction": "86.2", "B.fraction": ""}
+    with pytest.raises(ValueError, match="Подходящей смеси нет"):
+        assist_editor_values(scenario, values, frozenset({"A.fraction", "dose"}))
+
+
 def test_editor_explains_impossible_fixed_stock() -> None:
     scenario = load_scenario("config/scenarios/blend_risk.json")
     values = editor_values(scenario)

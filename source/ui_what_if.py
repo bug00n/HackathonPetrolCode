@@ -215,25 +215,57 @@ def scenario_from_editor(base: ScenarioConfig, values: dict[str, str]) -> Scenar
     return ScenarioConfig.model_validate(data)
 
 
+def recipe_inputs(
+    values: dict[str, str], component_ids: tuple[str, str]
+) -> tuple[dict[str, float], float, dict[str, str]]:
+    """Interpret blank recipe fields as free shares and return their completion."""
+
+    def fraction(key: str) -> float | None:
+        raw = values.get(key, "").strip()
+        if not raw:
+            return None
+        try:
+            result = float(raw.replace(",", ".")) / 100
+        except ValueError as exc:
+            raise ValueError(f"{field_label(key)}: введите число от 0 до 100") from exc
+        if not math.isfinite(result) or result < 0 or result > 1:
+            raise ValueError(f"{field_label(key)}: требуется число от 0 до 100")
+        return result
+
+    first, second = (fraction(f"{key}.fraction") for key in component_ids)
+    dose = fraction("dose")
+    completed: dict[str, str] = {}
+    if dose is None:
+        dose = max(0.0, 1 - first - second) if first is not None and second is not None else 0.0
+        completed["dose"] = f"{dose * 100:.12g}"
+    if first is None and second is None:
+        first = second = (1 - dose) / 2
+        completed[f"{component_ids[0]}.fraction"] = f"{first * 100:.12g}"
+        completed[f"{component_ids[1]}.fraction"] = f"{second * 100:.12g}"
+    elif first is None:
+        assert second is not None
+        if second + dose > 1 + 1e-9:
+            raise ValueError("Доля компонента B вместе с присадкой превышает 100 %")
+        first = max(0.0, 1 - dose - second)
+        completed[f"{component_ids[0]}.fraction"] = f"{first * 100:.12g}"
+    elif second is None:
+        if first + dose > 1 + 1e-9:
+            raise ValueError("Доля компонента A вместе с присадкой превышает 100 %")
+        second = max(0.0, 1 - dose - first)
+        completed[f"{component_ids[1]}.fraction"] = f"{second * 100:.12g}"
+    assert first is not None and second is not None
+    desired: dict[str, float] = dict(zip(component_ids, (first, second), strict=True))
+    return desired, dose, completed
+
+
 def assist_editor_values(
     base: ScenarioConfig, values: dict[str, str], locked: frozenset[str]
 ) -> tuple[tuple[BlendOption, dict[str, str]], ...]:
     """Parse physical inputs, then repair only the freely adjustable recipe fields."""
     if len(base.blend_components) != 2:
         raise ValueError("Автоподбор поддерживает два компонента")
-    component_ids = tuple(item.id for item in base.blend_components)
-
-    def fraction(key: str) -> float:
-        try:
-            result = float(values[key].strip().replace(",", ".")) / 100
-        except (KeyError, ValueError) as exc:
-            raise ValueError(f"{field_label(key)}: введите число от 0 до 100") from exc
-        if not math.isfinite(result) or result < 0 or result > 1:
-            raise ValueError(f"{field_label(key)}: требуется число от 0 до 100")
-        return result
-
-    desired = {key: fraction(f"{key}.fraction") for key in component_ids}
-    dose = fraction("dose")
+    component_ids = (base.blend_components[0].id, base.blend_components[1].id)
+    desired, dose, _ = recipe_inputs(values, component_ids)
     temporary = dict(values)
     # Only the recipe is temporarily balanced so scenario_from_editor can validate
     # unchanged component properties before the actual constrained search.
@@ -247,8 +279,12 @@ def assist_editor_values(
     temporary[f"{component_ids[1]}.fraction"] = f"{(1 - temporary_dose) * 50:.12g}"
     scenario = scenario_from_editor(base, temporary)
     fixed = frozenset(
-        key.removesuffix(".fraction") for key in locked if key.endswith(".fraction")
-    ) | (frozenset({"dose"}) if "dose" in locked else frozenset())
+        key.removesuffix(".fraction")
+        for key in locked
+        if key.endswith(".fraction") and values.get(key, "").strip()
+    ) | (
+        frozenset({"dose"}) if "dose" in locked and values.get("dose", "").strip() else frozenset()
+    )
     options = assist_blend(scenario, desired, dose, fixed)
     if not options:
         mass = scenario.total_mass_t or 0
@@ -344,7 +380,8 @@ def open_editor(
     warning = tk.Label(
         dialog,
         text=(
-            "Пустое поле свойства означает «нет данных». Доли смеси и присадки в сумме дают 100 %."
+            "Пустое поле свойства означает «нет данных». "
+            "Пустая доля заполняется из остатка до 100 %."
         ),
         bg="#FFF8E8",
         fg="#8C5400",
@@ -389,7 +426,7 @@ def open_editor(
         ttk.Label(form, text=label, style="WhatIf.TLabel").grid(
             row=row, column=0, sticky="w", pady=7
         )
-        entry = ttk.Entry(form, textvariable=variables[key], width=12, style="WhatIf.TEntry")
+        entry = ttk.Entry(form, textvariable=variables[key], width=16, style="WhatIf.TEntry")
         entry.grid(row=row, column=1, padx=12, sticky="w")
         entries[key] = entry
         locks[key] = tk.BooleanVar(dialog, value=False)
@@ -412,7 +449,10 @@ def open_editor(
     ).pack(anchor="w", padx=18, pady=(17, 3))
     tk.Label(
         result,
-        text="Подбор учитывает качество, запасы и поля «Не менять».",
+        text=(
+            "«Подобрать смесь» сохраняет последнюю введённую долю. «Найти ближайшую» "
+            "может изменить её. Для других полей используйте «Не менять»."
+        ),
         bg="#F6F8F8",
         fg="#617082",
         wraplength=330,
@@ -514,6 +554,7 @@ def open_editor(
     pending: str | None = None
     updating = False
     last_quality_edit: str | None = None
+    preferred_recipe_edit: str | None = None
     quality_previous = {key: var.get() for key, var in variables.items()}
 
     def cancel_pending() -> None:
@@ -524,6 +565,18 @@ def open_editor(
 
     def values_now() -> dict[str, str]:
         return {key: var.get() for key, var in variables.items()}
+
+    def remember_recipe_edit(*_args: str, key: str) -> None:
+        nonlocal preferred_recipe_edit, before_assist
+        if updating:
+            return
+        before_assist = None
+        error.set("")
+        if variables[key].get().strip():
+            preferred_recipe_edit = key
+
+    for key in recipe_keys:
+        variables[key].trace_add("write", partial(remember_recipe_edit, key=key))
 
     def reconcile_quality(preferred: str | None) -> None:
         nonlocal updating, quality_previous
@@ -636,7 +689,9 @@ def open_editor(
 
     variants.bind("<<ComboboxSelected>>", pick)
 
-    def suggest(changed: str | None = None, *, force: bool = False) -> None:
+    def suggest(
+        changed: str | None = None, *, force: bool = False, allow_changed_share: bool = False
+    ) -> None:
         nonlocal options, before_assist
         cancel_pending()
         reconcile_quality(changed or last_quality_edit)
@@ -644,15 +699,28 @@ def open_editor(
             return
         raw = values_now()
         fixed = frozenset(key for key, locked in locks.items() if locked.get())
-        if changed in locks:
-            fixed |= {changed}
+        preferred = None
+        if not allow_changed_share:
+            preferred = (
+                changed
+                if changed is not None and changed in locks and raw[changed].strip()
+                else preferred_recipe_edit
+            )
+        if preferred is not None and preferred in locks and raw[preferred].strip():
+            fixed |= {preferred}
         try:
             options = assist_editor_values(preset, raw, fixed)
         except ValueError as exc:
             options = ()
             variants.pack_forget()
             error.set(str(exc))
-            preview.set("Автоподбор не смог составить допустимую смесь.")
+            preview.set(
+                f"Сохраняем {field_label(preferred)} = {raw[preferred]} %. "
+                "Допустимой смеси с этой долей нет. Можно изменить вход или "
+                "выбрать ближайший вариант."
+                if preferred is not None and preferred.endswith(".fraction")
+                else "Автоподбор не смог составить допустимую смесь."
+            )
             return
         before_assist = raw
         variants["values"] = tuple(item.label for item, _ in options)
@@ -716,14 +784,31 @@ def open_editor(
     ttk.Button(form, text="Подобрать смесь", command=lambda: suggest(force=True)).grid(
         row=7, column=0, columnspan=2, sticky="w", pady=(6, 0)
     )
+    ttk.Button(
+        form,
+        text="Найти ближайшую допустимую",
+        command=lambda: suggest(force=True, allow_changed_share=True),
+    ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
     ttk.Button(form, text="Отменить подбор", command=undo_assist).grid(
-        row=8, column=0, columnspan=2, sticky="w", pady=(8, 0)
+        row=9, column=0, columnspan=2, sticky="w", pady=(8, 0)
     )
 
     def apply() -> None:
+        nonlocal updating
         cancel_pending()
         reconcile_quality(last_quality_edit)
         try:
+            _, _, completed = recipe_inputs(
+                values_now(), (preset.blend_components[0].id, preset.blend_components[1].id)
+            )
+            if completed:
+                updating = True
+                try:
+                    for key, value in completed.items():
+                        variables[key].set(value)
+                        entries[key].configure(style="WhatIf.Changed.TEntry")
+                finally:
+                    updating = False
             scenario = scenario_from_editor(
                 preset, {key: var.get() for key, var in variables.items()}
             )
@@ -745,14 +830,19 @@ def open_editor(
         dialog.destroy()
 
     def reset() -> None:
-        nonlocal before_assist, last_quality_edit, quality_previous
+        nonlocal before_assist, last_quality_edit, preferred_recipe_edit, quality_previous, updating
         cancel_pending()
-        for key, value in editor_values(preset).items():
-            variables[key].set(value)
+        updating = True
+        try:
+            for key, value in editor_values(preset).items():
+                variables[key].set(value)
+        finally:
+            updating = False
         for lock_var in locks.values():
             lock_var.set(False)
         before_assist = None
         last_quality_edit = None
+        preferred_recipe_edit = None
         quality_previous = values_now()
         quality_note.set(quality_hint)
         variants.pack_forget()
