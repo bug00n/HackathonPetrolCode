@@ -75,6 +75,73 @@ def editor_values(scenario: ScenarioConfig) -> dict[str, str]:
     return values
 
 
+def linked_quality_adjustment(
+    values: dict[str, str], changed: str, previous: dict[str, str] | None = None
+) -> tuple[str, str, str] | None:
+    """Keep an edited bound, or move its paired bound with an edited point."""
+    parts = changed.split(".")
+    if len(parts) != 3:
+        return None
+    component, metric, field = parts
+    bounds = {
+        "sulfur": ("upper", "серы", "мг/кг"),
+        "t95": ("upper", "T95", "°C"),
+        "cetane_number": ("lower", "цетанового числа", ""),
+    }
+    if metric not in bounds:
+        return None
+    bound, label, unit = bounds[metric]
+    if field not in ("value", bound):
+        return None
+    point_key = f"{component}.{metric}.value"
+    bound_key = f"{component}.{metric}.{bound}"
+    try:
+        point = float(values[point_key].strip().replace(",", "."))
+        edge = float(values[bound_key].strip().replace(",", "."))
+    except (KeyError, ValueError):
+        return None
+    if not all(math.isfinite(value) and value >= 0 for value in (point, edge)):
+        return None
+    if field == "value" and previous is not None:
+        try:
+            old_point = float(previous[point_key].strip().replace(",", "."))
+            old_edge = float(previous[bound_key].strip().replace(",", "."))
+        except (KeyError, ValueError):
+            pass
+        else:
+            if (
+                all(math.isfinite(value) and value >= 0 for value in (old_point, old_edge))
+                and abs(edge - old_edge) < 1e-9
+                and abs(point - old_point) >= 1e-9
+            ):
+                gap = max(0.0, old_edge - old_point if bound == "upper" else old_point - old_edge)
+                corrected = point + gap if bound == "upper" else max(0.0, point - gap)
+                if abs(corrected - edge) >= 1e-9:
+                    displayed = f"{corrected:g}".replace(".", ",")
+                    bound_label = "верхняя" if bound == "upper" else "нижняя"
+                    return (
+                        bound_key,
+                        f"{corrected:.12g}",
+                        f"Компонент {component}: {bound_label} оценка {label} подстроена "
+                        f"до {displayed}{' ' + unit if unit else ''}; "
+                        "прежняя разница с основным значением сохранена.",
+                    )
+    if (bound == "upper" and edge >= point) or (bound == "lower" and edge <= point):
+        return None
+    target = bound_key if field == "value" else point_key
+    corrected = point if field == "value" else edge
+    displayed = f"{corrected:g}".replace(".", ",")
+    changed_label = "верхняя оценка" if bound == "upper" else "нижняя оценка"
+    repaired_label = changed_label if field == "value" else "значение"
+    note = (
+        f"Компонент {component}: {repaired_label} {label} автоматически установлена на "
+        f"{displayed}{' ' + unit if unit else ''}, чтобы оценка не противоречила значению."
+    )
+    if field != "value":
+        note = note.replace("установлена", "установлено")
+    return target, f"{corrected:.12g}", note
+
+
 def scenario_from_editor(base: ScenarioConfig, values: dict[str, str]) -> ScenarioConfig:
     """Validate a detached synthetic scenario without touching preset files."""
     if base.mode.value != "model_demo" or base.controls:
@@ -116,8 +183,13 @@ def scenario_from_editor(base: ScenarioConfig, values: dict[str, str]) -> Scenar
                     label = {"sulfur": "серы", "t95": "T95", "cetane_number": "цетанового числа"}[
                         metric
                     ]
+                    direction = "не меньше" if bound == "upper" else "не больше"
+                    unit = {"sulfur": " мг/кг", "t95": " °C"}.get(metric, "")
+                    estimate_name = "верхняя" if bound == "upper" else "нижняя"
                     raise ValueError(
-                        f"Компонент {component['id']}: оценка {label} противоречит значению"
+                        f"Компонент {component['id']}: {estimate_name} оценка {label} "
+                        f"({edge:g}{unit}) должна быть {direction} значения "
+                        f"({point:g}{unit}). Измените одно из двух полей."
                     )
         if component["risk_index"] > 1:
             raise ValueError(f"{component['id']}: риск должен быть от 0 до 1")
@@ -364,6 +436,33 @@ def open_editor(
     variants.pack_forget()
     components = ttk.Frame(notebook, padding=10, style="WhatIf.TFrame")
     notebook.add(components, text="Свойства и запасы")
+    limits = []
+    for constraint in preset.constraints:
+        label, unit = {
+            "sulfur": ("сера", "мг/кг"),
+            "t95": ("T95", "°C"),
+            "cetane_number": ("цетановое число", ""),
+        }.get(constraint.metric, ("", ""))
+        if not label:
+            continue
+        if constraint.upper is not None:
+            limits.append(f"{label} ≤ {constraint.upper:g} {unit}".strip())
+        elif constraint.lower is not None:
+            limits.append(f"{label} ≥ {constraint.lower:g} {unit}".strip())
+    quality_hint = (
+        "Для компонента: верхняя оценка ≥ значения, нижняя ≤ значения. "
+        "При правке значения оценка сохраняет прежнюю разницу; "
+        "при правке оценки противоречие устраняется автоматически.\n"
+        "Для готовой смеси: " + "; ".join(limits) + ". Эти пределы проверяются после подбора."
+    )
+    quality_note = tk.StringVar(dialog, value=quality_hint)
+    ttk.Label(
+        components,
+        textvariable=quality_note,
+        style="WhatIf.TLabel",
+        wraplength=840,
+        justify="left",
+    ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 12))
     for col, component in enumerate(preset.blend_components):
         frame = ttk.LabelFrame(
             components,
@@ -371,7 +470,7 @@ def open_editor(
             padding=8,
             style="WhatIf.TLabelframe",
         )
-        frame.grid(row=0, column=col, sticky="nsew", padx=8)
+        frame.grid(row=1, column=col, sticky="nsew", padx=8)
         components.columnconfigure(col, weight=1)
         for row, (field, label) in enumerate(COMPONENT_FIELDS):
             if field == "fraction":
@@ -414,6 +513,8 @@ def open_editor(
     options: tuple[tuple[BlendOption, dict[str, str]], ...] = ()
     pending: str | None = None
     updating = False
+    last_quality_edit: str | None = None
+    quality_previous = {key: var.get() for key, var in variables.items()}
 
     def cancel_pending() -> None:
         nonlocal pending
@@ -423,6 +524,51 @@ def open_editor(
 
     def values_now() -> dict[str, str]:
         return {key: var.get() for key, var in variables.items()}
+
+    def reconcile_quality(preferred: str | None) -> None:
+        nonlocal updating, quality_previous
+        quality_keys = [
+            f"{component.id}.{metric}.{bound}"
+            for component in preset.blend_components
+            for metric, bound in (
+                ("sulfur", "upper"),
+                ("t95", "upper"),
+                ("cetane_number", "lower"),
+            )
+        ]
+        for key in ([preferred] if preferred else []) + quality_keys:
+            if key is None:
+                continue
+            adjustment = linked_quality_adjustment(values_now(), key, quality_previous)
+            if adjustment is None:
+                continue
+            target, value, note = adjustment
+            updating = True
+            try:
+                variables[target].set(value)
+                entries[target].configure(style="WhatIf.Changed.TEntry")
+            finally:
+                updating = False
+            quality_note.set(note)
+            error.set("")
+        current_values = values_now()
+        for bound_key in quality_keys:
+            point_key = bound_key.rsplit(".", 1)[0] + ".value"
+            try:
+                point = float(current_values[point_key].strip().replace(",", "."))
+                edge = float(current_values[bound_key].strip().replace(",", "."))
+            except ValueError:
+                continue
+            valid = (
+                math.isfinite(point)
+                and math.isfinite(edge)
+                and point >= 0
+                and edge >= 0
+                and (edge >= point if bound_key.endswith(".upper") else edge <= point)
+            )
+            if valid:
+                quality_previous[point_key] = current_values[point_key]
+                quality_previous[bound_key] = current_values[bound_key]
 
     def show_option(position: int) -> None:
         nonlocal updating
@@ -493,6 +639,7 @@ def open_editor(
     def suggest(changed: str | None = None, *, force: bool = False) -> None:
         nonlocal options, before_assist
         cancel_pending()
+        reconcile_quality(changed or last_quality_edit)
         if updating or (not assistant_on.get() and not force):
             return
         raw = values_now()
@@ -523,9 +670,26 @@ def open_editor(
         suggest(name)
 
     def on_focus_out(_event: tk.Event[tk.Misc], *, name: str) -> None:
+        reconcile_quality(name)
         schedule(name)
 
+    def on_focus_in(_event: tk.Event[tk.Misc], *, name: str) -> None:
+        nonlocal last_quality_edit
+        if name.endswith(
+            (
+                ".sulfur.value",
+                ".sulfur.upper",
+                ".t95.value",
+                ".t95.upper",
+                ".cetane_number.value",
+                ".cetane_number.lower",
+            )
+        ):
+            last_quality_edit = name
+            quality_note.set(quality_hint)
+
     for key, entry in entries.items():
+        entry.bind("<FocusIn>", partial(on_focus_in, name=key))
         entry.bind("<Return>", partial(on_return, name=key))
         entry.bind("<FocusOut>", partial(on_focus_out, name=key))
 
@@ -558,6 +722,7 @@ def open_editor(
 
     def apply() -> None:
         cancel_pending()
+        reconcile_quality(last_quality_edit)
         try:
             scenario = scenario_from_editor(
                 preset, {key: var.get() for key, var in variables.items()}
@@ -580,13 +745,16 @@ def open_editor(
         dialog.destroy()
 
     def reset() -> None:
-        nonlocal before_assist
+        nonlocal before_assist, last_quality_edit, quality_previous
         cancel_pending()
         for key, value in editor_values(preset).items():
             variables[key].set(value)
         for lock_var in locks.values():
             lock_var.set(False)
         before_assist = None
+        last_quality_edit = None
+        quality_previous = values_now()
+        quality_note.set(quality_hint)
         variants.pack_forget()
         preview.set("Исходная рецептура восстановлена. Измените долю или рассчитайте результат.")
         for key in recipe_keys:

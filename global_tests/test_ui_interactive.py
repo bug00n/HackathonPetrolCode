@@ -11,7 +11,12 @@ import pytest
 from source.config import load_scenario
 from source.main import run_model_demo
 from source.ui_charts import HistoryChart, history_points
-from source.ui_what_if import editor_values, open_editor, scenario_from_editor
+from source.ui_what_if import (
+    editor_values,
+    linked_quality_adjustment,
+    open_editor,
+    scenario_from_editor,
+)
 
 
 def test_what_if_changes_forecast_and_journals_inputs(tmp_path: Path) -> None:
@@ -71,6 +76,35 @@ def test_what_if_validation_names_visible_field() -> None:
     preset = load_scenario("config/scenarios/blend_risk.json")
     with pytest.raises(ValueError, match="Компонент A · Текущая доля"):
         scenario_from_editor(preset, editor_values(preset) | {"A.fraction": "abc"})
+
+
+def test_linked_quality_adjustment_keeps_the_field_the_user_changed() -> None:
+    preset = load_scenario("config/scenarios/blend_risk.json")
+    original = editor_values(preset)
+    values = original | {"A.sulfur.upper": "1"}
+    assert linked_quality_adjustment(values, "A.sulfur.upper")[:2] == (
+        "A.sulfur.value",
+        "1",
+    )
+    assert values["A.sulfur.value"] == "6"
+    assert linked_quality_adjustment(values, "A.sulfur.value")[:2] == (
+        "A.sulfur.upper",
+        "6",
+    )
+    assert linked_quality_adjustment(
+        original | {"A.sulfur.value": "1"}, "A.sulfur.value", original
+    )[:2] == ("A.sulfur.upper", "2")
+    assert linked_quality_adjustment(
+        editor_values(preset) | {"A.cetane_number.lower": "55"},
+        "A.cetane_number.lower",
+    )[:2] == ("A.cetane_number.value", "55")
+    assert (
+        linked_quality_adjustment(
+            editor_values(preset) | {"A.sulfur.upper": "не число"},
+            "A.sulfur.upper",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -214,5 +248,40 @@ def test_editor_assist_and_undo_on_real_tk() -> None:
             entries[2].get()
         ) == pytest.approx(100)
         dialog.destroy()
+    finally:
+        root.destroy()
+
+
+def test_editor_repairs_conflicting_quality_before_calculation() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    try:
+        preset = load_scenario("config/scenarios/blend_risk.json")
+        received = []
+        dialog = open_editor(root, preset, preset, received.append)
+        dialog.withdraw()
+        entries = [widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)]
+        point, upper = entries[5:7]
+        point.delete(0, "end")
+        point.insert(0, "1")
+        point.event_generate("<FocusOut>")
+        assert upper.get() == "2"
+        buttons = {
+            widget.cget("text"): widget
+            for widget in descendants(dialog)
+            if isinstance(widget, (tk.Button, ttk.Button))
+        }
+        buttons["Сбросить"].invoke()
+        upper.delete(0, "end")
+        upper.insert(0, "1")
+        upper.event_generate("<FocusOut>")
+        assert point.get() == "1"
+        buttons["Рассчитать смесь"].invoke()
+        assert len(received) == 1
+        assert received[0].blend_components[0].sulfur.value == 1
+        assert received[0].blend_components[0].sulfur.upper == 1
     finally:
         root.destroy()
