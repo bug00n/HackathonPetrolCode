@@ -12,7 +12,7 @@ if ($LASTEXITCODE -ne 0) { throw "Build dependency installation failed" }
 $savedPythonPath = $env:PYTHONPATH
 try {
     $env:PYTHONPATH = $buildTools
-    & $python -m PyInstaller --noconfirm --onedir --windowed --name Neftekod --distpath (Join-Path $build "dist") --workpath (Join-Path $build "work") --specpath $build --paths $root --collect-all lightgbm --hidden-import sklearn.ensemble._hist_gradient_boosting.predictor --hidden-import sklearn.linear_model._ridge (Join-Path $root "source\desktop.py")
+    & $python -m PyInstaller --noconfirm --onedir --windowed --name Neftekod --manifest (Join-Path $root "scripts\windows-manifest.xml") --distpath (Join-Path $build "dist") --workpath (Join-Path $build "work") --specpath $build --paths $root --collect-all lightgbm --hidden-import sklearn.ensemble._hist_gradient_boosting.predictor --hidden-import sklearn.linear_model._ridge (Join-Path $root "source\desktop.py")
     if ($LASTEXITCODE -ne 0) { throw "Freezing failed" }
 } finally { $env:PYTHONPATH = $savedPythonPath }
 Write-Output "Pass -BinaryDirectory '$build\dist\Neftekod' to scripts/build_release.ps1."

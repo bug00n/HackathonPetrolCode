@@ -5,20 +5,22 @@ from __future__ import annotations
 import math
 import tkinter as tk
 from collections.abc import Callable
+from functools import partial
 from tkinter import ttk
 
+from source.agents.blend_assist import BlendOption, assist_blend
 from source.contracts import ScenarioConfig
 
 COMPONENT_FIELDS = (
     ("sulfur.value", "Сера, мг/кг"),
-    ("sulfur.upper", "Сера сверху, мг/кг"),
+    ("sulfur.upper", "Сера · верхняя оценка, мг/кг"),
     ("t95.value", "T95, °C"),
-    ("t95.upper", "T95 сверху, °C"),
+    ("t95.upper", "T95 · верхняя оценка, °C"),
     ("cetane_number.value", "Цетановое число"),
-    ("cetane_number.lower", "Цетановое снизу"),
+    ("cetane_number.lower", "Цетановое · нижняя оценка"),
     ("available_mass_t", "Запас, т"),
-    ("cost_proxy_per_t", "Стоимость, индекс/т"),
-    ("risk_index", "Риск, от 0 до 1"),
+    ("cost_proxy_per_t", "Стоимость, усл. ед./т"),
+    ("risk_index", "Риск, 0–1"),
     ("fraction", "Текущая доля, %"),
 )
 ADDITIVE_FIELDS = (
@@ -26,11 +28,19 @@ ADDITIVE_FIELDS = (
     ("dose", "Текущая присадка, %"),
     ("max_dose", "Максимум присадки, % (1, 2 или 3)"),
     ("additive_stock", "Запас присадки, т"),
-    ("additive_cost", "Стоимость присадки, индекс/т"),
+    ("additive_cost", "Стоимость присадки, усл. ед./т"),
     ("gain_1", "Прирост цетанового числа при 1%"),
     ("gain_2", "Прирост цетанового числа при 2%"),
     ("gain_3", "Прирост цетанового числа при 3%"),
 )
+
+
+def field_label(key: str) -> str:
+    """Name editor inputs as a person sees them, not by contract keys."""
+    if "." in key:
+        component, field = key.split(".", 1)
+        return f"Компонент {component} · {dict(COMPONENT_FIELDS).get(field, field)}"
+    return dict(ADDITIVE_FIELDS).get(key, key)
 
 
 def editor_values(scenario: ScenarioConfig) -> dict[str, str]:
@@ -65,6 +75,73 @@ def editor_values(scenario: ScenarioConfig) -> dict[str, str]:
     return values
 
 
+def linked_quality_adjustment(
+    values: dict[str, str], changed: str, previous: dict[str, str] | None = None
+) -> tuple[str, str, str] | None:
+    """Keep an edited bound, or move its paired bound with an edited point."""
+    parts = changed.split(".")
+    if len(parts) != 3:
+        return None
+    component, metric, field = parts
+    bounds = {
+        "sulfur": ("upper", "серы", "мг/кг"),
+        "t95": ("upper", "T95", "°C"),
+        "cetane_number": ("lower", "цетанового числа", ""),
+    }
+    if metric not in bounds:
+        return None
+    bound, label, unit = bounds[metric]
+    if field not in ("value", bound):
+        return None
+    point_key = f"{component}.{metric}.value"
+    bound_key = f"{component}.{metric}.{bound}"
+    try:
+        point = float(values[point_key].strip().replace(",", "."))
+        edge = float(values[bound_key].strip().replace(",", "."))
+    except (KeyError, ValueError):
+        return None
+    if not all(math.isfinite(value) and value >= 0 for value in (point, edge)):
+        return None
+    if field == "value" and previous is not None:
+        try:
+            old_point = float(previous[point_key].strip().replace(",", "."))
+            old_edge = float(previous[bound_key].strip().replace(",", "."))
+        except (KeyError, ValueError):
+            pass
+        else:
+            if (
+                all(math.isfinite(value) and value >= 0 for value in (old_point, old_edge))
+                and abs(edge - old_edge) < 1e-9
+                and abs(point - old_point) >= 1e-9
+            ):
+                gap = max(0.0, old_edge - old_point if bound == "upper" else old_point - old_edge)
+                corrected = point + gap if bound == "upper" else max(0.0, point - gap)
+                if abs(corrected - edge) >= 1e-9:
+                    displayed = f"{corrected:g}".replace(".", ",")
+                    bound_label = "верхняя" if bound == "upper" else "нижняя"
+                    return (
+                        bound_key,
+                        f"{corrected:.12g}",
+                        f"Компонент {component}: {bound_label} оценка {label} подстроена "
+                        f"до {displayed}{' ' + unit if unit else ''}; "
+                        "прежняя разница с основным значением сохранена.",
+                    )
+    if (bound == "upper" and edge >= point) or (bound == "lower" and edge <= point):
+        return None
+    target = bound_key if field == "value" else point_key
+    corrected = point if field == "value" else edge
+    displayed = f"{corrected:g}".replace(".", ",")
+    changed_label = "верхняя оценка" if bound == "upper" else "нижняя оценка"
+    repaired_label = changed_label if field == "value" else "значение"
+    note = (
+        f"Компонент {component}: {repaired_label} {label} автоматически установлена на "
+        f"{displayed}{' ' + unit if unit else ''}, чтобы оценка не противоречила значению."
+    )
+    if field != "value":
+        note = note.replace("установлена", "установлено")
+    return target, f"{corrected:.12g}", note
+
+
 def scenario_from_editor(base: ScenarioConfig, values: dict[str, str]) -> ScenarioConfig:
     """Validate a detached synthetic scenario without touching preset files."""
     if base.mode.value != "model_demo" or base.controls:
@@ -74,9 +151,9 @@ def scenario_from_editor(base: ScenarioConfig, values: dict[str, str]) -> Scenar
         try:
             value = float(values[key].strip().replace(",", "."))
         except (KeyError, ValueError) as exc:
-            raise ValueError(f"{key}: введите число") from exc
+            raise ValueError(f"{field_label(key)}: введите число") from exc
         if not math.isfinite(value) or value < 0:
-            raise ValueError(f"{key}: требуется конечное неотрицательное число")
+            raise ValueError(f"{field_label(key)}: требуется конечное неотрицательное число")
         return value
 
     data = base.model_dump(mode="json")
@@ -103,7 +180,17 @@ def scenario_from_editor(base: ScenarioConfig, values: dict[str, str]) -> Scenar
             point, edge = estimate["value"], estimate[bound]
             if point is not None and edge is not None:
                 if (bound == "upper" and edge < point) or (bound == "lower" and edge > point):
-                    raise ValueError(f"{component['id']}: граница {metric} противоречит значению")
+                    label = {"sulfur": "серы", "t95": "T95", "cetane_number": "цетанового числа"}[
+                        metric
+                    ]
+                    direction = "не меньше" if bound == "upper" else "не больше"
+                    unit = {"sulfur": " мг/кг", "t95": " °C"}.get(metric, "")
+                    estimate_name = "верхняя" if bound == "upper" else "нижняя"
+                    raise ValueError(
+                        f"Компонент {component['id']}: {estimate_name} оценка {label} "
+                        f"({edge:g}{unit}) должна быть {direction} значения "
+                        f"({point:g}{unit}). Измените одно из двух полей."
+                    )
         if component["risk_index"] > 1:
             raise ValueError(f"{component['id']}: риск должен быть от 0 до 1")
     data["current_additive_mass_fraction"] = number("dose") / 100
@@ -128,74 +215,672 @@ def scenario_from_editor(base: ScenarioConfig, values: dict[str, str]) -> Scenar
     return ScenarioConfig.model_validate(data)
 
 
+def recipe_inputs(
+    values: dict[str, str], component_ids: tuple[str, str]
+) -> tuple[dict[str, float], float, dict[str, str]]:
+    """Interpret blank recipe fields as free shares and return their completion."""
+
+    def fraction(key: str) -> float | None:
+        raw = values.get(key, "").strip()
+        if not raw:
+            return None
+        try:
+            result = float(raw.replace(",", ".")) / 100
+        except ValueError as exc:
+            raise ValueError(f"{field_label(key)}: введите число от 0 до 100") from exc
+        if not math.isfinite(result) or result < 0 or result > 1:
+            raise ValueError(f"{field_label(key)}: требуется число от 0 до 100")
+        return result
+
+    first, second = (fraction(f"{key}.fraction") for key in component_ids)
+    dose = fraction("dose")
+    completed: dict[str, str] = {}
+    if dose is None:
+        dose = max(0.0, 1 - first - second) if first is not None and second is not None else 0.0
+        completed["dose"] = f"{dose * 100:.12g}"
+    if first is None and second is None:
+        first = second = (1 - dose) / 2
+        completed[f"{component_ids[0]}.fraction"] = f"{first * 100:.12g}"
+        completed[f"{component_ids[1]}.fraction"] = f"{second * 100:.12g}"
+    elif first is None:
+        assert second is not None
+        if second + dose > 1 + 1e-9:
+            raise ValueError("Доля компонента B вместе с присадкой превышает 100 %")
+        first = max(0.0, 1 - dose - second)
+        completed[f"{component_ids[0]}.fraction"] = f"{first * 100:.12g}"
+    elif second is None:
+        if first + dose > 1 + 1e-9:
+            raise ValueError("Доля компонента A вместе с присадкой превышает 100 %")
+        second = max(0.0, 1 - dose - first)
+        completed[f"{component_ids[1]}.fraction"] = f"{second * 100:.12g}"
+    assert first is not None and second is not None
+    desired: dict[str, float] = dict(zip(component_ids, (first, second), strict=True))
+    return desired, dose, completed
+
+
+def assist_editor_values(
+    base: ScenarioConfig, values: dict[str, str], locked: frozenset[str]
+) -> tuple[tuple[BlendOption, dict[str, str]], ...]:
+    """Parse physical inputs, then repair only the freely adjustable recipe fields."""
+    if len(base.blend_components) != 2:
+        raise ValueError("Автоподбор поддерживает два компонента")
+    component_ids = (base.blend_components[0].id, base.blend_components[1].id)
+    desired, dose, _ = recipe_inputs(values, component_ids)
+    temporary = dict(values)
+    # Only the recipe is temporarily balanced so scenario_from_editor can validate
+    # unchanged component properties before the actual constrained search.
+    try:
+        max_dose = float(values["max_dose"].strip().replace(",", ".")) / 100
+    except (KeyError, ValueError) as exc:
+        raise ValueError("Максимум присадки: введите 1, 2 или 3%") from exc
+    temporary_dose = min(dose, max_dose) if math.isfinite(max_dose) else dose
+    temporary["dose"] = f"{temporary_dose * 100:.12g}"
+    temporary[f"{component_ids[0]}.fraction"] = f"{(1 - temporary_dose) * 50:.12g}"
+    temporary[f"{component_ids[1]}.fraction"] = f"{(1 - temporary_dose) * 50:.12g}"
+    scenario = scenario_from_editor(base, temporary)
+    fixed = frozenset(
+        key.removesuffix(".fraction")
+        for key in locked
+        if key.endswith(".fraction") and values.get(key, "").strip()
+    ) | (
+        frozenset({"dose"}) if "dose" in locked and values.get("dose", "").strip() else frozenset()
+    )
+    options = assist_blend(scenario, desired, dose, fixed)
+    if not options:
+        mass = scenario.total_mass_t or 0
+        for component in scenario.blend_components:
+            if component.id in fixed and desired[component.id] * mass > component.available_mass_t:
+                needed = desired[component.id] * mass
+                raise ValueError(
+                    f"Компонента {component.id} нужно {needed:.3g} т, "
+                    f"доступно {component.available_mass_t:.3g} т. "
+                    "Снимите фиксацию или измените долю."
+                )
+        raise ValueError(
+            "Подходящей смеси нет при заданных свойствах, запасах и закреплённых долях. "
+            "Снимите фиксацию или измените указанное свойство или массу партии."
+        )
+    result = []
+    for option in options:
+        updated = dict(values)
+        for key, share in option.fractions.items():
+            updated[f"{key}.fraction"] = f"{share * 100:.12g}"
+        updated["dose"] = f"{option.dose * 100:.12g}"
+        scenario_from_editor(base, updated)
+        result.append((option, updated))
+    return tuple(result)
+
+
 def open_editor(
     parent: tk.Tk,
     preset: ScenarioConfig,
     current: ScenarioConfig,
     calculate: Callable[[ScenarioConfig], None],
+    *,
+    calculate_with_context: Callable[[ScenarioConfig, dict[str, object]], None] | None = None,
 ) -> tk.Toplevel:
     dialog = tk.Toplevel(parent)
-    dialog.title("Синтетический what-if — не реальные данные")
-    dialog.geometry("940x680")
-    dialog.minsize(800, 620)
+    dialog.title("Подбор смеси — синтетический сценарий")
+    dialog.geometry("940x700")
+    dialog.minsize(800, 660)
     dialog.transient(parent)
+    dialog.configure(bg="#F5F7F7")
+    style = ttk.Style(dialog)
+    style.configure("WhatIf.TNotebook", background="#F5F7F7", borderwidth=0)
+    style.configure(
+        "WhatIf.TNotebook.Tab",
+        background="#EDF1F3",
+        foreground="#38485A",
+        padding=(16, 7),
+        font=("Segoe UI", 10, "bold"),
+    )
+    style.map(
+        "WhatIf.TNotebook.Tab",
+        background=[("selected", "#FFFFFF")],
+        foreground=[("selected", "#007D78")],
+    )
+    style.configure("WhatIf.TFrame", background="#FFFFFF")
+    style.configure("WhatIf.Footer.TFrame", background="#F5F7F7")
+    style.configure("WhatIf.TLabelframe", background="#FFFFFF", bordercolor="#D8E0E4")
+    style.configure(
+        "WhatIf.TLabelframe.Label",
+        background="#FFFFFF",
+        foreground="#101B28",
+        font=("Segoe UI", 11, "bold"),
+    )
+    style.configure(
+        "WhatIf.TLabel", background="#FFFFFF", foreground="#38485A", font=("Segoe UI", 10)
+    )
+    style.configure("WhatIf.TEntry", fieldbackground="#FFFFFF", foreground="#101B28", padding=3)
+    style.configure(
+        "WhatIf.TButton",
+        background="#FFFFFF",
+        foreground="#101B28",
+        bordercolor="#D8E0E4",
+        padding=(16, 9),
+        font=("Segoe UI", 10),
+    )
+    style.map("WhatIf.TButton", background=[("active", "#EDF1F3")])
+    heading = tk.Frame(dialog, bg="#F5F7F7")
+    heading.pack(fill="x", padx=24, pady=(10, 6))
     tk.Label(
+        heading,
+        text="Подбор смеси",
+        bg="#F5F7F7",
+        fg="#101B28",
+        font=("Segoe UI", 18, "bold"),
+    ).pack(anchor="w")
+    tk.Label(
+        heading,
+        text="Синтетический сценарий · управление установкой отключено",
+        bg="#F5F7F7",
+        fg="#617082",
+        font=("Segoe UI", 10),
+    ).pack(anchor="w", pady=(2, 0))
+    warning = tk.Label(
         dialog,
-        text="Синтетические свойства и запасы. Реальное управление отключено.",
-        fg="#A55E00",
-        font=("Segoe UI", 12, "bold"),
-    ).pack(pady=(14, 6))
-    tk.Label(
-        dialog, text="Пустое свойство означает неизвестное, а не ноль. Доли с присадкой = 100%."
-    ).pack()
-    notebook = ttk.Notebook(dialog)
-    notebook.pack(fill="both", expand=True, padx=16, pady=10)
+        text=(
+            "Пустое поле свойства означает «нет данных». "
+            "Пустая доля заполняется из остатка до 100 %."
+        ),
+        bg="#FFF8E8",
+        fg="#8C5400",
+        anchor="w",
+        font=("Segoe UI", 10, "bold"),
+        padx=16,
+        pady=6,
+        highlightbackground="#E9B850",
+        highlightthickness=1,
+    )
+    warning.pack(fill="x", padx=24, pady=(0, 8))
+    notebook = ttk.Notebook(dialog, style="WhatIf.TNotebook")
+    notebook.pack(fill="both", expand=True, padx=24, pady=(0, 8))
     variables = {
         key: tk.StringVar(dialog, value=value) for key, value in editor_values(current).items()
     }
-    components = ttk.Frame(notebook, padding=12)
-    notebook.add(components, text="Компоненты и текущая рецептура")
+    recipe = ttk.Frame(notebook, padding=18, style="WhatIf.TFrame")
+    notebook.add(recipe, text="Рецептура")
+    recipe.columnconfigure(0, weight=1)
+    recipe.columnconfigure(1, weight=1)
+    form = ttk.Frame(recipe, style="WhatIf.TFrame")
+    form.grid(row=0, column=0, sticky="nw", padx=(0, 20))
+    result = tk.Frame(recipe, bg="#F6F8F8", highlightbackground="#D8E0E4", highlightthickness=1)
+    result.grid(row=0, column=1, sticky="new")
+    ttk.Label(
+        form,
+        text="1. Задайте доли",
+        style="WhatIf.TLabel",
+        font=("Segoe UI", 12, "bold"),
+    ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+    ttk.Label(
+        form,
+        text="Введите долю. Остальные поля можно оставить свободными.",
+        style="WhatIf.TLabel",
+        wraplength=400,
+    ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 14))
+    locks: dict[str, tk.BooleanVar] = {}
+    entries: dict[str, ttk.Entry] = {}
+    recipe_keys = [f"{item.id}.fraction" for item in preset.blend_components] + ["dose"]
+    for row, key in enumerate(recipe_keys, 2):
+        label = "Присадка, %" if key == "dose" else f"Компонент {key.split('.')[0]}, %"
+        ttk.Label(form, text=label, style="WhatIf.TLabel").grid(
+            row=row, column=0, sticky="w", pady=7
+        )
+        entry = ttk.Entry(form, textvariable=variables[key], width=16, style="WhatIf.TEntry")
+        entry.grid(row=row, column=1, padx=12, sticky="w")
+        entries[key] = entry
+        locks[key] = tk.BooleanVar(dialog, value=False)
+        ttk.Checkbutton(form, text="Не менять", variable=locks[key]).grid(
+            row=row, column=2, sticky="w"
+        )
+    ttk.Label(form, text="Масса партии, т", style="WhatIf.TLabel").grid(
+        row=5, column=0, sticky="w", pady=7
+    )
+    entries["total_mass_t"] = ttk.Entry(
+        form, textvariable=variables["total_mass_t"], width=12, style="WhatIf.TEntry"
+    )
+    entries["total_mass_t"].grid(row=5, column=1, padx=12, sticky="w")
+    tk.Label(
+        result,
+        text="2. Выберите вариант",
+        bg="#F6F8F8",
+        fg="#101B28",
+        font=("Segoe UI", 12, "bold"),
+    ).pack(anchor="w", padx=18, pady=(17, 3))
+    tk.Label(
+        result,
+        text=(
+            "«Подобрать смесь» сохраняет последнюю введённую долю. «Найти ближайшую» "
+            "может изменить её. Для других полей используйте «Не менять»."
+        ),
+        bg="#F6F8F8",
+        fg="#617082",
+        wraplength=330,
+        justify="left",
+    ).pack(anchor="w", padx=18)
+    preview = tk.StringVar(
+        dialog, value="Исходная рецептура. Измените долю или нажмите «Подобрать смесь»."
+    )
+    tk.Label(
+        result,
+        textvariable=preview,
+        bg="#F6F8F8",
+        fg="#38485A",
+        wraplength=330,
+        justify="left",
+        anchor="nw",
+        font=("Segoe UI", 10),
+    ).pack(fill="x", padx=18, pady=(16, 8))
+    variants = ttk.Combobox(result, state="readonly", width=35)
+    variants.pack(fill="x", padx=18, pady=(2, 18))
+    variants.pack_forget()
+    components = ttk.Frame(notebook, padding=10, style="WhatIf.TFrame")
+    notebook.add(components, text="Свойства и запасы")
+    limits = []
+    for constraint in preset.constraints:
+        label, unit = {
+            "sulfur": ("сера", "мг/кг"),
+            "t95": ("T95", "°C"),
+            "cetane_number": ("цетановое число", ""),
+        }.get(constraint.metric, ("", ""))
+        if not label:
+            continue
+        if constraint.upper is not None:
+            limits.append(f"{label} ≤ {constraint.upper:g} {unit}".strip())
+        elif constraint.lower is not None:
+            limits.append(f"{label} ≥ {constraint.lower:g} {unit}".strip())
+    quality_hint = (
+        "Для компонента: верхняя оценка ≥ значения, нижняя ≤ значения. "
+        "При правке значения оценка сохраняет прежнюю разницу; "
+        "при правке оценки противоречие устраняется автоматически.\n"
+        "Для готовой смеси: " + "; ".join(limits) + ". Эти пределы проверяются после подбора."
+    )
+    quality_note = tk.StringVar(dialog, value=quality_hint)
+    ttk.Label(
+        components,
+        textvariable=quality_note,
+        style="WhatIf.TLabel",
+        wraplength=840,
+        justify="left",
+    ).grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 12))
     for col, component in enumerate(preset.blend_components):
-        frame = ttk.LabelFrame(components, text=f"Компонент {component.id}", padding=10)
-        frame.grid(row=0, column=col, sticky="nsew", padx=8)
+        frame = ttk.LabelFrame(
+            components,
+            text=f"Компонент {component.id}",
+            padding=8,
+            style="WhatIf.TLabelframe",
+        )
+        frame.grid(row=1, column=col, sticky="nsew", padx=8)
         components.columnconfigure(col, weight=1)
         for row, (field, label) in enumerate(COMPONENT_FIELDS):
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=6)
-            ttk.Entry(frame, textvariable=variables[f"{component.id}.{field}"], width=14).grid(
-                row=row, column=1, padx=10
+            if field == "fraction":
+                continue
+            ttk.Label(frame, text=label, style="WhatIf.TLabel").grid(
+                row=row, column=0, sticky="w", pady=2
             )
-    additive = ttk.Frame(notebook, padding=20)
-    notebook.add(additive, text="Партия и присадка")
+            entry = ttk.Entry(
+                frame,
+                textvariable=variables[f"{component.id}.{field}"],
+                width=14,
+                style="WhatIf.TEntry",
+            )
+            entry.grid(row=row, column=1, padx=10)
+            entries[f"{component.id}.{field}"] = entry
+    additive = ttk.Frame(notebook, padding=20, style="WhatIf.TFrame")
+    notebook.add(additive, text="Параметры присадки")
     for row, (key, label) in enumerate(ADDITIVE_FIELDS):
-        ttk.Label(additive, text=label).grid(row=row, column=0, sticky="w", pady=7)
-        ttk.Entry(additive, textvariable=variables[key], width=20).grid(row=row, column=1, padx=16)
+        if key in {"total_mass_t", "dose"}:
+            continue
+        ttk.Label(additive, text=label, style="WhatIf.TLabel").grid(
+            row=row, column=0, sticky="w", pady=7
+        )
+        entry = ttk.Entry(additive, textvariable=variables[key], width=20, style="WhatIf.TEntry")
+        entry.grid(row=row, column=1, padx=16)
+        entries[key] = entry
     error = tk.StringVar(dialog)
-    tk.Label(dialog, textvariable=error, fg="#B3473C", wraplength=880, justify="left").pack(
-        fill="x", padx=20
+    tk.Label(
+        dialog,
+        textvariable=error,
+        bg="#F5F7F7",
+        fg="#B3473C",
+        wraplength=880,
+        justify="left",
+    ).pack(fill="x", padx=24)
+
+    style.configure("WhatIf.Changed.TEntry", fieldbackground="#E2F6EF", padding=3)
+    assistant_on = tk.BooleanVar(dialog, value=True)
+    before_assist: dict[str, str] | None = None
+    options: tuple[tuple[BlendOption, dict[str, str]], ...] = ()
+    pending: str | None = None
+    updating = False
+    last_quality_edit: str | None = None
+    preferred_recipe_edit: str | None = None
+    quality_previous = {key: var.get() for key, var in variables.items()}
+
+    def cancel_pending() -> None:
+        nonlocal pending
+        if pending is not None:
+            dialog.after_cancel(pending)
+            pending = None
+
+    def values_now() -> dict[str, str]:
+        return {key: var.get() for key, var in variables.items()}
+
+    def remember_recipe_edit(*_args: str, key: str) -> None:
+        nonlocal preferred_recipe_edit, before_assist
+        if updating:
+            return
+        before_assist = None
+        error.set("")
+        if variables[key].get().strip():
+            preferred_recipe_edit = key
+
+    for key in recipe_keys:
+        variables[key].trace_add("write", partial(remember_recipe_edit, key=key))
+
+    def reconcile_quality(preferred: str | None) -> None:
+        nonlocal updating, quality_previous
+        quality_keys = [
+            f"{component.id}.{metric}.{bound}"
+            for component in preset.blend_components
+            for metric, bound in (
+                ("sulfur", "upper"),
+                ("t95", "upper"),
+                ("cetane_number", "lower"),
+            )
+        ]
+        for key in ([preferred] if preferred else []) + quality_keys:
+            if key is None:
+                continue
+            adjustment = linked_quality_adjustment(values_now(), key, quality_previous)
+            if adjustment is None:
+                continue
+            target, value, note = adjustment
+            updating = True
+            try:
+                variables[target].set(value)
+                entries[target].configure(style="WhatIf.Changed.TEntry")
+            finally:
+                updating = False
+            quality_note.set(note)
+            error.set("")
+        current_values = values_now()
+        for bound_key in quality_keys:
+            point_key = bound_key.rsplit(".", 1)[0] + ".value"
+            try:
+                point = float(current_values[point_key].strip().replace(",", "."))
+                edge = float(current_values[bound_key].strip().replace(",", "."))
+            except ValueError:
+                continue
+            valid = (
+                math.isfinite(point)
+                and math.isfinite(edge)
+                and point >= 0
+                and edge >= 0
+                and (edge >= point if bound_key.endswith(".upper") else edge <= point)
+            )
+            if valid:
+                quality_previous[point_key] = current_values[point_key]
+                quality_previous[bound_key] = current_values[bound_key]
+
+    def show_option(position: int) -> None:
+        nonlocal updating
+        option, updated = options[position]
+        old = values_now()
+        original = before_assist or old
+        updating = True
+        try:
+            for key in recipe_keys:
+                variables[key].set(updated[key])
+                entries[key].configure(
+                    style=(
+                        "WhatIf.Changed.TEntry"
+                        if updated[key] != original[key]
+                        else "WhatIf.TEntry"
+                    )
+                )
+        finally:
+            updating = False
+        names = {
+            **{f"{item.id}.fraction": f"Компонент {item.id}" for item in preset.blend_components},
+            "dose": "Присадка",
+        }
+        changes = [
+            f"{names[key]}: {original[key]}% → {updated[key]}%"
+            for key in recipe_keys
+            if original[key] != updated[key]
+        ]
+        quality = next(
+            (item.metrics for item in option.evaluation.assessments if "sulfur" in item.metrics),
+            {},
+        )
+        checks = []
+        for constraint in preset.constraints:
+            metric = quality.get(constraint.metric)
+            if metric is None:
+                continue
+            bound = (
+                "upper"
+                if constraint.use_upper_estimate
+                else "lower"
+                if constraint.use_lower_estimate
+                else "value"
+            )
+            value = getattr(metric, bound)
+            limit = constraint.upper if constraint.upper is not None else constraint.lower
+            if value is not None and limit is not None:
+                sign = "≤" if constraint.upper is not None else "≥"
+                label = {"sulfur": "Сера", "t95": "T95", "cetane_number": "ЦЧ"}.get(
+                    constraint.metric, constraint.metric
+                )
+                unit = {"sulfur": "мг/кг", "t95": "°C", "cetane_number": "ед."}.get(
+                    constraint.metric, ""
+                )
+                checks.append(f"{label}: {value:.2f} {unit} {sign} {limit:g} {unit}")
+        summary = [option.label, "", "Изменения:", *(changes or ["Смесь уже подходит."])]
+        if checks:
+            summary.extend(("", "Проверка ограничений:", *checks))
+        preview.set("\n".join(summary))
+        error.set("")
+
+    def pick(_: tk.Event[tk.Misc] | None = None) -> None:
+        if variants.current() >= 0:
+            show_option(variants.current())
+
+    variants.bind("<<ComboboxSelected>>", pick)
+
+    def suggest(
+        changed: str | None = None, *, force: bool = False, allow_changed_share: bool = False
+    ) -> None:
+        nonlocal options, before_assist
+        cancel_pending()
+        reconcile_quality(changed or last_quality_edit)
+        if updating or (not assistant_on.get() and not force):
+            return
+        raw = values_now()
+        fixed = frozenset(key for key, locked in locks.items() if locked.get())
+        preferred = None
+        if not allow_changed_share:
+            preferred = (
+                changed
+                if changed is not None and changed in locks and raw[changed].strip()
+                else preferred_recipe_edit
+            )
+        if preferred is not None and preferred in locks and raw[preferred].strip():
+            fixed |= {preferred}
+        try:
+            options = assist_editor_values(preset, raw, fixed)
+        except ValueError as exc:
+            options = ()
+            variants.pack_forget()
+            error.set(str(exc))
+            preview.set(
+                f"Сохраняем {field_label(preferred)} = {raw[preferred]} %. "
+                "Допустимой смеси с этой долей нет. Можно изменить вход или "
+                "выбрать ближайший вариант."
+                if preferred is not None and preferred.endswith(".fraction")
+                else "Автоподбор не смог составить допустимую смесь."
+            )
+            return
+        before_assist = raw
+        variants["values"] = tuple(item.label for item, _ in options)
+        variants.current(0)
+        variants.pack(fill="x", padx=18, pady=(2, 18))
+        show_option(0)
+
+    def schedule(changed: str) -> None:
+        nonlocal pending
+        if pending is not None:
+            dialog.after_cancel(pending)
+        pending = dialog.after(400, lambda: suggest(changed))
+
+    def on_return(_event: tk.Event[tk.Misc], *, name: str) -> None:
+        suggest(name)
+
+    def on_focus_out(_event: tk.Event[tk.Misc], *, name: str) -> None:
+        reconcile_quality(name)
+        schedule(name)
+
+    def on_focus_in(_event: tk.Event[tk.Misc], *, name: str) -> None:
+        nonlocal last_quality_edit
+        if name.endswith(
+            (
+                ".sulfur.value",
+                ".sulfur.upper",
+                ".t95.value",
+                ".t95.upper",
+                ".cetane_number.value",
+                ".cetane_number.lower",
+            )
+        ):
+            last_quality_edit = name
+            quality_note.set(quality_hint)
+
+    for key, entry in entries.items():
+        entry.bind("<FocusIn>", partial(on_focus_in, name=key))
+        entry.bind("<Return>", partial(on_return, name=key))
+        entry.bind("<FocusOut>", partial(on_focus_out, name=key))
+
+    def undo_assist() -> None:
+        nonlocal updating, before_assist
+        cancel_pending()
+        if before_assist is None:
+            return
+        updating = True
+        try:
+            for key in recipe_keys:
+                if key not in locks or not locks[key].get():
+                    variables[key].set(before_assist[key])
+                entries[key].configure(style="WhatIf.TEntry")
+        finally:
+            updating = False
+        before_assist = None
+        preview.set("Автоподбор отменён. Введённое значение сохранено.")
+        variants.pack_forget()
+
+    ttk.Checkbutton(form, text="Подбирать после изменения", variable=assistant_on).grid(
+        row=6, column=0, columnspan=3, sticky="w", pady=(18, 6)
+    )
+    ttk.Button(form, text="Подобрать смесь", command=lambda: suggest(force=True)).grid(
+        row=7, column=0, columnspan=2, sticky="w", pady=(6, 0)
+    )
+    ttk.Button(
+        form,
+        text="Найти ближайшую допустимую",
+        command=lambda: suggest(force=True, allow_changed_share=True),
+    ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(8, 0))
+    ttk.Button(form, text="Отменить подбор", command=undo_assist).grid(
+        row=9, column=0, columnspan=2, sticky="w", pady=(8, 0)
     )
 
     def apply() -> None:
+        nonlocal updating
+        cancel_pending()
+        reconcile_quality(last_quality_edit)
         try:
+            _, _, completed = recipe_inputs(
+                values_now(), (preset.blend_components[0].id, preset.blend_components[1].id)
+            )
+            if completed:
+                updating = True
+                try:
+                    for key, value in completed.items():
+                        variables[key].set(value)
+                        entries[key].configure(style="WhatIf.Changed.TEntry")
+                finally:
+                    updating = False
             scenario = scenario_from_editor(
                 preset, {key: var.get() for key, var in variables.items()}
             )
         except ValueError as exc:
             error.set(str(exc))
             return
-        calculate(scenario)
+        if calculate_with_context is None:
+            calculate(scenario)
+        else:
+            calculate_with_context(
+                scenario,
+                {
+                    "original_values": before_assist,
+                    "displayed_values": values_now(),
+                    "locked_fields": [key for key, value in locks.items() if value.get()],
+                    "assisted": before_assist is not None,
+                },
+            )
         dialog.destroy()
 
     def reset() -> None:
-        for key, value in editor_values(preset).items():
-            variables[key].set(value)
+        nonlocal before_assist, last_quality_edit, preferred_recipe_edit, quality_previous, updating
+        cancel_pending()
+        updating = True
+        try:
+            for key, value in editor_values(preset).items():
+                variables[key].set(value)
+        finally:
+            updating = False
+        for lock_var in locks.values():
+            lock_var.set(False)
+        before_assist = None
+        last_quality_edit = None
+        preferred_recipe_edit = None
+        quality_previous = values_now()
+        quality_note.set(quality_hint)
+        variants.pack_forget()
+        preview.set("Исходная рецептура восстановлена. Измените долю или рассчитайте результат.")
+        for key in recipe_keys:
+            entries[key].configure(style="WhatIf.TEntry")
         error.set(
             "Восстановлены исходные поля сценария. "
-            "Нажмите «Пересчитать what-if» для нового результата."
+            "Нажмите «Рассчитать смесь» для нового результата."
         )
 
-    buttons = ttk.Frame(dialog, padding=16)
+    buttons = ttk.Frame(dialog, padding=(24, 8), style="WhatIf.Footer.TFrame")
     buttons.pack(fill="x")
-    ttk.Button(buttons, text="Пересчитать what-if", command=apply).pack(side="left")
-    ttk.Button(buttons, text="Сбросить к сценарию", command=reset).pack(side="left", padx=10)
-    ttk.Button(buttons, text="Закрыть без изменений", command=dialog.destroy).pack(side="right")
+    tk.Button(
+        buttons,
+        text="Рассчитать смесь",
+        command=apply,
+        bg="#007D78",
+        fg="#FFFFFF",
+        activebackground="#006965",
+        activeforeground="#FFFFFF",
+        bd=0,
+        padx=20,
+        pady=10,
+        font=("Segoe UI", 10, "bold"),
+        cursor="hand2",
+    ).pack(side="left")
+    ttk.Button(buttons, text="Сбросить", command=reset, style="WhatIf.TButton").pack(
+        side="left", padx=10
+    )
+
+    def close_dialog() -> None:
+        cancel_pending()
+        dialog.destroy()
+
+    ttk.Button(buttons, text="Закрыть", command=close_dialog, style="WhatIf.TButton").pack(
+        side="right"
+    )
+    dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+    dialog.bind("<Escape>", lambda _event: close_dialog())
     return dialog

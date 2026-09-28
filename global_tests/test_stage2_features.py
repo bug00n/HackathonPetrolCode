@@ -16,6 +16,7 @@ from source.ml.features import (
     baseline_feature_name,
     build_features,
     build_supervised_dataset,
+    prepare_feature_batch,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -247,6 +248,65 @@ def test_training_and_serving_use_identical_features_and_model_order() -> None:
 
     assert tuple(served.columns) == feature_names
     pd.testing.assert_frame_equal(served, expected)
+
+
+def test_batched_history_features_match_single_points_with_delayed_lims() -> None:
+    signal = "ht:2:Mg.Sulfur"
+    data = _prepared(
+        pd.DataFrame(
+            {
+                "timestamp": pd.date_range("2026-01-01", periods=8, freq="1h", tz="UTC"),
+                "ht:F1": np.arange(8, dtype=float),
+            }
+        ),
+        [
+            _observation(
+                "old",
+                "2026-01-01T00:00:00Z",
+                5.0,
+                source="lims",
+                signal_id=signal,
+                available_at="2026-01-01T02:00:00Z",
+            ),
+            _observation(
+                "new",
+                "2026-01-01T04:00:00Z",
+                7.0,
+                source="lims",
+                signal_id=signal,
+                available_at="2026-01-01T06:00:00Z",
+            ),
+        ],
+        ("ht:F1",),
+    )
+    model = SimpleNamespace(
+        metadata=SimpleNamespace(
+            feature_names=(
+                "ht:F1__lag_0m",
+                baseline_feature_name(signal, "lims"),
+                f"{signal}__lims_mean_60m",
+            ),
+            target_signal=signal,
+            target_source="lims",
+            target_unit="mg/kg",
+        )
+    )
+    queries = pd.date_range("2026-01-01T01:00:00Z", periods=4, freq="2h")
+    batch = prepare_feature_batch(data, queries, model)
+    for query in queries:
+        state = ProcessState(
+            state_id="fixture",
+            as_of=query.to_pydatetime(),
+            dataset_id=data.manifest.dataset_id,
+            mode=OperationMode.HISTORY,
+            signals={},
+        )
+        single = build_features(data, query.to_pydatetime(), state, model)
+        batched = build_features(data, query.to_pydatetime(), state, model, batch=batch)
+        pd.testing.assert_frame_equal(single, batched)
+    assert np.isnan(batch.frame.iloc[0][baseline_feature_name(signal, "lims")])
+    assert batch.frame.iloc[1][baseline_feature_name(signal, "lims")] == 5.0
+    assert batch.frame.iloc[-1][baseline_feature_name(signal, "lims")] == 7.0
 
 
 def test_build_features_rejects_naive_time_and_state_mismatch() -> None:

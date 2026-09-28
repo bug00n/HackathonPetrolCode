@@ -25,6 +25,7 @@ from source.contracts import (
     IntervalKind,
     MetricEstimate,
     OperationMode,
+    ProcessState,
     Recommendation,
     RecommendationStatus,
 )
@@ -32,12 +33,19 @@ from source.data.prepare import PreparedData, write_prepared_dataset
 from source.orchestrator import run_cycle
 from source.ui import (
     format_action_shadow_payload,
+    format_alternatives,
+    format_history_interval_payload,
     format_history_replay_view,
     format_hybrid_blend_view,
+    format_journal_payload,
+    format_lims_correction_payload,
+    format_state_summary,
     format_v2_forecast_payload,
     history_replay_to_view,
     history_smoke_snapshot,
     journal_entries,
+    quality_comparison_rows,
+    recipe_comparison_rows,
     recommendation_to_view,
     ui_history_snapshot,
     ui_hybrid_snapshot,
@@ -224,12 +232,41 @@ def test_ui_exposes_complete_risk_recipe_and_quality_bounds(tmp_path: Path) -> N
     assert additive.actual == "1 %"
     assert additive.limit == "≤ 3 %"
 
+    recipe = {row[0]: row for row in recipe_comparison_rows(view)}
+    assert recipe["Компонент A"] == ("Компонент A", "69,3 %", "89,1 %", "+19,8 п.п.")
+    assert recipe["Компонент B"] == ("Компонент B", "29,7 %", "9,9 %", "-19,8 п.п.")
+    quality = {row[0]: row for row in quality_comparison_rows(view)}
+    assert len(quality) == 3
+    assert quality["Сера · верхняя, мг/кг"] == (
+        "Сера · верхняя, мг/кг",
+        "14,058",
+        "9,306",
+        "-4,752",
+        "≤ 10 мг/кг",
+    )
+
 
 def test_ui_keeps_missing_sulfur_unavailable(tmp_path: Path) -> None:
     _, view = _view("blend_missing", tmp_path)
 
     assert view.selected_upper is None
     assert view.action_title == "Требуется ручная проверка"
+    assert all(row[2] == "Не выбран" for row in quality_comparison_rows(view))
+    assert all(row[3] == "—" for row in recipe_comparison_rows(view))
+
+
+def test_ui_shows_model_risk_and_cost_tradeoff_side_by_side(tmp_path: Path) -> None:
+    _, view = _view("blend_tradeoff", tmp_path)
+    comparison = quality_comparison_rows(view)
+    assert [row[0] for row in comparison[:2]] == [
+        "Модельный риск, 0–1",
+        "Стоимость, усл. ед./т",
+    ]
+    rows = {row[0]: row for row in comparison}
+    assert rows["Модельный риск, 0–1"][1] == "0,8"
+    assert rows["Модельный риск, 0–1"][2] == "0,73"
+    assert rows["Стоимость, усл. ед./т"][1] == "1,99"
+    assert rows["Стоимость, усл. ед./т"][2] == "2,0395"
 
 
 def test_stage_snapshots_show_avt_and_hydrotreating_without_controls(tmp_path: Path) -> None:
@@ -241,20 +278,20 @@ def test_stage_snapshots_show_avt_and_hydrotreating_without_controls(tmp_path: P
     assert avt.status == "ready"
     avt_rows = {row.signal_id: row for row in avt.rows}
     assert avt_rows["avt:F65"].freshness == "fresh"
-    assert "unit is unknown" in avt_rows["avt:F65"].read_only_reason
+    assert "единица измерения не подтверждена" in avt_rows["avt:F65"].read_only_reason
     assert avt_rows["avt:F12"].freshness == "missing"
     hydro_rows = {row.signal_id: row for row in hydro.rows}
     assert hydro_rows["ht:2:Mg.Sulfur"].value == pytest.approx(8.7)
     assert hydro_rows["ht:P8"].freshness == "fresh"
-    assert "verified action artifact" in hydro_rows["ht:P8"].read_only_reason
-    assert "context-only" in hydro_rows["ht:T11"].read_only_reason
+    assert "управление отключено" in hydro_rows["ht:P8"].read_only_reason
+    assert "сигнал для контекста" in hydro_rows["ht:T11"].read_only_reason
 
 
 def test_stage_snapshot_reports_missing_dataset_gracefully(tmp_path: Path) -> None:
     snapshot = ui_stage_snapshot("avt", tmp_path / "missing", AS_OF)
 
     assert snapshot.status == "error"
-    assert "missing prepared dataset files" in snapshot.message
+    assert "не найдены" in snapshot.message
 
 
 @pytest.fixture
@@ -294,7 +331,7 @@ def release_context_root(tmp_path: Path) -> Path:
 def test_release_manifest_pins_one_live_context(release_context_root: Path) -> None:
     context = ui_data_module.discover_ui_context(release_context_root)
 
-    assert context.release_id == "neftekod-v1.1.0"
+    assert context.release_id == "neftekod-v1.3.6"
     assert context.latest_dataset is not None
     assert context.latest_dataset.endswith("66bdfcbb23b4")
     assert tuple(item.model_id for item in context.forecast_artifacts) == (
@@ -304,6 +341,13 @@ def test_release_manifest_pins_one_live_context(release_context_root: Path) -> N
         "sulfur-v2-shadow-61f972d07181",
     )
     assert context.action_artifacts == ()
+
+
+def test_corrupt_release_manifest_cannot_fall_back_to_latest(release_context_root: Path) -> None:
+    release_file = release_context_root / "config/release_manifest.json"
+    release_file.write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid release manifest"):
+        ui_data_module.discover_ui_context(release_context_root)
 
 
 def test_missing_release_pins_do_not_select_other_available_inputs(
@@ -376,7 +420,12 @@ def test_history_interval_ui_retains_and_exports_completed_result(
     monkeypatch.setattr(ui_module.PetrolCodeApp, "calculate", lambda self: None)
     monkeypatch.setattr(ui_module, "history_interval_command", lambda *args, **kwargs: payload)
     monkeypatch.setattr(
-        ui_module.threading, "Thread", lambda target, **kwargs: SimpleNamespace(start=target)
+        ui_module,
+        "ThreadPoolExecutor",
+        lambda **kwargs: SimpleNamespace(
+            submit=lambda target, *args: target(*args),
+            shutdown=lambda **kwargs: None,
+        ),
     )
     monkeypatch.setattr(
         ui_module.filedialog, "asksaveasfilename", lambda **kwargs: str(destination)
@@ -407,7 +456,12 @@ def test_history_interval_ui_retains_and_exports_completed_result(
         app.show_page("journal")
         app.show_page("history")
         assert any(
-            '"points": 2' in widget.get("1.0", "end")
+            "Рассчитано точек: 2 из 2" in widget.get("1.0", "end")
+            for widget in descendants(app)
+            if isinstance(widget, tk.Text)
+        )
+        assert all(
+            '"points": 2' not in widget.get("1.0", "end")
             for widget in descendants(app)
             if isinstance(widget, tk.Text)
         )
@@ -432,7 +486,10 @@ def test_history_snapshot_with_forecast_only_is_not_actionable(
     assert view.action_state == "not_actionable"
     assert view.sulfur_upper == pytest.approx(11.0)
     assert "ACTION_MODEL_UNAVAILABLE" in view.reason_codes
-    assert "Raw recommendation JSON" in format_history_replay_view(view)
+    text = format_history_replay_view(view)
+    assert "Raw recommendation JSON" not in text
+    assert "ACTION_MODEL_UNAVAILABLE" not in text
+    assert "реального действия" in text
 
 
 def test_history_snapshot_reports_invalid_datetime_without_reparsing_failure() -> None:
@@ -505,7 +562,10 @@ def test_hybrid_snapshot_uses_history_forecast_without_imputing_component_a(
     assert view.component_sulfur_upper == pytest.approx(11.0)
     assert view.blend_sulfur_upper == pytest.approx(17.0)
     assert view.constraint_status == "fail"
-    assert "Hybrid sulfur-only blend" in format_hybrid_blend_view(view)
+    text = format_hybrid_blend_view(view)
+    assert "Условное смешение" in text
+    assert "Hybrid sulfur-only blend" not in text
+    assert "ACTION_MODEL_UNAVAILABLE" not in text
 
 
 def test_action_shadow_view_separates_domain_validation_and_safety() -> None:
@@ -524,10 +584,11 @@ def test_action_shadow_view_separates_domain_validation_and_safety() -> None:
         }
     )
 
-    assert "Изменение к hold" in text
+    assert "Изменение к исходному режиму" in text
     assert "Историческая область: да" in text
-    assert "Validation модели: не пройдена" in text
+    assert "Проверка модели: не пройдена" in text
     assert "Верхняя граница серы: не проходит" in text
+    assert "ACTION_EFFECT_VALIDATION_FAILED" not in text
 
 
 def test_v2_shadow_view_shows_horizons_and_never_advises() -> None:
@@ -547,9 +608,83 @@ def test_v2_shadow_view_shows_horizons_and_never_advises() -> None:
     )
 
     assert "Эпизодный прогноз серы" in text
-    assert "60 мин | 40.0%" in text
+    assert "60 мин: 40,0 %" in text
     assert "не изменяет уставки" in text
-    assert "shadow_only" in text
+    assert "shadow_only" not in text
+
+
+def test_detail_formatters_keep_technical_json_out_of_default_view() -> None:
+    payload = _history_recommendation().model_dump(mode="json")
+    journal = format_journal_payload(payload)
+    assert "Отказ от управляющего действия" in journal
+    assert "невозможно оценить эффект" in journal
+    assert '"reason_codes"' not in journal
+    assert "ACTION_MODEL_UNAVAILABLE" not in journal
+
+    interval = format_history_interval_payload(
+        {
+            "points": 2,
+            "requested_points": 2,
+            "forecast_coverage": 1.0,
+            "status_counts": {"abstain": 2},
+            "reason_counts": {"ACTION_MODEL_UNAVAILABLE": 2},
+        }
+    )
+    assert "Прогноз серы доступен в 100 % точек" in interval
+    assert '"points"' not in interval
+    assert "ACTION_MODEL_UNAVAILABLE" not in interval
+
+
+def test_alternatives_show_recipe_and_quality_without_internal_ids(tmp_path: Path) -> None:
+    scenario = load_scenario("config/scenarios/blend_risk.json")
+    result = run_cycle(
+        data=None,
+        as_of=AS_OF,
+        model=None,
+        scenario=scenario,
+        config=load_runtime_config("config/runtime.toml"),
+        context=DecisionContext(),
+        run_dir=tmp_path,
+    )
+
+    text = format_alternatives(result)
+
+    assert result.alternatives
+    assert "Вариант 1" in text
+    assert "компонент A" in text
+    assert "Верхняя оценка серы" in text
+    assert "point" not in text
+    assert "blend:A=" not in text
+
+
+def test_research_details_show_plain_language_gate_and_signal_counts() -> None:
+    state = ProcessState(
+        state_id="state-1",
+        as_of=AS_OF,
+        dataset_id="dataset-1",
+        mode=OperationMode.HISTORY,
+        signals={},
+    )
+    assert "Сигналов: 0" in format_state_summary(state)
+
+    report = format_lims_correction_payload(
+        {
+            "report": {
+                "promotion_eligible": False,
+                "validation_pak_point_mae": 0.8,
+                "validation_corrected_mae": 0.9,
+                "validation_upper_coverage": 0.94,
+                "test_rows": 100,
+                "pak_point_mae": 0.7,
+                "corrected_mae": 0.75,
+                "test_used_for_selection": False,
+            }
+        }
+    )
+    assert "Допуск к теневой проверке: нет" in report
+    assert "Ошибка с коррекцией на валидации: 0,9 мг/кг" in report
+    assert "Отложенный тест: 100 наблюдений" in report
+    assert "promotion_eligible" not in report
 
 
 def test_journal_lists_only_complete_results_newest_first(tmp_path: Path) -> None:

@@ -7,7 +7,8 @@ on:
     branches: [ main, dev ]
 
 jobs:
-  lint-and-test:
+  test-matrix:
+    name: lint-and-test (${{ matrix.os }}, ${{ matrix.python }})
     strategy:
       fail-fast: false
       matrix:
@@ -53,3 +54,12 @@ jobs:
         run: |
           python -m source.main validate-stage0
           python -m source.main acceptance --output reports/ci-acceptance
+
+  lint-and-test:
+    name: lint-and-test
+    runs-on: ubuntu-latest
+    needs: test-matrix
+    if: always()
+    steps:
+      - name: Require both platform checks
+        run: test '${{ needs.test-matrix.result }}' = 'success'

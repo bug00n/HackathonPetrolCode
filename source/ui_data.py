@@ -38,8 +38,8 @@ from source.ml.blending import (
 )
 
 AVT_SIGNAL_GROUPS: dict[str, tuple[str, ...]] = {
-    "K-2 state": ("avt:F65", "avt:T20", "avt:T33", "avt:P21", "avt:P22", "avt:P23", "avt:P67"),
-    "K-2 circulation": (
+    "Состояние К-2": ("avt:F65", "avt:T20", "avt:T33", "avt:P21", "avt:P22", "avt:P23", "avt:P67"),
+    "Циркуляция К-2": (
         "avt:F14",
         "avt:T13",
         "avt:T18",
@@ -49,14 +49,14 @@ AVT_SIGNAL_GROUPS: dict[str, tuple[str, ...]] = {
         "avt:T11",
         "avt:T15",
     ),
-    "Diesel cut": ("avt:T66", "avt:F28", "avt:F32", "avt:T71", "avt:F30", "avt:W70"),
+    "Дизельная фракция": ("avt:T66", "avt:F28", "avt:F32", "avt:T71", "avt:F30", "avt:W70"),
 }
 
 HYDROTREATING_SIGNAL_GROUPS: dict[str, tuple[str, ...]] = {
-    "Quality": ("ht:2:Mg.Sulfur", "ht:density_15c"),
-    "Action readiness": ("ht:P8", "ht:F19"),
-    "Process context": ("ht:T11", "ht:F26", "ht:F14", "ht:F15", "ht:F17"),
-    "Gas context": ("ht:F2", "ht:F22", "ht:F25"),
+    "Качество": ("ht:2:Mg.Sulfur", "ht:density_15c"),
+    "Теги исследования действий": ("ht:P8", "ht:F19"),
+    "Технологические сигналы": ("ht:T11", "ht:F26", "ht:F14", "ht:F15", "ht:F17"),
+    "Газовый контур": ("ht:F2", "ht:F22", "ht:F25"),
 }
 
 ACTION_CONTROL_IDS = {"ht:P8", "ht:F19"}
@@ -170,13 +170,22 @@ def list_prepared_datasets(root: Path = PROJECT_ROOT) -> tuple[Path, ...]:
 
 
 def _release_manifest(root: Path) -> dict[str, Any]:
-    """Read the optional release pin without making it a runtime dependency."""
+    """Allow discovery only when no release manifest exists at all."""
     path = root / "config/release_manifest.json"
+    if not path.exists():
+        return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid release manifest: {path}") from exc
+    if not isinstance(payload, dict) or payload.get("schema_version") != "1.0":
+        raise ValueError("unsupported release manifest schema")
+    for key in ("release_id", "prepared_dataset", "forecast_artifact", "v2_artifact"):
+        if not isinstance(payload.get(key), str) or not payload[key]:
+            raise ValueError(f"release manifest needs {key}")
+    if "action_artifact" not in payload:
+        raise ValueError("release manifest needs action_artifact, null if disabled")
+    return payload
 
 
 def _manifest_dataset_id(path: Path) -> str | None:
@@ -292,11 +301,7 @@ def discover_ui_context(root: Path = PROJECT_ROOT) -> UiContext:
         forecast_artifacts=forecast,
         action_artifacts=action,
         v2_artifacts=v2,
-        release_id=(
-            str(_release_manifest(root).get("release_id"))
-            if _release_manifest(root).get("release_id")
-            else None
-        ),
+        release_id=str(manifest["release_id"]) if manifest.get("release_id") else None,
     )
 
 
@@ -331,10 +336,7 @@ def ui_stage_snapshot(
             dataset_id=None,
             as_of=None,
             status="empty",
-            message=(
-                "Prepared dataset is not available. Run: python -m source.main prepare "
-                "--materials materials --config config/runtime.toml"
-            ),
+            message="Подготовленный набор данных не найден. Проверьте папку данных в настройках.",
             fresh_count=0,
             stale_count=0,
             missing_count=0,
@@ -343,6 +345,9 @@ def ui_stage_snapshot(
     try:
         config = load_runtime_config(root / "config/runtime.toml")
         data = load_prepared_dataset(data_path)
+        data.telemetry["timestamp"] = pd.to_datetime(
+            data.telemetry["timestamp"], utc=True, errors="coerce"
+        )
         timestamp = _parse_as_of(as_of) if as_of is not None else _default_as_of(data)
         tags = _tags_by_signal_id(root)
         groups = AVT_SIGNAL_GROUPS if canonical_page == "avt" else HYDROTREATING_SIGNAL_GROUPS
@@ -359,7 +364,14 @@ def ui_stage_snapshot(
             dataset_id=None,
             as_of=None,
             status="error",
-            message=str(exc),
+            message=(
+                "Файлы подготовленного набора данных не найдены. Проверьте выбранную папку."
+                if isinstance(exc, FileNotFoundError)
+                else (
+                    "Не удалось открыть подготовленные данные. "
+                    "Проверьте путь и совместимость набора."
+                )
+            ),
             fresh_count=0,
             stale_count=0,
             missing_count=0,
@@ -375,9 +387,7 @@ def ui_stage_snapshot(
         dataset_id=data.manifest.dataset_id,
         as_of=timestamp.isoformat(),
         status="ready",
-        message=(
-            "Read-only process context. Real setpoint changes require a verified action artifact."
-        ),
+        message="Сигналы доступны только для просмотра. Изменение уставок отключено.",
         fresh_count=fresh,
         stale_count=stale,
         missing_count=missing,
@@ -397,7 +407,7 @@ def ui_history_snapshot(
     if not dataset or not model:
         return UiHistoryReplayView(
             status="empty",
-            message="Prepared dataset and forecast artifact are required for history replay.",
+            message="Для прогноза выберите подготовленные данные и модель.",
             recommendation_status=None,
             scenario_id=None,
             model_id=None,
@@ -428,7 +438,7 @@ def ui_history_snapshot(
     except Exception as exc:
         return UiHistoryReplayView(
             status="error",
-            message=str(exc),
+            message="Не удалось рассчитать прогноз. Проверьте время, данные и модель.",
             recommendation_status=None,
             scenario_id=None,
             model_id=None,
@@ -496,7 +506,7 @@ def ui_hybrid_snapshot(
     if not dataset or not model:
         return UiHybridBlendView(
             status="empty",
-            message="Hybrid needs a prepared dataset and a trusted sulfur forecast artifact.",
+            message="Для условной смеси выберите подготовленные данные и модель прогноза серы.",
             scenario_id="hybrid_blend",
             source_state_id=None,
             model_id=None,
@@ -516,7 +526,7 @@ def ui_hybrid_snapshot(
         if sulfur_point is None and sulfur_upper is None:
             return UiHybridBlendView(
                 status="empty",
-                message="History replay did not produce a sulfur forecast for component A.",
+                message="Прогноз серы для компонента A недоступен на выбранный момент.",
                 scenario_id="hybrid_blend",
                 source_state_id=result.state_id,
                 model_id=result.model_id,
@@ -540,7 +550,7 @@ def ui_hybrid_snapshot(
             ),
             interval_level=0.95 if sulfur_upper is not None else None,
             reference=f"history replay {result.run_id}",
-            assumptions=("Component A is populated from a trusted history sulfur forecast.",),
+            assumptions=("Сера компонента A взята из проверенного исторического прогноза.",),
         )
         forecast = HybridComponentForecast(
             component_id="A",
@@ -566,8 +576,8 @@ def ui_hybrid_snapshot(
         return UiHybridBlendView(
             status="ready",
             message=(
-                "Hybrid is sulfur-only and keeps AVT-to-hydrotreatment linkage as an "
-                "explicit assumption."
+                "Условная смесь проверяет только серу; связь АВТ и гидроочистки "
+                "остаётся допущением."
             ),
             scenario_id=scenario.id,
             source_state_id=result.state_id,
@@ -696,7 +706,7 @@ def _signal_row(
             available_at=None,
             age_minutes=None,
             freshness="missing",
-            issue="no valid observation at as_of",
+            issue="на выбранный момент нет доступного измерения",
             evidence_ref=evidence,
             read_only_reason=read_only_reason,
         )
@@ -719,7 +729,9 @@ def _signal_row(
         available_at=available_at.isoformat(),
         age_minutes=age_minutes,
         freshness="fresh" if fresh else "stale",
-        issue="" if fresh else f"age {age_minutes:.0f} min exceeds {limit:.0f} min",
+        issue=""
+        if fresh
+        else f"данные старше нормы: {age_minutes:.0f} мин при пределе {limit:.0f} мин",
         evidence_ref=evidence,
         read_only_reason=read_only_reason,
     )
@@ -794,21 +806,30 @@ def _freshness_limit_minutes(config: Any, source: str) -> float:
 
 def _read_only_reason(signal_id: str, unit: str) -> str:
     if signal_id in ACTION_CONTROL_IDS:
-        return (
-            "candidate control; disabled until a verified action artifact supplies bounds and gates"
-        )
+        return "управление отключено до проверки модели эффекта и пределов изменения"
     if signal_id in CONTEXT_ONLY_IDS:
-        return "context-only signal; not an enabled action control"
+        return "сигнал для контекста; управление по нему отключено"
     if unit == Unit.UNKNOWN.value:
-        return "read-only context; unit is unknown and cannot define a control"
-    return "read-only process context"
+        return "единица измерения не подтверждена; управление отключено"
+    return "технологический сигнал только для просмотра"
 
 
 def _format_value(value: float | None, unit: str) -> str:
     if value is None:
         return "—"
-    rendered = f"{value:.3f}".rstrip("0").rstrip(".")
-    return f"{rendered} {unit}".strip()
+    rendered = f"{value:.3f}".rstrip("0").rstrip(".").replace(".", ",")
+    label = {
+        "unknown": "единица не указана",
+        "mg/kg": "мг/кг",
+        "kg/m3": "кг/м³",
+        "m3/h": "м³/ч",
+        "Nm3/h": "нм³/ч",
+        "t/h": "т/ч",
+        "MPa": "МПа",
+        "degC": "°C",
+        "vol%": "об. %",
+    }.get(unit, unit)
+    return f"{rendered} {label}".strip()
 
 
 def _metric(

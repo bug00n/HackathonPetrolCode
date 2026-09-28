@@ -8,9 +8,11 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -30,10 +32,18 @@ from source.contracts import (
     Validity,
 )
 
-PREPARATION_VERSION = "1"
+PREPARATION_VERSION = "2"
 _ARCHIVE_MEMBERS = {"data/avt_tags.csv", "data/242000_tags.csv"}
 _PUBLISH_ATTEMPTS = 5
 _PUBLISH_RETRY_SECONDS = 0.05
+_PREPARED_CACHE_LOCK = threading.Lock()
+_PREPARED_FILES = (
+    "manifest.json",
+    "telemetry.csv.gz",
+    "quality.csv.gz",
+    "issues.csv.gz",
+    "feature_order.json",
+)
 
 RAW_UNIT_MAP: dict[str, Unit] = {
     "°С": Unit.CELSIUS,
@@ -168,24 +178,44 @@ def _publish_directory(temporary: Path, target: Path) -> None:
             time.sleep(_PUBLISH_RETRY_SECONDS * (2**attempt))
 
 
+def _validate_archive_entries(entries: list[tuple[str, bool, bool]]) -> None:
+    """Accept only the two CSV files and their real parent directory."""
+    expected = _ARCHIVE_MEMBERS | {"data"}
+    seen: set[str] = set()
+    for name, is_directory, is_file in entries:
+        # A single leading ./ is harmless; stripping arbitrary dots would hide ../.
+        normalized = name.removeprefix("./")
+        if normalized == "data/":
+            normalized = "data"
+        if (
+            "\\" in name
+            or normalized not in expected
+            or normalized in seen
+            or (normalized == "data" and not is_directory)
+            or (normalized != "data" and not is_file)
+        ):
+            raise ValueError(f"unsafe archive member: {name}")
+        seen.add(normalized)
+    if seen != expected:
+        raise ValueError(f"unexpected archive members: {sorted(seen)}")
+
+
 def _extract_telemetry(archive: Path, destination: Path) -> Path:
     """Validate archive members before extraction to a temporary directory."""
     try:
         with tarfile.open(archive) as stream:
-            members = {
-                member.name.replace("\\", "/").lstrip("./").rstrip("/")
-                for member in stream.getmembers()
-            }
-            if members != _ARCHIVE_MEMBERS | {"data"}:
-                raise ValueError(f"unexpected archive members: {sorted(members)}")
+            members = stream.getmembers()
+            _validate_archive_entries(
+                [(member.name, member.isdir(), member.isfile()) for member in members]
+            )
             destination_root = destination.resolve()
-            for member in stream.getmembers():
+            for member in members:
                 target = (destination / member.name).resolve()
                 try:
                     target.relative_to(destination_root)
                 except ValueError as exc:
                     raise ValueError(f"unsafe archive member: {member.name}") from exc
-            stream.extractall(destination)
+            stream.extractall(destination, members=members)
             return destination / "data"
     except tarfile.TarError:
         pass
@@ -193,9 +223,17 @@ def _extract_telemetry(archive: Path, destination: Path) -> Path:
     listing = subprocess.run(
         ["tar", "-tf", str(archive)], check=True, capture_output=True, text=True
     ).stdout.splitlines()
-    members = {name.replace("\\", "/").lstrip("./").rstrip("/") for name in listing}
-    if members != _ARCHIVE_MEMBERS | {"data"}:
-        raise ValueError(f"unexpected archive members: {sorted(members)}")
+    details = subprocess.run(
+        ["tar", "-tvf", str(archive)], check=True, capture_output=True, text=True
+    ).stdout.splitlines()
+    if len(listing) != len(details):
+        raise ValueError("archive member listings disagree")
+    _validate_archive_entries(
+        [
+            (name, detail.startswith("d"), detail.startswith("-"))
+            for name, detail in zip(listing, details, strict=True)
+        ]
+    )
     subprocess.run(["tar", "-xf", str(archive), "-C", str(destination)], check=True)
     return destination / "data"
 
@@ -288,7 +326,9 @@ def prepare_dataset(materials_dir: Path, config: RuntimeConfig) -> PreparedData:
         _source_artifact(path, materials_dir.parent)
         for path in (archive, pak_path, lims_path, tag_path, rules_path)
     )
-    config_hash = hashlib.sha256(config_fingerprint(config).encode()).hexdigest()
+    config_hash = hashlib.sha256(
+        config_fingerprint(config, preparation_only=True).encode()
+    ).hexdigest()
     tag_hash = _sha256(tag_path)
     telemetry_rules_hash = _sha256(rules_path)
     identity_parts = sorted(item.sha256 for item in sources) + [
@@ -352,9 +392,9 @@ def write_prepared_dataset(data: PreparedData, output_root: Path) -> Path:
     }
     if manifest_path.exists():
         existing = DatasetManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
-        if existing.model_dump(exclude={"created_at"}) != data.manifest.model_dump(
-            exclude={"created_at"}
-        ):
+        if existing.model_dump(
+            exclude={"created_at", "schema_version", "prepared_sha256"}
+        ) != data.manifest.model_dump(exclude={"created_at", "schema_version", "prepared_sha256"}):
             raise FileExistsError(f"dataset_id collision at {target}")
         missing = [
             path.name
@@ -363,19 +403,27 @@ def write_prepared_dataset(data: PreparedData, output_root: Path) -> Path:
         ]
         if missing:
             raise FileExistsError(f"incomplete prepared dataset at {target}: missing {missing}")
+        _verify_prepared_files(target, existing)
         return target
 
     temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=output_root))
     try:
         for name, frame in files.items():
             frame.to_csv(temporary / name, index=False, compression="gzip")
-        (temporary / "manifest.json").write_text(
-            data.manifest.model_dump_json(indent=2), encoding="utf-8", newline="\n"
-        )
         (temporary / "feature_order.json").write_text(
             json.dumps(list(data.feature_order), ensure_ascii=False, indent=2),
             encoding="utf-8",
             newline="\n",
+        )
+        hashes = {name: _sha256(temporary / name) for name in _PREPARED_FILES[1:]}
+        published_manifest = data.manifest.model_copy(
+            update={
+                "schema_version": "1.1" if data.manifest.preparation_version == "2" else "1.0",
+                "prepared_sha256": hashes,
+            }
+        )
+        (temporary / "manifest.json").write_text(
+            published_manifest.model_dump_json(indent=2), encoding="utf-8", newline="\n"
         )
         required = (
             temporary / "manifest.json",
@@ -391,24 +439,60 @@ def write_prepared_dataset(data: PreparedData, output_root: Path) -> Path:
     return target
 
 
-def load_prepared_dataset(dataset_path: Path) -> PreparedData:
-    """Load a prepared dataset written by :func:`write_prepared_dataset`."""
-    dataset_path = dataset_path.resolve()
-    manifest_path = dataset_path / "manifest.json"
-    telemetry_path = dataset_path / "telemetry.csv.gz"
-    quality_path = dataset_path / "quality.csv.gz"
-    issues_path = dataset_path / "issues.csv.gz"
-    feature_order_path = dataset_path / "feature_order.json"
-    required = (manifest_path, telemetry_path, quality_path, issues_path, feature_order_path)
-    missing = [path.name for path in required if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(f"{dataset_path}: missing prepared dataset files: {missing}")
-    return PreparedData(
+def _verify_prepared_files(dataset_path: Path, manifest: DatasetManifest) -> None:
+    expected = manifest.prepared_sha256
+    if expected is None:
+        release_root = dataset_path.parent.parent.parent
+        release_file = release_root / "config/release_manifest.json"
+        if release_file.is_file():
+            release = json.loads(release_file.read_text(encoding="utf-8"))
+            if (release_root / release.get("prepared_dataset", "")).resolve() == dataset_path:
+                expected = release.get("prepared_sha256")
+                if not isinstance(expected, dict):
+                    raise ValueError("pinned legacy dataset has no trusted prepared hashes")
+    if expected is None:
+        return  # Unpinned legacy development fixtures cannot be retroactively authenticated.
+    if set(expected) != set(_PREPARED_FILES[1:]):
+        raise ValueError("prepared file hash manifest is incomplete")
+    for name, digest in expected.items():
+        if not isinstance(digest, str) or _sha256(dataset_path / name) != digest:
+            raise ValueError(f"prepared dataset checksum mismatch: {name}")
+
+
+@lru_cache(maxsize=1)
+def _read_prepared_dataset(dataset_path: Path, file_hashes: tuple[str, ...]) -> PreparedData:
+    """Keep one verified, unmodified parsed dataset in process memory."""
+    required = tuple(dataset_path / name for name in _PREPARED_FILES)
+    manifest_path, telemetry_path, quality_path, issues_path, feature_order_path = required
+    data = PreparedData(
         telemetry=pd.read_csv(telemetry_path),
         quality=pd.read_csv(quality_path),
         issues=pd.read_csv(issues_path),
         manifest=DatasetManifest.model_validate_json(manifest_path.read_text(encoding="utf-8")),
         feature_order=tuple(json.loads(feature_order_path.read_text(encoding="utf-8"))),
+    )
+    if tuple(_sha256(path) for path in required) != file_hashes:
+        raise OSError(f"prepared dataset changed while loading: {dataset_path}")
+    return data
+
+
+def load_prepared_dataset(dataset_path: Path) -> PreparedData:
+    """Load prepared data, reusing a content-checked in-memory parse when possible."""
+    dataset_path = dataset_path.resolve()
+    required = tuple(dataset_path / name for name in _PREPARED_FILES)
+    missing = [path.name for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"{dataset_path}: missing prepared dataset files: {missing}")
+    file_hashes = tuple(_sha256(path) for path in required)
+    with _PREPARED_CACHE_LOCK:
+        cached = _read_prepared_dataset(dataset_path, file_hashes)
+    _verify_prepared_files(dataset_path, cached.manifest)
+    return PreparedData(
+        telemetry=cached.telemetry.copy(),
+        quality=cached.quality.copy(),
+        issues=cached.issues.copy(),
+        manifest=cached.manifest.model_copy(deep=True),
+        feature_order=cached.feature_order,
     )
 
 

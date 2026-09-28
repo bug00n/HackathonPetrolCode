@@ -80,13 +80,21 @@ class HistoryChart(tk.Canvas):
         self.delete("all")
         width, height = max(self.winfo_width(), 600), max(self.winfo_height(), 290)
         left, right, top, bottom = 62.0, float(width - 24), 52.0, float(height - 64)
-        self.create_text(
-            left,
-            16,
-            anchor="w",
-            fill="#007D78",
-            text="● Прогноз серы     ● Верхняя оценка (синяя)     — Предел 10 мг/кг",
-        )
+        for legend_x, color, label, dashed in (
+            (left, "#007D78", "Прогноз серы", False),
+            (left + 164, "#3366BB", "Верхняя оценка", False),
+            (left + 354, "#D88400", "Предел 10 мг/кг", True),
+        ):
+            self.create_line(
+                legend_x,
+                18,
+                legend_x + 22,
+                18,
+                fill=color,
+                width=3,
+                dash=(6, 4) if dashed else (),
+            )
+            self.create_text(legend_x + 30, 18, anchor="w", fill="#38485A", text=label)
         self.create_text(
             right,
             height - 10,

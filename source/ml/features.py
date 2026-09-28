@@ -47,6 +47,28 @@ class SupervisedDataset:
     excluded_counts: dict[str, int]
 
 
+@dataclass(frozen=True, eq=False)
+class FeatureBatch:
+    """Features for one bounded history interval chunk and its exact inputs."""
+
+    data: PreparedData
+    model: object
+    queries: pd.DatetimeIndex
+    frame: FeatureFrame
+
+
+@dataclass(frozen=True, eq=False)
+class FeatureSources:
+    """Validated and sorted source tables shared by history replay chunks."""
+
+    data: PreparedData
+    model: object
+    telemetry: pd.DataFrame
+    target_history: pd.DataFrame
+    published_history: pd.DataFrame
+    feature_spec: tuple[tuple[str, ...], tuple[str, ...], str, SourceKind, str]
+
+
 def _enum_value(value: object) -> str:
     """Return a stable string for plain strings and string enums."""
     raw = getattr(value, "value", value)
@@ -250,7 +272,10 @@ def _window_values(
 
 
 def _last_available_quality(
-    observations: pd.DataFrame, queries: pd.DatetimeIndex
+    observations: pd.DataFrame,
+    queries: pd.DatetimeIndex,
+    *,
+    events_sorted: bool = False,
 ) -> tuple[np.ndarray[Any, np.dtype[np.float64]], np.ndarray[Any, np.dtype[np.float64]]]:
     """Select the latest measured observation among those published by each as_of."""
     values = np.full(len(queries), np.nan, dtype=float)
@@ -258,9 +283,13 @@ def _last_available_quality(
     if observations.empty or queries.empty:
         return values, ages
 
-    events = observations.sort_values(
-        ["available_at", "measured_at", "observation_id"], kind="stable"
-    ).reset_index(drop=True)
+    events = (
+        observations
+        if events_sorted
+        else observations.sort_values(
+            ["available_at", "measured_at", "observation_id"], kind="stable"
+        ).reset_index(drop=True)
+    )
     available = pd.DatetimeIndex(events["available_at"]).as_unit("ns").astype("int64").to_numpy()
     measured = pd.DatetimeIndex(events["measured_at"]).as_unit("ns").astype("int64").to_numpy()
     query_times = queries.as_unit("ns").astype("int64").to_numpy()
@@ -323,15 +352,30 @@ def _feature_matrix(
     target_signal_id: str,
     target_source: SourceKind,
     target_unit: str,
+    *,
+    sources: FeatureSources | None = None,
 ) -> pd.DataFrame:
     """Build the common training/serving matrix for already-normalized UTC times."""
-    telemetry = _telemetry(data, telemetry_signals)
+    telemetry = sources.telemetry if sources is not None else _telemetry(data, telemetry_signals)
     lag_values = _lag_values(telemetry, queries, telemetry_signals)
     window_values = _window_values(telemetry, queries, telemetry_signals)
-    target_history = _quality_rows(data, target_signal_id, target_source, target_unit)
-    last_values, ages = _last_available_quality(target_history, queries)
+    target_history = (
+        sources.target_history
+        if sources is not None
+        else _quality_rows(data, target_signal_id, target_source, target_unit)
+    )
+    published_history = (
+        sources.published_history
+        if sources is not None
+        else target_history.sort_values(
+            ["available_at", "measured_at", "observation_id"], kind="stable"
+        ).reset_index(drop=True)
+    )
+    last_values, ages = _last_available_quality(published_history, queries, events_sorted=True)
     quality_lags = {
-        lag: _last_available_quality(target_history, queries - pd.Timedelta(minutes=lag))[0]
+        lag: _last_available_quality(
+            published_history, queries - pd.Timedelta(minutes=lag), events_sorted=True
+        )[0]
         for lag in LAG_MINUTES
     }
     quality_windows = _quality_window_values(target_history, queries)
@@ -442,19 +486,10 @@ def _metadata_value(metadata: object, *names: str) -> object:
     raise ValueError(f"model metadata is missing {names[0]}")
 
 
-def build_features(
-    data: PreparedData,
-    as_of: datetime,
-    state: ProcessState,
-    model: object,
-) -> FeatureFrame:
-    """Build one serving row in the exact feature order stored by the model."""
-    query = _as_utc(as_of, "as_of")
-    if _as_utc(state.as_of, "state.as_of") != query:
-        raise ValueError("state.as_of must match feature as_of")
-    if state.dataset_id != data.manifest.dataset_id:
-        raise ValueError("state and prepared data dataset_id mismatch")
-
+def _model_feature_spec(
+    data: PreparedData, model: object
+) -> tuple[tuple[str, ...], tuple[str, ...], str, SourceKind, str]:
+    """Resolve the frozen model's feature contract once per feature build."""
     metadata = getattr(model, "metadata", None)
     if metadata is None:
         raise ValueError("model needs metadata")
@@ -483,6 +518,107 @@ def build_features(
         if signal in data.telemetry.columns
         and any(name.startswith(f"{signal}__") for name in feature_names)
     )
+    if isinstance(processing, dict) and isinstance(processing.get("feature_definition"), dict):
+        definition = processing["feature_definition"]
+        expected_recipe = {
+            "horizon_minutes": _metadata_value(metadata, "horizon_minutes"),
+            "lags_minutes": list(LAG_MINUTES),
+            "rolling_windows_minutes": list(WINDOW_MINUTES),
+            "telemetry_max_age_minutes": TELEMETRY_MAX_AGE_MINUTES,
+            "telemetry_signals": list(telemetry_signals),
+            "quality_history_source": target_source.value,
+            "autoregressive_target_signal": target_signal_id,
+        }
+        mismatched = [
+            key
+            for key, value in expected_recipe.items()
+            if key in definition
+            and (
+                sorted(definition[key]) != sorted(telemetry_signals)
+                if key == "telemetry_signals" and isinstance(definition[key], list)
+                else definition[key] != value
+            )
+        ]
+        if mismatched:
+            raise ValueError("model feature recipe is incompatible with serving code")
+    return feature_names, telemetry_signals, target_signal_id, target_source, target_unit
+
+
+def prepare_feature_sources(data: PreparedData, model: object) -> FeatureSources:
+    """Parse the large source tables once for a historical interval."""
+    spec = _model_feature_spec(data, model)
+    _, telemetry_signals, target_signal_id, target_source, target_unit = spec
+    target_history = _quality_rows(data, target_signal_id, target_source, target_unit)
+    published_history = target_history.sort_values(
+        ["available_at", "measured_at", "observation_id"], kind="stable"
+    ).reset_index(drop=True)
+    return FeatureSources(
+        data,
+        model,
+        _telemetry(data, telemetry_signals),
+        target_history,
+        published_history,
+        spec,
+    )
+
+
+def prepare_feature_batch(
+    data: PreparedData,
+    queries: pd.DatetimeIndex,
+    model: object,
+    *,
+    sources: FeatureSources | None = None,
+) -> FeatureBatch:
+    """Build feature rows together for a bounded, UTC-aware replay chunk."""
+    if queries.empty or queries.tz is None:
+        raise ValueError("feature batch requires timezone-aware, nonempty queries")
+    utc_queries = queries.tz_convert("UTC")
+    if sources is not None and (sources.data is not data or sources.model is not model):
+        raise ValueError("feature sources inputs do not match this replay")
+    feature_names, telemetry_signals, target_signal_id, target_source, target_unit = (
+        sources.feature_spec if sources is not None else _model_feature_spec(data, model)
+    )
+    generated = _feature_matrix(
+        data,
+        utc_queries,
+        telemetry_signals,
+        target_signal_id,
+        target_source,
+        target_unit,
+        sources=sources,
+    )
+    missing = set(feature_names).difference(generated.columns)
+    if missing:
+        raise ValueError(f"model requests unknown features: {sorted(missing)}")
+    return FeatureBatch(data, model, utc_queries, generated.loc[:, list(feature_names)])
+
+
+def build_features(
+    data: PreparedData,
+    as_of: datetime,
+    state: ProcessState,
+    model: object,
+    *,
+    batch: FeatureBatch | None = None,
+) -> FeatureFrame:
+    """Build one serving row in the exact feature order stored by the model."""
+    query = _as_utc(as_of, "as_of")
+    if _as_utc(state.as_of, "state.as_of") != query:
+        raise ValueError("state.as_of must match feature as_of")
+    if state.dataset_id != data.manifest.dataset_id:
+        raise ValueError("state and prepared data dataset_id mismatch")
+    feature_names, telemetry_signals, target_signal_id, target_source, target_unit = (
+        _model_feature_spec(data, model)
+    )
+    if batch is not None:
+        if batch.data is not data or batch.model is not model:
+            raise ValueError("feature batch inputs do not match this replay")
+        if tuple(batch.frame.columns) != feature_names:
+            raise ValueError("feature batch columns do not match model")
+        position = batch.queries.get_indexer(pd.DatetimeIndex([query]))[0]
+        if position < 0:
+            raise ValueError("feature batch does not contain as_of")
+        return batch.frame.iloc[[position]].reset_index(drop=True)
     generated = _feature_matrix(
         data,
         pd.DatetimeIndex([query]),
@@ -498,12 +634,16 @@ def build_features(
 
 
 __all__ = [
+    "FeatureBatch",
     "FeatureFrame",
+    "FeatureSources",
     "LAG_MINUTES",
     "SUPERVISED_COLUMNS",
     "SupervisedDataset",
     "WINDOW_MINUTES",
     "baseline_feature_name",
     "build_features",
+    "prepare_feature_batch",
+    "prepare_feature_sources",
     "build_supervised_dataset",
 ]

@@ -212,6 +212,12 @@ def export_journals(
         raise ValueError("at least one journal is required")
     if len({name for name, _ in sources}) != len(sources):
         raise ValueError("journal export names must be unique")
+    # ZIP member names must stay inside one episode directory on extraction.
+    if any(
+        not name or name in {".", ".."} or "/" in name or "\\" in name or "\0" in name
+        for name, _ in sources
+    ):
+        raise ValueError("journal export names must be single path components")
     destination.parent.mkdir(parents=True, exist_ok=True)
     manifest: dict[str, Any] = {"schema_version": "1.0", "journals": []}
     file_descriptor, temporary_name = tempfile.mkstemp(

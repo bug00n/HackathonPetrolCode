@@ -38,6 +38,7 @@ from source.data import (
     prepare_dataset,
     write_prepared_dataset,
 )
+from source.data.state import prepare_state_data
 
 if TYPE_CHECKING:
     from source.ml.action_effects import ActionEnabledForecastModel
@@ -130,6 +131,8 @@ def run_model_demo(
     run_dir: str | Path | None = None,
     *,
     scenario_override: ScenarioConfig | None = None,
+    recipe_mode: str = "optimize",
+    editor_context: dict[str, object] | None = None,
 ) -> Recommendation:
     """Run one deterministic stage-1 model-demo scenario on fixture data."""
     from source.orchestrator import run_cycle
@@ -152,6 +155,8 @@ def run_model_demo(
         config=config,
         context=DecisionContext(),
         run_dir=_resolve_path(run_dir if run_dir is not None else config.runs_dir, root),
+        recipe_mode=recipe_mode,
+        editor_context=editor_context,
     )
 
 
@@ -173,10 +178,30 @@ def _validate_current_prepared_dataset(
     data: PreparedData,
     config: RuntimeConfig,
     root: Path,
+    dataset_path: Path,
 ) -> None:
     """Fail early when a prepared dataset was built from older runtime inputs."""
+    preparation_hash = hashlib.sha256(
+        config_fingerprint(config, preparation_only=True).encode()
+    ).hexdigest()
+    config_hash = hashlib.sha256(
+        config_fingerprint(config, preparation_only=False).encode()
+    ).hexdigest()
+    if data.manifest.schema_version == "1.1":
+        config_hash = preparation_hash
+    else:
+        release_path = root / "config/release_manifest.json"
+        if release_path.is_file():
+            release = json.loads(release_path.read_text(encoding="utf-8"))
+            pinned = _resolve_path(release.get("prepared_dataset", ""), root).resolve()
+            if (
+                pinned == dataset_path.resolve()
+                and release.get("legacy_config_sha256") == data.manifest.config_sha256
+            ):
+                if release.get("preparation_config_sha256") == preparation_hash:
+                    config_hash = data.manifest.config_sha256
     expected = {
-        "config_sha256": hashlib.sha256(config_fingerprint(config).encode()).hexdigest(),
+        "config_sha256": config_hash,
         "tag_dictionary_sha256": _sha256_file(_resolve_path(config.tag_dictionary_path, root)),
         "telemetry_rules_sha256": _sha256_file(_resolve_path(config.telemetry_rules_path, root)),
     }
@@ -204,7 +229,7 @@ def _load_current_prepared_dataset(
     root: Path,
 ) -> PreparedData:
     data = load_prepared_dataset(_resolve_path(dataset, root))
-    _validate_current_prepared_dataset(data, config, root)
+    _validate_current_prepared_dataset(data, config, root, _resolve_path(dataset, root))
     return data
 
 
@@ -927,6 +952,7 @@ def history_interval_command(
     cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, object]:
     """Replay a user-selected historical interval without fitting or tuning."""
+    from source.ml.features import prepare_feature_batch, prepare_feature_sources
     from source.orchestrator import run_cycle
 
     if start.tzinfo is None or end.tzinfo is None:
@@ -943,6 +969,7 @@ def history_interval_command(
 
     config = load_runtime_config(_resolve_path(config_path, root))
     data = _load_current_prepared_dataset(dataset, config, root)
+    data = prepare_state_data(data)
     forecast_model = _load_trusted_model(model, data, root)
     scenario = load_scenario(root / "config/scenarios/history.json")
     output_dir = _resolve_path(run_dir if run_dir is not None else config.runs_dir, root)
@@ -957,9 +984,15 @@ def history_interval_command(
     counts: dict[str, int] = {}
     reason_counts: dict[str, int] = {}
     available_forecasts = 0
-    for timestamp in timestamps:
+    feature_batch = None
+    feature_sources = prepare_feature_sources(data, forecast_model)
+    for index, timestamp in enumerate(timestamps):
         if cancelled is not None and cancelled():
             break
+        if index % 24 == 0:
+            feature_batch = prepare_feature_batch(
+                data, timestamps[index : index + 24], forecast_model, sources=feature_sources
+            )
         result = run_cycle(
             data=data,
             model=forecast_model,
@@ -968,6 +1001,7 @@ def history_interval_command(
             config=config,
             context=DecisionContext(),
             run_dir=output_dir,
+            feature_batch=feature_batch,
         )
         carrier = result.selected or result.baseline
         sulfur = None

@@ -101,6 +101,8 @@ def test_stage1_abstains_when_required_component_quality_is_missing(
     assert result.selected is None
     assert "MISSING_REQUIRED_SIGNAL" in result.reason_codes
     assert "Надёжной рекомендации нет" in result.explanation
+    assert "MISSING_REQUIRED_SIGNAL" not in result.explanation
+    assert "reason=" not in result.explanation
 
 
 @pytest.mark.parametrize("missing_field", ["t95", "cetane_number"])

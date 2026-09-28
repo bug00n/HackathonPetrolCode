@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import tarfile
 from datetime import datetime
@@ -69,6 +70,39 @@ def _write_minimal_materials(root: Path) -> None:
     ).to_excel(root / "ЛИМСы 01.01.2023 - н.в_ (2).xlsx", header=False, index=False)
 
 
+@pytest.mark.parametrize("external_tar", [False, True])
+def test_archive_extraction_rejects_symlinked_data_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, external_tar: bool
+) -> None:
+    """Archive metadata must not redirect CSV extraction outside the temporary directory."""
+    archive_path = tmp_path / "malicious.tar"
+    with tarfile.open(archive_path, "w") as archive:
+        link = tarfile.TarInfo("data")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../outside"
+        archive.addfile(link)
+        for name in ("avt_tags.csv", "242000_tags.csv"):
+            payload = b"date,value\n2026-01-15,1\n"
+            member = tarfile.TarInfo(f"data/{name}")
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    destination = tmp_path / "extracted"
+    destination.mkdir()
+    if external_tar:
+
+        def reject_tar_archive(path: Path) -> None:
+            raise tarfile.ReadError(path)
+
+        monkeypatch.setattr(prepare_module.tarfile, "open", reject_tar_archive)
+
+    with pytest.raises(ValueError, match="unsafe archive member"):
+        prepare_module._extract_telemetry(archive_path, destination)
+    assert not list(outside.iterdir())
+
+
 def test_prepared_dataset_roundtrip(tmp_path: Path) -> None:
     """Verify a written prepared dataset can be loaded back without contract drift."""
     data = _fixture_prepared_data()
@@ -76,11 +110,40 @@ def test_prepared_dataset_roundtrip(tmp_path: Path) -> None:
     dataset_path = write_prepared_dataset(data, tmp_path)
     loaded = load_prepared_dataset(dataset_path)
 
-    assert loaded.manifest == data.manifest
+    assert loaded.manifest.model_dump(exclude={"prepared_sha256"}) == data.manifest.model_dump(
+        exclude={"prepared_sha256"}
+    )
+    assert loaded.manifest.prepared_sha256 is not None
     assert loaded.feature_order == data.feature_order
     pd.testing.assert_frame_equal(loaded.telemetry, data.telemetry, check_dtype=False)
     pd.testing.assert_frame_equal(loaded.quality, data.quality, check_dtype=False)
     pd.testing.assert_frame_equal(loaded.issues, data.issues, check_dtype=False)
+
+
+def test_prepared_dataset_memory_cache_isolated_and_invalidated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = write_prepared_dataset(_fixture_prepared_data(), tmp_path)
+    read_csv = pd.read_csv
+    reads: list[str] = []
+
+    def counted_read_csv(path: Path, *args: object, **kwargs: object) -> pd.DataFrame:
+        reads.append(Path(path).name)
+        return read_csv(path, *args, **kwargs)
+
+    monkeypatch.setattr(prepare_module.pd, "read_csv", counted_read_csv)
+    first = load_prepared_dataset(dataset_path)
+    original = first.quality.loc[0, "value"]
+    first.quality.loc[0, "value"] = 999
+    second = load_prepared_dataset(dataset_path)
+    assert second.quality.loc[0, "value"] == original
+    assert len(reads) == 3
+
+    second.quality.loc[0, "value"] = 998
+    second.quality.to_csv(dataset_path / "quality.csv.gz", index=False, compression="gzip")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        load_prepared_dataset(dataset_path)
+    assert len(reads) == 6
 
 
 def test_prepared_dataset_publish_retries_transient_permission_error(

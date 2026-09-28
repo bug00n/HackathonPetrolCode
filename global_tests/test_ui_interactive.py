@@ -11,7 +11,12 @@ import pytest
 from source.config import load_scenario
 from source.main import run_model_demo
 from source.ui_charts import HistoryChart, history_points
-from source.ui_what_if import editor_values, open_editor, scenario_from_editor
+from source.ui_what_if import (
+    editor_values,
+    linked_quality_adjustment,
+    open_editor,
+    scenario_from_editor,
+)
 
 
 def test_what_if_changes_forecast_and_journals_inputs(tmp_path: Path) -> None:
@@ -65,6 +70,41 @@ def test_what_if_rejects_invalid_inputs(updates: dict[str, str]) -> None:
     preset = load_scenario("config/scenarios/blend_risk.json")
     with pytest.raises(ValueError):
         scenario_from_editor(preset, editor_values(preset) | updates)
+
+
+def test_what_if_validation_names_visible_field() -> None:
+    preset = load_scenario("config/scenarios/blend_risk.json")
+    with pytest.raises(ValueError, match="Компонент A · Текущая доля"):
+        scenario_from_editor(preset, editor_values(preset) | {"A.fraction": "abc"})
+
+
+def test_linked_quality_adjustment_keeps_the_field_the_user_changed() -> None:
+    preset = load_scenario("config/scenarios/blend_risk.json")
+    original = editor_values(preset)
+    values = original | {"A.sulfur.upper": "1"}
+    assert linked_quality_adjustment(values, "A.sulfur.upper")[:2] == (
+        "A.sulfur.value",
+        "1",
+    )
+    assert values["A.sulfur.value"] == "6"
+    assert linked_quality_adjustment(values, "A.sulfur.value")[:2] == (
+        "A.sulfur.upper",
+        "6",
+    )
+    assert linked_quality_adjustment(
+        original | {"A.sulfur.value": "1"}, "A.sulfur.value", original
+    )[:2] == ("A.sulfur.upper", "2")
+    assert linked_quality_adjustment(
+        editor_values(preset) | {"A.cetane_number.lower": "55"},
+        "A.cetane_number.lower",
+    )[:2] == ("A.cetane_number.value", "55")
+    assert (
+        linked_quality_adjustment(
+            editor_values(preset) | {"A.sulfur.upper": "не число"},
+            "A.sulfur.upper",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -142,12 +182,14 @@ def test_editor_reset_validation_and_chart_on_real_tk() -> None:
         first = entries[0]
         first.delete(0, "end")
         first.insert(0, "bad input")
-        buttons = {w.cget("text"): w for w in descendants(dialog) if isinstance(w, ttk.Button)}
-        buttons["Пересчитать what-if"].invoke()
+        buttons = {
+            w.cget("text"): w for w in descendants(dialog) if isinstance(w, (tk.Button, ttk.Button))
+        }
+        buttons["Рассчитать смесь"].invoke()
         assert not received and dialog.winfo_exists()
-        buttons["Сбросить к сценарию"].invoke()
-        assert first.get() == "6"
-        buttons["Пересчитать what-if"].invoke()
+        buttons["Сбросить"].invoke()
+        assert first.get() == editor_values(preset)["A.fraction"]
+        buttons["Рассчитать смесь"].invoke()
         assert len(received) == 1 and received[0].id.endswith("_what_if")
         chart = HistoryChart(root)
         chart.set_payload(interval_payload())
@@ -157,5 +199,171 @@ def test_editor_reset_validation_and_chart_on_real_tk() -> None:
         assert all(chart.type(item) != "line" for item in chart.find_withtag("point"))
         chart.set_payload(None)
         assert not chart.find_withtag("point")
+    finally:
+        root.destroy()
+
+
+def test_editor_assist_and_undo_on_real_tk() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    try:
+        preset = load_scenario("config/scenarios/blend_risk.json")
+        dialog = open_editor(root, preset, preset, lambda _scenario: None)
+        dialog.withdraw()
+        entries = [widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)]
+        b_share = entries[1]
+        b_share.delete(0, "end")
+        b_share.insert(0, "10")
+        locks = [
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Checkbutton) and widget.cget("text") == "Не менять"
+        ]
+        locks[1].invoke()
+        buttons = {
+            widget.cget("text"): widget
+            for widget in descendants(dialog)
+            if isinstance(widget, (tk.Button, ttk.Button))
+        }
+        buttons["Подобрать смесь"].invoke()
+        assert b_share.get() == "10"
+        assert float(entries[0].get()) + float(b_share.get()) + float(
+            entries[2].get()
+        ) == pytest.approx(100)
+        buttons["Отменить подбор"].invoke()
+        assert b_share.get() == "10"
+        assert entries[0].get() == editor_values(preset)["A.fraction"]
+        auto = next(
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Checkbutton)
+            and widget.cget("text") == "Подбирать после изменения"
+        )
+        auto.invoke()
+        buttons["Подобрать смесь"].invoke()
+        assert float(entries[0].get()) + float(b_share.get()) + float(
+            entries[2].get()
+        ) == pytest.approx(100)
+        dialog.destroy()
+    finally:
+        root.destroy()
+
+
+def test_editor_repairs_conflicting_quality_before_calculation() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    try:
+        preset = load_scenario("config/scenarios/blend_risk.json")
+        received = []
+        dialog = open_editor(root, preset, preset, received.append)
+        dialog.withdraw()
+        entries = [widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)]
+        point, upper = entries[5:7]
+        point.delete(0, "end")
+        point.insert(0, "1")
+        point.event_generate("<FocusOut>")
+        assert upper.get() == "2"
+        buttons = {
+            widget.cget("text"): widget
+            for widget in descendants(dialog)
+            if isinstance(widget, (tk.Button, ttk.Button))
+        }
+        buttons["Сбросить"].invoke()
+        upper.delete(0, "end")
+        upper.insert(0, "1")
+        upper.event_generate("<FocusOut>")
+        assert point.get() == "1"
+        buttons["Рассчитать смесь"].invoke()
+        assert len(received) == 1
+        assert received[0].blend_components[0].sulfur.value == 1
+        assert received[0].blend_components[0].sulfur.upper == 1
+    finally:
+        root.destroy()
+
+
+def test_manual_blend_assist_keeps_the_latest_entered_share_and_fills_blank() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    try:
+        preset = load_scenario("config/scenarios/blend_risk.json")
+        received = []
+        dialog = open_editor(root, preset, preset, received.append)
+        dialog.withdraw()
+        entries = [widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)]
+        share_a, share_b, dose = entries[:3]
+        share_a.delete(0, "end")
+        share_a.insert(0, "86.2083333333")
+        share_b.delete(0, "end")
+        button = next(
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Button) and widget.cget("text") == "Подобрать смесь"
+        )
+        button.invoke()
+        assert share_a.get() == "86.2083333333"
+        assert float(share_b.get()) == pytest.approx(12.7916666667)
+        assert dose.get() == "1"
+        reset = next(
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Button) and widget.cget("text") == "Сбросить"
+        )
+        reset.invoke()
+        share_a.delete(0, "end")
+        share_a.insert(0, "86.2083333333")
+        share_b.delete(0, "end")
+        calculate = next(
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, tk.Button) and widget.cget("text") == "Рассчитать смесь"
+        )
+        calculate.invoke()
+        assert len(received) == 1
+        assert received[0].current_blend_mass_fractions["A"] == pytest.approx(0.862083333333)
+        assert received[0].current_blend_mass_fractions["B"] == pytest.approx(0.127916666667)
+    finally:
+        root.destroy()
+
+
+def test_nearest_blend_option_changes_input_only_when_explicitly_requested() -> None:
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        pytest.skip(f"Tk display unavailable: {exc}")
+    root.withdraw()
+    try:
+        preset = load_scenario("config/scenarios/blend_risk.json")
+        dialog = open_editor(root, preset, preset, lambda _scenario: None)
+        dialog.withdraw()
+        entries = [widget for widget in descendants(dialog) if isinstance(widget, ttk.Entry)]
+        share_a, share_b = entries[:2]
+        share_a.delete(0, "end")
+        share_a.insert(0, "86.2")
+        share_b.delete(0, "end")
+        locks = [
+            widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Checkbutton) and widget.cget("text") == "Не менять"
+        ]
+        locks[2].invoke()
+        buttons = {
+            widget.cget("text"): widget
+            for widget in descendants(dialog)
+            if isinstance(widget, ttk.Button)
+        }
+        buttons["Подобрать смесь"].invoke()
+        assert share_a.get() == "86.2"
+        buttons["Найти ближайшую допустимую"].invoke()
+        assert float(share_a.get()) > 86.2
+        assert float(share_a.get()) + float(share_b.get()) == pytest.approx(99.0)
     finally:
         root.destroy()
